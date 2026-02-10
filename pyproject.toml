@@ -1,0 +1,122 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["submate*"]
+
+[project]
+name = "submate"
+version = "1.0.0"
+requires-python = ">=3.13"
+dependencies = [
+  "numpy",
+  "stable-ts>=2.0.0",
+  "fastapi",
+  "requests",
+  "faster-whisper>=1.0.0",
+  "uvicorn",
+  "python-multipart",
+  "ffmpeg-python",
+  "watchdog",
+  "huey>=2.5.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.0.0",
+  "python-daemon>=3.0.0",
+  "srt>=3.5.0",
+  "pysubs2>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "pytest-asyncio==0.24.0",
+  "pytest-cov==6.0.0",
+  "pytest-mock==3.14.0",
+  "mypy==1.13.0",
+  "ruff==0.8.4",
+]
+ollama = ["ollama>=0.3.0"]
+claude = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+gemini = ["google-genai>=1.0.0"]
+all-llm = [
+  "ollama>=0.3.0",
+  "anthropic>=0.40.0",
+  "openai>=1.50.0",
+  "google-genai>=1.0.0",
+]
+
+[project.scripts]
+submate = "submate.cli:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+  "-v",
+  "--strict-markers",
+  "--tb=short",
+  "--cov=submate",
+  "--cov-report=term-missing",
+  "--cov-report=html",
+]
+markers = ["integration: Integration tests (may be slower)"]
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+  "whisper",
+  "torch",
+  "plexapi.*",
+  "requests",
+  "huey",
+  "huey.*",
+  "ffmpeg",
+  "stable_whisper",
+  "pydantic",
+  "pydantic_settings",
+  "srt",
+  "pysubs2",
+  "ollama",
+  "anthropic",
+  "openai",
+  "google",
+  "google.*",
+  "daemon",
+  "daemon.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.coverage.run]
+source = ["submate"]
+omit = ["tests/*", "launcher.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "def __repr__",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

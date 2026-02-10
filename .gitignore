@@ -1,0 +1,41 @@
+.vscode/*
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+#ignore our settings
+subgen.env
+
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# nix
+.direnv/
+result*
+.envrc.local
+
+# Configuration
+.env
+.env.local
+config.toml
+*.local.env
+
+samples/
+
+# Worktrees
+.worktrees/

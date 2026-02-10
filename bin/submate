@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Wrapper script to run submate CLI in Nix environment
+
+set -euo pipefail
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run in Nix development environment
+cd "$SCRIPT_DIR"
+exec nix develop --command python -m submate.cli "$@"

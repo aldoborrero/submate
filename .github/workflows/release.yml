@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g., v2025.01.1)"
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        variant: [cpu, gpu]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Get version from tag
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_short=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image with Nix
+        run: |
+          nix build .#docker-${{ matrix.variant }} --print-build-logs
+          # Load the image into Docker
+          docker load < result
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get image name from Nix build
+        id: image
+        run: |
+          IMAGE_TAG=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -1)
+          echo "source_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Tag and push images
+        run: |
+          SOURCE="${{ steps.image.outputs.source_tag }}"
+
+          # Tag with version
+          docker tag "${SOURCE}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}-${{ matrix.variant }}"
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}-${{ matrix.variant }}"
+
+          # Tag with variant only (latest for that variant)
+          docker tag "${SOURCE}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}"
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}"
+
+          # For GPU variant, also tag as 'latest'
+          if [ "${{ matrix.variant }}" = "gpu" ]; then
+            docker tag "${SOURCE}" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+            docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Get version from tag
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
