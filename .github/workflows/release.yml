@@ -62,7 +62,8 @@ jobs:
       - name: Get image name from Nix build
         id: image
         run: |
-          IMAGE_TAG=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -1)
+          # Filter by our image name to avoid picking up cached runner images
+          IMAGE_TAG=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^submate:" | head -1)
           echo "source_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Tag and push images
