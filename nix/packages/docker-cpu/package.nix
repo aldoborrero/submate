@@ -1,5 +1,7 @@
 {
+  lib,
   dockerTools,
+  buildEnv,
   submate,
   ffmpeg,
   cacert,
@@ -7,23 +9,32 @@
   curl,
 }:
 
+let
+  # Create a merged environment with all binaries in /bin
+  env = buildEnv {
+    name = "submate-env";
+    paths = [
+      submate
+      ffmpeg
+      cacert
+      busybox
+      curl
+    ];
+    pathsToLink = [ "/bin" "/etc" "/lib" "/share" ];
+  };
+in
 dockerTools.buildLayeredImage {
   name = "submate";
   tag = "cpu";
 
-  contents = [
-    submate
-    ffmpeg
-    cacert
-    busybox
-    curl
-  ];
+  contents = [ env ];
 
   config = {
-    Entrypoint = [ "${submate}/bin/submate" ];
+    Entrypoint = [ "/bin/submate" ];
     Cmd = [ "server" ];
     Env = [
-      "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
+      "PATH=/bin"
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       "SUBMATE__WHISPER__DEVICE=cpu"
     ];
     WorkingDir = "/data";
@@ -41,7 +52,7 @@ dockerTools.buildLayeredImage {
     Healthcheck = {
       Test = [
         "CMD"
-        "curl"
+        "/bin/curl"
         "-f"
         "http://localhost:9000/"
       ];

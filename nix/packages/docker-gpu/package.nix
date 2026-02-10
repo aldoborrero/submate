@@ -1,5 +1,7 @@
 {
+  lib,
   dockerTools,
+  buildEnv,
   submate,
   ffmpeg,
   cacert,
@@ -7,25 +9,34 @@
   curl,
 }:
 
+let
+  # Create a merged environment with all binaries in /bin
+  env = buildEnv {
+    name = "submate-env";
+    paths = [
+      submate
+      ffmpeg
+      cacert
+      busybox
+      curl
+    ];
+    pathsToLink = [ "/bin" "/etc" "/lib" "/share" ];
+  };
+in
 # GPU image - requires nvidia-container-toolkit on host
 # Run with: docker run --gpus all ghcr.io/aldoborrero/submate:gpu
 dockerTools.buildLayeredImage {
   name = "submate";
   tag = "gpu";
 
-  contents = [
-    submate
-    ffmpeg
-    cacert
-    busybox
-    curl
-  ];
+  contents = [ env ];
 
   config = {
-    Entrypoint = [ "${submate}/bin/submate" ];
+    Entrypoint = [ "/bin/submate" ];
     Cmd = [ "server" ];
     Env = [
-      "SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt"
+      "PATH=/bin"
+      "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       # Signal that this image supports GPU
       "NVIDIA_VISIBLE_DEVICES=all"
       "NVIDIA_DRIVER_CAPABILITIES=compute,utility"
@@ -48,7 +59,7 @@ dockerTools.buildLayeredImage {
     Healthcheck = {
       Test = [
         "CMD"
-        "curl"
+        "/bin/curl"
         "-f"
         "http://localhost:9000/"
       ];
