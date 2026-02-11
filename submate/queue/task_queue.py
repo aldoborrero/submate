@@ -11,10 +11,31 @@ from submate.queue.tasks.base import BaseTask
 
 logger = logging.getLogger(__name__)
 
+# Global singleton Huey instance
+_global_huey: SqliteHuey | None = None
+_huey_lock = threading.Lock()
+
 
 def get_huey() -> SqliteHuey:
-    """Get the global Huey instance."""
-    return TaskQueue().huey
+    """Get the global singleton Huey instance.
+
+    This returns the same Huey instance across all calls, ensuring
+    tasks registered in one module are visible to all others.
+    """
+    global _global_huey
+    if _global_huey is None:
+        with _huey_lock:
+            if _global_huey is None:
+                from submate.config import get_config
+
+                config = get_config()
+                _global_huey = SqliteHuey(
+                    name="submate",
+                    filename=config.queue.db_path,
+                    results=True,
+                    utc=True,
+                )
+    return _global_huey
 
 
 class TaskQueue:
@@ -30,8 +51,6 @@ class TaskQueue:
 
             config = get_config()
         self.config = config
-        self._huey: SqliteHuey | None = None
-        self._lock = threading.RLock()
 
         # Initialize services
         from .services import BazarrService, TranscriptionService
@@ -41,17 +60,8 @@ class TaskQueue:
 
     @property
     def huey(self) -> SqliteHuey:
-        """Lazy-initialized Huey queue instance."""
-        if self._huey is None:
-            with self._lock:
-                if self._huey is None:
-                    self._huey = SqliteHuey(
-                        name="submate",
-                        filename=self.config.queue.db_path,
-                        results=True,
-                        utc=True,
-                    )
-        return self._huey
+        """Get the global Huey queue instance."""
+        return get_huey()
 
     def enqueue(
         self, task_class: type[BaseTask], blocking: bool = False, immediate: bool = False, **kwargs: Any

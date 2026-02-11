@@ -7,6 +7,10 @@ from huey.consumer import Consumer
 
 from submate.queue.task_queue import get_huey
 
+# Import registered_tasks to ensure tasks are registered with Huey
+# This import has side effects: decorators register tasks at import time
+import submate.queue.registered_tasks  # noqa: F401
+
 from ..utils import console, setup_logging
 
 

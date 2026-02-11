@@ -3,8 +3,7 @@
 import logging
 from io import BytesIO
 
-from submate.queue import get_task_queue
-from submate.queue.tasks import BazarrTranscriptionTask, LanguageDetectionTask
+from submate.queue.registered_tasks import detect_language_task, transcribe_audio_task
 from submate.server.handlers.bazarr.audio import extract_audio_segment
 from submate.server.handlers.bazarr.models import LanguageDetectionResponse
 
@@ -58,22 +57,26 @@ async def handle_asr_request(
         audio_file.seek(0)
         audio_content = audio_file.read()
 
-        # Execute transcription directly in the server process
-        # Using immediate=True bypasses the queue and processes synchronously,
-        # which is necessary since Bazarr expects an immediate response
-        task_queue = get_task_queue()
-        result = task_queue.enqueue(
-            BazarrTranscriptionTask,
+        # Call the statically registered task and wait for result
+        # The task is queued and processed by a worker
+        result_handle = transcribe_audio_task(
             audio_bytes=audio_content,
             language=language,
-            task=task,  # Pass transcribe/translate mode
+            task=task,
             output_format=output,
             word_timestamps=word_timestamps,
-            immediate=True,  # Process in server, bypass queue
         )
 
-        logger.info(f"{task.capitalize()} complete for Bazarr request")
-        return str(result)
+        # Block until worker completes the task
+        result = result_handle(blocking=True)
+
+        if result.get("success"):
+            logger.info(f"{task.capitalize()} complete for Bazarr request")
+            return str(result.get("data", ""))
+        else:
+            error_msg = result.get("error", "Unknown error")
+            logger.error(f"Transcription task failed: {error_msg}")
+            raise RuntimeError(f"Transcription failed: {error_msg}")
 
     except Exception as e:
         logger.error(f"ASR request failed: {e}", exc_info=True)
@@ -107,15 +110,17 @@ async def handle_detect_language(
         # Extract audio segment
         segment_data = extract_audio_segment(audio_file, offset=offset, length=length)
 
-        # Execute detection directly in the server process
-        task_queue = get_task_queue()
-        result_dict = task_queue.enqueue(
-            LanguageDetectionTask,
-            audio_bytes=segment_data,
-            immediate=True,  # Process in server, bypass queue
-        )
+        # Call the statically registered task and wait for result
+        result_handle = detect_language_task(audio_bytes=segment_data)
 
-        return LanguageDetectionResponse(**result_dict)
+        # Block until worker completes the task
+        result = result_handle(blocking=True)
+
+        if result.get("success"):
+            return LanguageDetectionResponse(**result.get("data", {}))
+        else:
+            logger.warning(f"Language detection task failed: {result.get('error')}")
+            return LanguageDetectionResponse(**result.get("data", {}))
 
     except Exception as e:
         logger.error(f"Language detection failed: {e}", exc_info=True)
