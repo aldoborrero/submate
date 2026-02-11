@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import threading
+import wave
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -287,6 +288,9 @@ class WhisperModelWrapper:
         stable-whisper only accepts file paths (strings), not BytesIO or raw bytes.
         For bytes/BytesIO input, we save to a temp file and return the path.
 
+        Bazarr sends raw PCM audio (s16le, mono, 16kHz) without WAV headers,
+        so we add proper WAV headers before saving.
+
         Args:
             audio: Raw audio input
 
@@ -294,21 +298,50 @@ class WhisperModelWrapper:
             File path string (stable-whisper requirement)
         """
         if isinstance(audio, bytes):
-            # Save bytes to temp file - stable-whisper only accepts file paths
-            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            temp_file.write(audio)
-            temp_file.close()
-            self._temp_audio_file = temp_file.name
-            return temp_file.name
+            return self._save_audio_with_wav_headers(audio)
         elif isinstance(audio, BytesIO):
             audio.seek(0)
-            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            temp_file.write(audio.read())
-            temp_file.close()
-            self._temp_audio_file = temp_file.name
-            return temp_file.name
+            return self._save_audio_with_wav_headers(audio.read())
         else:
             return str(audio)
+
+    def _save_audio_with_wav_headers(self, pcm_data: bytes) -> str:
+        """Save raw PCM data as a proper WAV file.
+
+        Bazarr sends PCM audio in s16le format (signed 16-bit little-endian),
+        mono channel, 16kHz sample rate. We add WAV headers so ffmpeg/PyAV
+        can decode it.
+
+        Args:
+            pcm_data: Raw PCM audio bytes
+
+        Returns:
+            Path to temporary WAV file
+        """
+        temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+
+        # Check if data already has WAV header (starts with "RIFF")
+        if pcm_data[:4] == b"RIFF":
+            # Already a WAV file, just save it
+            with open(temp_path, "wb") as f:
+                f.write(pcm_data)
+        else:
+            # Raw PCM - add WAV headers
+            # Bazarr format: s16le (signed 16-bit LE), mono, 16kHz
+            channels = 1
+            sample_rate = 16000
+            sample_width = 2  # 16-bit = 2 bytes
+
+            with wave.open(temp_path, "wb") as wav_file:
+                wav_file.setnchannels(channels)
+                wav_file.setsampwidth(sample_width)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(pcm_data)
+
+        self._temp_audio_file = temp_path
+        return temp_path
 
     def _audio_description(self, audio: Path | str | bytes | BytesIO) -> str:
         """Get safe description of audio for logging.
