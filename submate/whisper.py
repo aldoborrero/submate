@@ -263,20 +263,21 @@ class WhisperModelWrapper:
                 logger.error(f"Transcription failed: {e}", exc_info=True)
                 raise RuntimeError(f"Transcription failed: {e}") from e
 
-    def _prepare_audio(self, audio: Path | str | bytes | BytesIO) -> str | bytes:
-        """Convert audio input to format stable-whisper expects.
+    def _prepare_audio(self, audio: Path | str | bytes | BytesIO) -> str | BytesIO:
+        """Convert audio input to format stable-whisper/faster-whisper expects.
 
         Args:
             audio: Raw audio input
 
         Returns:
-            Either file path string or bytes
+            Either file path string or BytesIO (faster-whisper needs file-like object, not raw bytes)
         """
         if isinstance(audio, bytes):
-            return audio
+            # Wrap bytes in BytesIO - faster-whisper needs file-like object with seek()
+            return BytesIO(audio)
         elif isinstance(audio, BytesIO):
             audio.seek(0)
-            return audio.read()
+            return audio
         else:
             return str(audio)
 
