@@ -451,24 +451,63 @@ class Config(BaseSettings):
         return {"db_path": str(data_dir / "queue.db")}
 
 
-def get_config(config_file: str | None = None) -> Config:
-    """Load configuration from environment or file.
+def get_config(
+    config_file: str | None = None,
+    yaml_path: Path | str | None = None,
+) -> Config:
+    """Load configuration from environment, YAML file, or .env file.
+
+    Configuration sources are applied in order of precedence (highest first):
+    1. Environment variables (always override)
+    2. YAML configuration file (if provided)
+    3. .env file (if provided)
+    4. Default values
 
     Args:
         config_file: Optional path to .env file
+        yaml_path: Optional path to YAML configuration file
 
     Returns:
         Populated Config instance with validation
     """
-    if config_file:
-        # Create a new Config class with custom env file
+    from submate.config_yaml import YamlSettingsSource
+
+    # Convert string path to Path object if needed
+    yaml_path_obj = Path(yaml_path) if isinstance(yaml_path, str) else yaml_path
+
+    if config_file or yaml_path_obj:
+        # Create a new Config class with custom sources
         class CustomConfig(Config):
             model_config = SettingsConfigDict(
-                env_file=config_file,
+                env_file=config_file if config_file else ".env",
                 env_file_encoding="utf-8",
+                env_prefix="SUBMATE__",
                 case_sensitive=False,
                 extra="ignore",
+                env_nested_delimiter="__",
             )
+
+            @classmethod
+            def settings_customise_sources(
+                cls,
+                settings_cls: type[BaseSettings],
+                init_settings: PydanticBaseSettingsSource,
+                env_settings: PydanticBaseSettingsSource,
+                dotenv_settings: PydanticBaseSettingsSource,
+                file_secret_settings: PydanticBaseSettingsSource,
+            ) -> tuple[PydanticBaseSettingsSource, ...]:
+                """Customize sources to include YAML configuration."""
+                sources: list[PydanticBaseSettingsSource] = [
+                    init_settings,
+                    _EnvSettingsSource(settings_cls),
+                ]
+
+                # Add YAML source if path provided (lower priority than env)
+                if yaml_path_obj:
+                    sources.append(YamlSettingsSource(settings_cls, yaml_path_obj))
+
+                sources.extend([dotenv_settings, file_secret_settings])
+                return tuple(sources)
 
         return CustomConfig()
     return Config()
