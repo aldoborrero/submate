@@ -31,6 +31,7 @@ class BazarrTranscriptionTask(BaseTask[str]):
             output_format_input = kwargs.get("output_format", OutputFormat.SRT)
             word_timestamps = kwargs.get("word_timestamps", False)
             task = kwargs.get("task", "transcribe")
+            target_language = kwargs.get("target_language")
 
             # Normalize output_format - handle both string and enum inputs
             if isinstance(output_format_input, str):
@@ -47,6 +48,7 @@ class BazarrTranscriptionTask(BaseTask[str]):
                 task=task,
                 output_format=output_format,
                 word_timestamps=word_timestamps,
+                target_language=target_language,
             )
             return TaskResult(success=True, data=subtitle_content)
         except Exception as e:

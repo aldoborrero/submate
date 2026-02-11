@@ -25,17 +25,21 @@ async def handle_asr_request(
     This ensures proper concurrency control while maintaining synchronous
     behavior from Bazarr's perspective.
 
+    When the requested language differs from the detected audio language,
+    translation is automatically performed using an LLM backend.
+
     Args:
         audio_file: Uploaded audio file
-        task: "transcribe" or "translate"
-        language: Optional language code
+        task: "transcribe" or "translate" (Whisper translate is to English only)
+        language: Target language code for subtitles. If different from
+            detected audio language, translation will be performed.
         output: Output format (srt, vtt, txt, json)
         encode: Ignored (Bazarr sends encode=false after pre-encoding with ffmpeg)
         word_timestamps: Enable word-level timestamps
         video_file: Optional filename for logging
 
     Returns:
-        Subtitle content as string
+        Subtitle content as string (translated to target language if needed)
 
     Raises:
         ValueError: If invalid output format
@@ -49,7 +53,9 @@ async def handle_asr_request(
         raise ValueError(f"Invalid output format: {output}")
 
     logger.info(
-        f"{task.capitalize()} of file '{video_file}' from Bazarr" if video_file else f"{task.capitalize()} from Bazarr"
+        f"{task.capitalize()} of file '{video_file}' from Bazarr (target_lang={language})"
+        if video_file
+        else f"{task.capitalize()} from Bazarr (target_lang={language})"
     )
 
     try:
@@ -59,12 +65,15 @@ async def handle_asr_request(
 
         # Call the statically registered task and wait for result
         # The task is queued and processed by a worker
+        # - language=None: Let Whisper auto-detect source language
+        # - target_language: The language user wants subtitles in (triggers translation if different)
         result_handle = transcribe_audio_task(
             audio_bytes=audio_content,
-            language=language,
+            language=None,  # Auto-detect source language
             task=task,
             output_format=output,
             word_timestamps=word_timestamps,
+            target_language=language,  # Translate to this language if needed
         )
 
         # Block until worker completes the task

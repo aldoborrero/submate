@@ -72,6 +72,7 @@ def test_bazarr_transcription_execute():
         task="transcribe",
         output_format=OutputFormat.SRT,
         word_timestamps=True,
+        target_language=None,
     )
 
     assert result.success is True
@@ -82,6 +83,36 @@ def test_bazarr_transcription_execute():
         task="transcribe",
         output_format=OutputFormat.SRT,
         word_timestamps=True,
+        target_language=None,
+    )
+
+
+def test_bazarr_transcription_with_translation():
+    """Test Bazarr transcription with target language for translation."""
+    service = Mock()
+    task = BazarrTranscriptionTask(Mock(), bazarr_service=service)
+
+    # Service should return translated content
+    service.transcribe_audio_bytes.return_value = "contenido de subtítulos traducido"
+
+    result = task.execute(
+        audio_bytes=b"test_audio",
+        language=None,  # Auto-detect source
+        task="transcribe",
+        output_format=OutputFormat.SRT,
+        word_timestamps=False,
+        target_language="es",  # Translate to Spanish
+    )
+
+    assert result.success is True
+    assert result.data == "contenido de subtítulos traducido"
+    service.transcribe_audio_bytes.assert_called_once_with(
+        audio_bytes=b"test_audio",
+        language=None,
+        task="transcribe",
+        output_format=OutputFormat.SRT,
+        word_timestamps=False,
+        target_language="es",
     )
 
 

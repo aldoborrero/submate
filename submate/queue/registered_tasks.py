@@ -26,6 +26,7 @@ def transcribe_audio_task(
     task: Literal["transcribe", "translate"] = "transcribe",
     output_format: str = "srt",
     word_timestamps: bool = False,
+    target_language: str | None = None,
 ) -> dict[str, Any]:
     """Transcribe audio bytes and return subtitle content.
 
@@ -34,10 +35,12 @@ def transcribe_audio_task(
 
     Args:
         audio_bytes: Raw audio data to transcribe
-        language: Optional language code (e.g., "en", "es")
-        task: "transcribe" or "translate"
+        language: Optional source language hint (e.g., "en", "es")
+        task: "transcribe" or "translate" (Whisper's translate is to English only)
         output_format: Output format ("srt", "vtt", "txt", "json")
         word_timestamps: Enable word-level timestamps
+        target_language: Target language for subtitles. If different from
+            transcribed language, translation will be performed using LLM.
 
     Returns:
         Dict with 'success', 'data' (subtitle content), and optionally 'error'
@@ -47,9 +50,10 @@ def transcribe_audio_task(
     from submate.queue.services.bazarr import BazarrService
 
     logger.info(
-        "Worker executing transcribe_audio_task: task=%s, language=%s, format=%s",
+        "Worker executing transcribe_audio_task: task=%s, language=%s, target=%s, format=%s",
         task,
         language,
+        target_language,
         output_format,
     )
 
@@ -69,6 +73,7 @@ def transcribe_audio_task(
             task=task,
             output_format=output_format_enum,
             word_timestamps=word_timestamps,
+            target_language=target_language,
         )
 
         logger.info("Worker completed transcribe_audio_task successfully")
