@@ -61,9 +61,10 @@ def test_queue_endpoint(client, mocker):
 
 def test_bazarr_asr_endpoint(client, mocker):
     """Test /bazarr/asr endpoint."""
-    mock_task_queue = mocker.MagicMock()
-    mock_task_queue.enqueue.return_value = "1\n00:00:00,000 --> 00:00:05,000\nTest subtitle\n"
-    mocker.patch("submate.server.handlers.bazarr.handlers.get_task_queue", return_value=mock_task_queue)
+    mock_result = mocker.MagicMock()
+    mock_result.return_value = {"success": True, "data": "1\n00:00:00,000 --> 00:00:05,000\nTest subtitle\n"}
+    mock_task = mocker.MagicMock(return_value=mock_result)
+    mocker.patch("submate.server.handlers.bazarr.handlers.transcribe_audio_task", mock_task)
 
     response = client.post(
         "/bazarr/asr",
@@ -81,9 +82,10 @@ def test_bazarr_detect_language_endpoint(client, mocker):
         "submate.server.handlers.bazarr.handlers.extract_audio_segment",
         return_value=b"fake_segment",
     )
-    mock_task_queue = mocker.MagicMock()
-    mock_task_queue.enqueue.return_value = {"detected_language": "English", "language_code": "en"}
-    mocker.patch("submate.server.handlers.bazarr.handlers.get_task_queue", return_value=mock_task_queue)
+    mock_result = mocker.MagicMock()
+    mock_result.return_value = {"success": True, "data": {"detected_language": "English", "language_code": "en"}}
+    mock_task = mocker.MagicMock(return_value=mock_result)
+    mocker.patch("submate.server.handlers.bazarr.handlers.detect_language_task", mock_task)
 
     response = client.post(
         "/bazarr/detect-language",
@@ -101,9 +103,10 @@ def test_bazarr_detect_language_endpoint(client, mocker):
 @pytest.mark.asyncio
 async def test_handle_asr_transcribe(mocker):
     """Test ASR transcription handler."""
-    mock_task_queue = mocker.MagicMock()
-    mock_task_queue.enqueue.return_value = "1\n00:00:00,000 --> 00:00:05,000\nTest\n"
-    mocker.patch("submate.server.handlers.bazarr.handlers.get_task_queue", return_value=mock_task_queue)
+    mock_result = mocker.MagicMock()
+    mock_result.return_value = {"success": True, "data": "1\n00:00:00,000 --> 00:00:05,000\nTest\n"}
+    mock_task = mocker.MagicMock(return_value=mock_result)
+    mocker.patch("submate.server.handlers.bazarr.handlers.transcribe_audio_task", mock_task)
 
     result = await handle_asr_request(
         audio_file=BytesIO(b"audio"),
@@ -114,15 +117,16 @@ async def test_handle_asr_transcribe(mocker):
     )
 
     assert "Test" in result
-    assert mock_task_queue.enqueue.call_args.kwargs.get("blocking") is True
+    mock_task.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_handle_asr_translate(mocker):
     """Test ASR translation handler."""
-    mock_task_queue = mocker.MagicMock()
-    mock_task_queue.enqueue.return_value = "1\n00:00:00,000 --> 00:00:05,000\nTranslated\n"
-    mocker.patch("submate.server.handlers.bazarr.handlers.get_task_queue", return_value=mock_task_queue)
+    mock_result = mocker.MagicMock()
+    mock_result.return_value = {"success": True, "data": "1\n00:00:00,000 --> 00:00:05,000\nTranslated\n"}
+    mock_task = mocker.MagicMock(return_value=mock_result)
+    mocker.patch("submate.server.handlers.bazarr.handlers.transcribe_audio_task", mock_task)
 
     result = await handle_asr_request(
         audio_file=BytesIO(b"audio"),
@@ -138,9 +142,10 @@ async def test_handle_asr_translate(mocker):
 @pytest.mark.asyncio
 async def test_handle_asr_encode_false_accepted(mocker):
     """Test ASR accepts encode=False (Bazarr compatibility)."""
-    mock_task_queue = mocker.MagicMock()
-    mock_task_queue.enqueue.return_value = "1\n00:00:00,000 --> 00:00:05,000\nTest\n"
-    mocker.patch("submate.server.handlers.bazarr.handlers.get_task_queue", return_value=mock_task_queue)
+    mock_result = mocker.MagicMock()
+    mock_result.return_value = {"success": True, "data": "1\n00:00:00,000 --> 00:00:05,000\nTest\n"}
+    mock_task = mocker.MagicMock(return_value=mock_result)
+    mocker.patch("submate.server.handlers.bazarr.handlers.transcribe_audio_task", mock_task)
 
     result = await handle_asr_request(
         audio_file=BytesIO(b"audio"),
