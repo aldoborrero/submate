@@ -1,6 +1,7 @@
 """Jellyfin media server client."""
 
 import logging
+from typing import Any
 
 import requests
 
@@ -222,3 +223,141 @@ class JellyfinClient:
                 logger.error("Failed to refresh %s: %s", library, e, exc_info=True)
 
         return refreshed
+
+    def get_libraries(self) -> list[dict[str, Any]]:
+        """Get all libraries (virtual folders) from Jellyfin.
+
+        Returns:
+            List of libraries with Id, Name, CollectionType
+
+        Raises:
+            RuntimeError: If not connected to server
+        """
+        if not self.server_url or not self.api_key:
+            raise RuntimeError("Not connected to Jellyfin server")
+
+        headers = {"X-MediaBrowser-Token": self.api_key}
+        response = requests.get(
+            f"{self.server_url}/Library/VirtualFolders",
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result: list[dict[str, Any]] = response.json()
+        return result
+
+    def get_library_items(
+        self,
+        library_id: str,
+        item_type: str = "Movie",
+        start_index: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Get items from a library.
+
+        Args:
+            library_id: The library (parent) ID to browse
+            item_type: Type of items to fetch (Movie, Series, Episode, etc.)
+            start_index: Starting index for pagination
+            limit: Maximum number of items to return
+
+        Returns:
+            Dict with Items list and TotalRecordCount
+
+        Raises:
+            RuntimeError: If not connected to server
+        """
+        if not self.server_url or not self.api_key:
+            raise RuntimeError("Not connected to Jellyfin server")
+
+        admin_id = self._get_admin_user_id()
+        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+        params = {
+            "ParentId": library_id,
+            "IncludeItemTypes": item_type,
+            "Recursive": "true",
+            "StartIndex": start_index,
+            "Limit": limit,
+            "Fields": "Path,Overview,PremiereDate,RunTimeTicks",
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+        }
+
+        response = requests.get(
+            f"{self.server_url}/Users/{admin_id}/Items",
+            headers=headers,
+            params=params,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def get_series_episodes(self, series_id: str) -> dict[str, Any]:
+        """Get all episodes for a series.
+
+        Args:
+            series_id: The series item ID
+
+        Returns:
+            Dict with Items list and TotalRecordCount
+
+        Raises:
+            RuntimeError: If not connected to server
+        """
+        if not self.server_url or not self.api_key:
+            raise RuntimeError("Not connected to Jellyfin server")
+
+        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+        response = requests.get(
+            f"{self.server_url}/Shows/{series_id}/Episodes",
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def get_item(self, item_id: str) -> dict[str, Any]:
+        """Get details for a single item.
+
+        Args:
+            item_id: The item ID to fetch
+
+        Returns:
+            Dict with item details
+
+        Raises:
+            RuntimeError: If not connected to server
+        """
+        if not self.server_url or not self.api_key:
+            raise RuntimeError("Not connected to Jellyfin server")
+
+        admin_id = self._get_admin_user_id()
+        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+
+        response = requests.get(
+            f"{self.server_url}/Users/{admin_id}/Items/{item_id}",
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+    def get_poster_url(self, item_id: str) -> str:
+        """Get the poster image URL for an item.
+
+        Args:
+            item_id: The item ID
+
+        Returns:
+            URL to the primary poster image
+
+        Raises:
+            RuntimeError: If not connected to server
+        """
+        if not self.server_url or not self.api_key:
+            raise RuntimeError("Not connected to Jellyfin server")
+
+        return f"{self.server_url}/Items/{item_id}/Images/Primary"
