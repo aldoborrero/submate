@@ -1,5 +1,6 @@
 """Tests for WhisperModelWrapper class."""
 
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -191,7 +192,11 @@ def test_transcribe_with_bytes(config: Config) -> None:
         assert result.text == "Hola mundo"
 
         call_args = mock_model.transcribe_stable.call_args
-        assert call_args.args[0] == audio_bytes
+        # Bytes are wrapped in BytesIO for faster-whisper compatibility
+        audio_arg = call_args.args[0]
+        assert isinstance(audio_arg, BytesIO)
+        audio_arg.seek(0)
+        assert audio_arg.read() == audio_bytes
 
 
 def test_transcribe_translate_task(config: Config) -> None:
