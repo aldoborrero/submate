@@ -6,6 +6,8 @@ stable-whisper library with proper lifecycle management via context manager.
 
 import gc
 import logging
+import os
+import tempfile
 import threading
 from io import BytesIO
 from pathlib import Path
@@ -88,6 +90,7 @@ class WhisperModelWrapper:
         self._model: Any = None
         self._lock = threading.RLock()
         self._loaded = False
+        self._temp_audio_file: str | None = None
 
     @property
     def is_loaded(self) -> bool:
@@ -263,21 +266,47 @@ class WhisperModelWrapper:
                 logger.error(f"Transcription failed: {e}", exc_info=True)
                 raise RuntimeError(f"Transcription failed: {e}") from e
 
-    def _prepare_audio(self, audio: Path | str | bytes | BytesIO) -> str | BytesIO:
-        """Convert audio input to format stable-whisper/faster-whisper expects.
+            finally:
+                # Clean up temp audio file if created
+                self._cleanup_temp_audio()
+
+    def _cleanup_temp_audio(self) -> None:
+        """Clean up temporary audio file if one was created."""
+        if self._temp_audio_file and os.path.exists(self._temp_audio_file):
+            try:
+                os.unlink(self._temp_audio_file)
+                logger.debug(f"Cleaned up temp audio file: {self._temp_audio_file}")
+            except OSError as e:
+                logger.warning(f"Failed to clean up temp audio file: {e}")
+            finally:
+                self._temp_audio_file = None
+
+    def _prepare_audio(self, audio: Path | str | bytes | BytesIO) -> str:
+        """Convert audio input to format stable-whisper expects.
+
+        stable-whisper only accepts file paths (strings), not BytesIO or raw bytes.
+        For bytes/BytesIO input, we save to a temp file and return the path.
 
         Args:
             audio: Raw audio input
 
         Returns:
-            Either file path string or BytesIO (faster-whisper needs file-like object, not raw bytes)
+            File path string (stable-whisper requirement)
         """
         if isinstance(audio, bytes):
-            # Wrap bytes in BytesIO - faster-whisper needs file-like object with seek()
-            return BytesIO(audio)
+            # Save bytes to temp file - stable-whisper only accepts file paths
+            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            temp_file.write(audio)
+            temp_file.close()
+            self._temp_audio_file = temp_file.name
+            return temp_file.name
         elif isinstance(audio, BytesIO):
             audio.seek(0)
-            return audio
+            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            temp_file.write(audio.read())
+            temp_file.close()
+            self._temp_audio_file = temp_file.name
+            return temp_file.name
         else:
             return str(audio)
 
