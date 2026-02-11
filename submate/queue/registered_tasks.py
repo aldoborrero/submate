@@ -9,7 +9,7 @@ IMPORTANT: Both server and worker must import this module for tasks to work.
 """
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from submate.queue.task_queue import get_huey
 
@@ -23,7 +23,7 @@ huey = get_huey()
 def transcribe_audio_task(
     audio_bytes: bytes,
     language: str | None = None,
-    task: str = "transcribe",
+    task: Literal["transcribe", "translate"] = "transcribe",
     output_format: str = "srt",
     word_timestamps: bool = False,
 ) -> dict[str, Any]:
