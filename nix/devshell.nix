@@ -23,6 +23,7 @@ let
       python-multipart
       requests
       rich
+      sqlalchemy
       srt
       pysubs2
       uvicorn

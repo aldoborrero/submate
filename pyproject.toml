@@ -25,6 +25,7 @@ dependencies = [
   "python-daemon>=3.0.0",
   "srt>=3.5.0",
   "pysubs2>=1.7.0",
+  "sqlalchemy>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -97,6 +98,8 @@ module = [
   "daemon",
   "daemon.*",
   "yaml",
+  "sqlalchemy",
+  "sqlalchemy.*",
 ]
 ignore_missing_imports = true
 
