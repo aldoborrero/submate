@@ -1,6 +1,5 @@
 """Tests for WhisperModelWrapper class."""
 
-from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
