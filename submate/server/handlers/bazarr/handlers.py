@@ -58,8 +58,9 @@ async def handle_asr_request(
         audio_file.seek(0)
         audio_content = audio_file.read()
 
-        # Enqueue transcription via Huey and wait for result
-        # This blocks until the worker completes the task
+        # Execute transcription directly in the server process
+        # Using immediate=True bypasses the queue and processes synchronously,
+        # which is necessary since Bazarr expects an immediate response
         task_queue = get_task_queue()
         result = task_queue.enqueue(
             BazarrTranscriptionTask,
@@ -68,7 +69,7 @@ async def handle_asr_request(
             task=task,  # Pass transcribe/translate mode
             output_format=output,
             word_timestamps=word_timestamps,
-            blocking=True,  # Block until complete
+            immediate=True,  # Process in server, bypass queue
         )
 
         logger.info(f"{task.capitalize()} complete for Bazarr request")
@@ -106,12 +107,12 @@ async def handle_detect_language(
         # Extract audio segment
         segment_data = extract_audio_segment(audio_file, offset=offset, length=length)
 
-        # Enqueue detection via Huey and wait for result
+        # Execute detection directly in the server process
         task_queue = get_task_queue()
         result_dict = task_queue.enqueue(
             LanguageDetectionTask,
             audio_bytes=segment_data,
-            blocking=True,
+            immediate=True,  # Process in server, bypass queue
         )
 
         return LanguageDetectionResponse(**result_dict)
