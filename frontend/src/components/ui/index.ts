@@ -1,11 +1,20 @@
+// Core components
 export { Button, buttonVariants } from "./button"
 export { Input } from "./input"
 export { Badge, badgeVariants } from "./badge"
-export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent } from "./card"
-export { Skeleton } from "./skeleton"
-export { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableCaption } from "./table"
 export { Checkbox } from "./checkbox"
-export { Sheet, SheetPortal, SheetOverlay, SheetTrigger, SheetClose, SheetContent, SheetHeader, SheetFooter, SheetTitle, SheetDescription } from "./sheet"
-export { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs"
-export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuCheckboxItem, DropdownMenuRadioItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuGroup, DropdownMenuPortal, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuRadioGroup } from "./dropdown-menu"
 export { Label } from "./label"
+export { Skeleton } from "./skeleton"
+
+// Card components
+export { Card, CardHeader, CardTitle, CardDescription, CardContent } from "./card"
+
+// Table components
+export { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from "./table"
+
+// Navigation components
+export { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs"
+export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "./dropdown-menu"
+
+// Sheet (mobile sidebar)
+export { Sheet, SheetContent, SheetHeader, SheetTitle } from "./sheet"
