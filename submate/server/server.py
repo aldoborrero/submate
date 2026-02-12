@@ -103,6 +103,24 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning("Could not load Events router: %s", e)
 
+    # Include subtitles API router (always enabled for UI)
+    try:
+        from submate.server.handlers.subtitles.router import create_subtitles_router
+
+        app.include_router(create_subtitles_router())
+        logger.info("Subtitles API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Subtitles router: %s", e)
+
+    # Include settings API router (always enabled for UI)
+    try:
+        from submate.server.handlers.settings.router import create_settings_router
+
+        app.include_router(create_settings_router())
+        logger.info("Settings API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Settings router: %s", e)
+
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
