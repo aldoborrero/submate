@@ -1,4 +1,12 @@
-"""Services package for Submate."""
+"""Services package for Submate.
+
+Note: JellyfinSyncService is imported lazily via __getattr__ because it
+depends on SQLAlchemy which may not be available in all environments.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from submate.services.event_bus import Event, EventBus, EventHandler, get_event_bus
 from submate.services.scanner import (
@@ -6,7 +14,9 @@ from submate.services.scanner import (
     SUBTITLE_EXTENSIONS,
     SubtitleScanner,
 )
-from submate.services.sync import JellyfinSyncService
+
+if TYPE_CHECKING:
+    from submate.services.sync import JellyfinSyncService
 
 __all__ = [
     "Event",
@@ -18,3 +28,12 @@ __all__ = [
     "SUBTITLE_EXTENSIONS",
     "SubtitleScanner",
 ]
+
+
+def __getattr__(name: str) -> type:
+    """Lazy import for JellyfinSyncService to avoid SQLAlchemy dependency at import time."""
+    if name == "JellyfinSyncService":
+        from submate.services.sync import JellyfinSyncService
+
+        return JellyfinSyncService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

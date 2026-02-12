@@ -85,6 +85,24 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning("Could not load Items router: %s", e)
 
+    # Include jobs API router (always enabled for UI)
+    try:
+        from submate.server.handlers.jobs.router import create_jobs_router
+
+        app.include_router(create_jobs_router())
+        logger.info("Jobs API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Jobs router: %s", e)
+
+    # Include events API router (always enabled for UI)
+    try:
+        from submate.server.handlers.events.router import create_events_router
+
+        app.include_router(create_events_router())
+        logger.info("Events API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Events router: %s", e)
+
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
