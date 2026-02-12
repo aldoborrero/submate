@@ -4,11 +4,11 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException
 from fastapi import Path as PathParam
 
 from submate.database.models import Subtitle
-from submate.server.dependencies import ItemRepo, SubtitleRepo
+from submate.server.dependencies import SubtitleRepo, ValidatedItem
 from submate.server.handlers.subtitles.models import (
     SubtitleContentResponse,
     SubtitleListResponse,
@@ -79,8 +79,7 @@ def create_subtitles_router() -> APIRouter:
 
     @router.get("/items/{item_id}/subtitles", response_model=SubtitleListResponse)
     async def list_subtitles(
-        item_id: str,
-        item_repo: ItemRepo,
+        item: ValidatedItem,
         subtitle_repo: SubtitleRepo,
     ) -> SubtitleListResponse:
         """List all subtitles for an item.
@@ -88,13 +87,7 @@ def create_subtitles_router() -> APIRouter:
         Raises:
             HTTPException: 404 if item not found.
         """
-        # Check if item exists
-        item = item_repo.get_by_id(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Get subtitles
-        subtitles = subtitle_repo.list_by_item(item_id)
+        subtitles = subtitle_repo.list_by_item(item.id)
 
         return SubtitleListResponse(
             subtitles=[_subtitle_to_response(sub) for sub in subtitles],
@@ -103,9 +96,8 @@ def create_subtitles_router() -> APIRouter:
 
     @router.get("/items/{item_id}/subtitles/{language}", response_model=SubtitleContentResponse)
     async def get_subtitle_content(
-        item_id: str,
+        item: ValidatedItem,
         language: LanguageCode,
-        item_repo: ItemRepo,
         subtitle_repo: SubtitleRepo,
     ) -> SubtitleContentResponse:
         """Get subtitle content for an item.
@@ -115,13 +107,7 @@ def create_subtitles_router() -> APIRouter:
             HTTPException: 404 if item or subtitle not found.
             HTTPException: 500 if file read fails.
         """
-        # Check if item exists
-        item = item_repo.get_by_id(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Get subtitle
-        subtitle = subtitle_repo.get_by_item_and_language(item_id, language)
+        subtitle = subtitle_repo.get_by_item_and_language(item.id, language)
         if subtitle is None:
             raise HTTPException(status_code=404, detail="Subtitle not found")
 
@@ -143,10 +129,9 @@ def create_subtitles_router() -> APIRouter:
 
     @router.put("/items/{item_id}/subtitles/{language}", response_model=SubtitleResponse)
     async def save_subtitle(
-        item_id: str,
+        item: ValidatedItem,
         language: LanguageCode,
         request: SubtitleUpdateRequest,
-        item_repo: ItemRepo,
         subtitle_repo: SubtitleRepo,
     ) -> SubtitleResponse:
         """Save or update subtitle content.
@@ -156,13 +141,8 @@ def create_subtitles_router() -> APIRouter:
             HTTPException: 404 if item not found.
             HTTPException: 500 if file write fails.
         """
-        # Check if item exists
-        item = item_repo.get_by_id(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-
         # Check if subtitle already exists
-        existing_subtitle = subtitle_repo.get_by_item_and_language(item_id, language)
+        existing_subtitle = subtitle_repo.get_by_item_and_language(item.id, language)
 
         if existing_subtitle is not None:
             # Update existing subtitle
@@ -175,7 +155,7 @@ def create_subtitles_router() -> APIRouter:
 
             # Update source to 'generated' since it was edited
             subtitle = subtitle_repo.upsert(
-                item_id=item_id,
+                item_id=item.id,
                 language=language,
                 source="generated",
                 path=existing_subtitle.path,
@@ -193,7 +173,7 @@ def create_subtitles_router() -> APIRouter:
                 raise HTTPException(status_code=500, detail="Failed to write subtitle file")
 
             subtitle = subtitle_repo.create(
-                item_id=item_id,
+                item_id=item.id,
                 language=language,
                 source="generated",
                 path=str(subtitle_path),
@@ -203,24 +183,17 @@ def create_subtitles_router() -> APIRouter:
 
     @router.delete("/items/{item_id}/subtitles/{language}", status_code=204)
     async def delete_subtitle(
-        item_id: str,
+        item: ValidatedItem,
         language: LanguageCode,
-        item_repo: ItemRepo,
         subtitle_repo: SubtitleRepo,
-    ) -> Response:
+    ) -> None:
         """Delete a subtitle.
 
         Raises:
             HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item or subtitle not found.
         """
-        # Check if item exists
-        item = item_repo.get_by_id(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Get subtitle
-        subtitle = subtitle_repo.get_by_item_and_language(item_id, language)
+        subtitle = subtitle_repo.get_by_item_and_language(item.id, language)
         if subtitle is None:
             raise HTTPException(status_code=404, detail="Subtitle not found")
 
@@ -236,13 +209,10 @@ def create_subtitles_router() -> APIRouter:
         # Delete from database
         subtitle_repo.delete(subtitle.id)
 
-        return Response(status_code=204)
-
     @router.post("/items/{item_id}/subtitles/{language}/sync", response_model=SyncResponse)
     async def sync_subtitle(
-        item_id: str,
+        item: ValidatedItem,
         language: LanguageCode,
-        item_repo: ItemRepo,
         subtitle_repo: SubtitleRepo,
     ) -> SyncResponse:
         """Sync subtitle timing with ffsubsync.
@@ -254,13 +224,7 @@ def create_subtitles_router() -> APIRouter:
             HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item or subtitle not found.
         """
-        # Check if item exists
-        item = item_repo.get_by_id(item_id)
-        if item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        # Check if subtitle exists
-        subtitle = subtitle_repo.get_by_item_and_language(item_id, language)
+        subtitle = subtitle_repo.get_by_item_and_language(item.id, language)
         if subtitle is None:
             raise HTTPException(status_code=404, detail="Subtitle not found")
 

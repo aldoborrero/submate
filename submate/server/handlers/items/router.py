@@ -69,6 +69,56 @@ def _get_subtitle_languages_batch(session: Session, item_ids: list[str]) -> dict
     return result
 
 
+def _list_items_by_type(
+    session: Session,
+    item_type: str,
+    page: int,
+    page_size: int,
+    library_id: str | None,
+) -> ItemListResponse:
+    """List items by type with pagination.
+
+    Args:
+        session: SQLAlchemy session.
+        item_type: Item type to filter ('movie' or 'series').
+        page: Page number (1-indexed).
+        page_size: Items per page.
+        library_id: Optional library ID filter.
+
+    Returns:
+        ItemListResponse with paginated items.
+    """
+    offset = (page - 1) * page_size
+
+    # Build query
+    query = session.query(Item).filter(Item.type == item_type)
+    if library_id:
+        query = query.filter(Item.library_id == library_id)
+
+    # Get total count
+    total = query.count()
+
+    # Get paginated items
+    items = query.offset(offset).limit(page_size).all()
+
+    # Batch load subtitle languages
+    item_ids = [item.id for item in items]
+    subtitle_languages_map = _get_subtitle_languages_batch(session, item_ids)
+
+    # Convert to responses
+    item_responses = [
+        _item_to_response(item, subtitle_languages_map.get(item.id, []))
+        for item in items
+    ]
+
+    return ItemListResponse(
+        items=item_responses,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
 def create_items_router() -> APIRouter:
     """Create items API router.
 
@@ -85,35 +135,7 @@ def create_items_router() -> APIRouter:
         library_id: str | None = None,
     ) -> ItemListResponse:
         """List movies with pagination."""
-        offset = (page - 1) * page_size
-
-        # Query movies
-        query = session.query(Item).filter(Item.type == "movie")
-        if library_id:
-            query = query.filter(Item.library_id == library_id)
-
-        # Get total count
-        total = query.count()
-
-        # Get paginated items
-        items = query.offset(offset).limit(page_size).all()
-
-        # Batch load subtitle languages (single query instead of N queries)
-        item_ids = [item.id for item in items]
-        subtitle_languages_map = _get_subtitle_languages_batch(session, item_ids)
-
-        # Convert to responses
-        item_responses = [
-            _item_to_response(item, subtitle_languages_map.get(item.id, []))
-            for item in items
-        ]
-
-        return ItemListResponse(
-            items=item_responses,
-            total=total,
-            page=page,
-            page_size=page_size,
-        )
+        return _list_items_by_type(session, "movie", page, page_size, library_id)
 
     @router.get("/series", response_model=ItemListResponse)
     async def list_series(
@@ -123,35 +145,7 @@ def create_items_router() -> APIRouter:
         library_id: str | None = None,
     ) -> ItemListResponse:
         """List series with pagination."""
-        offset = (page - 1) * page_size
-
-        # Query series (type='series', not episodes)
-        query = session.query(Item).filter(Item.type == "series")
-        if library_id:
-            query = query.filter(Item.library_id == library_id)
-
-        # Get total count
-        total = query.count()
-
-        # Get paginated items
-        items = query.offset(offset).limit(page_size).all()
-
-        # Batch load subtitle languages (single query instead of N queries)
-        item_ids = [item.id for item in items]
-        subtitle_languages_map = _get_subtitle_languages_batch(session, item_ids)
-
-        # Convert to responses
-        item_responses = [
-            _item_to_response(item, subtitle_languages_map.get(item.id, []))
-            for item in items
-        ]
-
-        return ItemListResponse(
-            items=item_responses,
-            total=total,
-            page=page,
-            page_size=page_size,
-        )
+        return _list_items_by_type(session, "series", page, page_size, library_id)
 
     @router.get("/series/{series_id}", response_model=SeriesDetailResponse)
     async def get_series_detail(

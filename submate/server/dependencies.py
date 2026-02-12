@@ -19,10 +19,11 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from submate.config import get_config
+from submate.database.models import Item
 from submate.database.repository import (
     ItemRepository,
     JobRepository,
@@ -117,3 +118,29 @@ LibraryRepo = Annotated[LibraryRepository, Depends(get_library_repo)]
 ItemRepo = Annotated[ItemRepository, Depends(get_item_repo)]
 SubtitleRepo = Annotated[SubtitleRepository, Depends(get_subtitle_repo)]
 JobRepo = Annotated[JobRepository, Depends(get_job_repo)]
+
+
+def get_validated_item(item_id: str, item_repo: ItemRepo) -> Item:
+    """Get an item by ID, raising 404 if not found.
+
+    This dependency validates that an item exists and returns it,
+    eliminating repetitive existence checks in route handlers.
+
+    Args:
+        item_id: The item ID from the path parameter.
+        item_repo: ItemRepository instance (injected).
+
+    Returns:
+        The Item if found.
+
+    Raises:
+        HTTPException: 404 if item not found.
+    """
+    item = item_repo.get_by_id(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item
+
+
+# Type alias for validated item dependency
+ValidatedItem = Annotated[Item, Depends(get_validated_item)]

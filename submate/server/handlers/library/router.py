@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from submate.database.models import Library
 from submate.server.dependencies import ItemRepo, LibraryRepo
 from submate.server.handlers.library.models import (
     LibraryListResponse,
@@ -12,6 +13,28 @@ from submate.server.handlers.library.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _library_to_response(library: Library, item_count: int) -> LibraryResponse:
+    """Convert a database Library to a LibraryResponse.
+
+    Args:
+        library: The database Library model.
+        item_count: Number of items in the library.
+
+    Returns:
+        LibraryResponse with library details.
+    """
+    return LibraryResponse(
+        id=library.id,
+        name=library.name,
+        type=library.type,
+        target_languages=library.target_languages,
+        skip_existing=library.skip_existing,
+        enabled=library.enabled,
+        last_synced=library.last_synced,
+        item_count=item_count,
+    )
 
 
 def create_library_router() -> APIRouter:
@@ -29,22 +52,10 @@ def create_library_router() -> APIRouter:
     ) -> LibraryListResponse:
         """List all libraries with item counts."""
         libraries = library_repo.list_all()
-        library_responses = []
-
-        for library in libraries:
-            item_count = item_repo.count_by_library(library.id)
-            library_responses.append(
-                LibraryResponse(
-                    id=library.id,
-                    name=library.name,
-                    type=library.type,
-                    target_languages=library.target_languages,
-                    skip_existing=library.skip_existing,
-                    enabled=library.enabled,
-                    last_synced=library.last_synced,
-                    item_count=item_count,
-                )
-            )
+        library_responses = [
+            _library_to_response(library, item_repo.count_by_library(library.id))
+            for library in libraries
+        ]
 
         return LibraryListResponse(
             libraries=library_responses,
@@ -66,18 +77,7 @@ def create_library_router() -> APIRouter:
         if library is None:
             raise HTTPException(status_code=404, detail="Library not found")
 
-        item_count = item_repo.count_by_library(library.id)
-
-        return LibraryResponse(
-            id=library.id,
-            name=library.name,
-            type=library.type,
-            target_languages=library.target_languages,
-            skip_existing=library.skip_existing,
-            enabled=library.enabled,
-            last_synced=library.last_synced,
-            item_count=item_count,
-        )
+        return _library_to_response(library, item_repo.count_by_library(library.id))
 
     @router.patch("/{library_id}", response_model=LibraryResponse)
     async def update_library(
@@ -95,32 +95,15 @@ def create_library_router() -> APIRouter:
         if library is None:
             raise HTTPException(status_code=404, detail="Library not found")
 
-        # Build update kwargs from non-None fields
-        update_kwargs: dict[str, object] = {}
-        if update.target_languages is not None:
-            update_kwargs["target_languages"] = update.target_languages
-        if update.skip_existing is not None:
-            update_kwargs["skip_existing"] = update.skip_existing
-        if update.enabled is not None:
-            update_kwargs["enabled"] = update.enabled
+        # Use Pydantic's exclude_unset to get only provided fields
+        update_data = update.model_dump(exclude_unset=True)
 
         # Apply updates if any
-        if update_kwargs:
-            library = library_repo.update(library_id, **update_kwargs)
+        if update_data:
+            library = library_repo.update(library_id, **update_data)
             if library is None:
                 raise HTTPException(status_code=404, detail="Library not found")
 
-        item_count = item_repo.count_by_library(library.id)
-
-        return LibraryResponse(
-            id=library.id,
-            name=library.name,
-            type=library.type,
-            target_languages=library.target_languages,
-            skip_existing=library.skip_existing,
-            enabled=library.enabled,
-            last_synced=library.last_synced,
-            item_count=item_count,
-        )
+        return _library_to_response(library, item_repo.count_by_library(library.id))
 
     return router
