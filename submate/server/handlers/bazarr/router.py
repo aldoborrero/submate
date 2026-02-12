@@ -7,17 +7,12 @@ from io import BytesIO
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from submate.config import Config
-
 from .handlers import handle_asr_request, handle_detect_language
 from .models import LanguageDetectionResponse
 
 
-def create_bazarr_router(config: Config) -> APIRouter:
+def create_bazarr_router() -> APIRouter:
     """Create Bazarr ASR router with all endpoints.
-
-    Args:
-        config: Application configuration
 
     Returns:
         APIRouter with Bazarr endpoints
@@ -93,6 +88,9 @@ def create_bazarr_router(config: Config) -> APIRouter:
         1. Settings → Subtitles → Whisper Provider
         2. Language detection: Enabled
         """
+        # encode parameter accepted for Bazarr API compatibility but not used
+        _ = encode
+
         try:
             # Read uploaded file
             audio_content = await audio_file.read()

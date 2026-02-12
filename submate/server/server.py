@@ -49,7 +49,7 @@ def create_app() -> FastAPI:
         try:
             from submate.server.handlers.bazarr.router import create_bazarr_router
 
-            app.include_router(create_bazarr_router(config))
+            app.include_router(create_bazarr_router())
             logger.info("Bazarr integration enabled")
         except Exception as e:
             logger.warning("Could not load Bazarr router: %s", e)
