@@ -33,6 +33,7 @@ result*
 .env
 .env.local
 config.toml
+config.yaml
 *.local.env
 
 samples/
