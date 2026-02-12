@@ -43,7 +43,7 @@ def get_db_path() -> Path:
     return Path(config.queue.db_path)
 
 
-def get_session(db_path: Path = Depends(get_db_path)) -> Generator[Session]:
+def get_session(db_path: Path = Depends(get_db_path)) -> Generator[Session, None, None]:
     """Yield a database session with automatic commit/rollback.
 
     This dependency provides a SQLAlchemy session that:
