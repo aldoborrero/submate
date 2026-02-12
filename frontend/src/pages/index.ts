@@ -1,0 +1,7 @@
+export { DashboardPage } from './Dashboard'
+export { MoviesPage } from './Movies'
+export { SeriesPage } from './Series'
+export { SeriesDetailPage } from './SeriesDetail'
+export { ItemDetailPage } from './ItemDetail'
+export { QueuePage } from './Queue'
+export { SettingsPage } from './Settings'
