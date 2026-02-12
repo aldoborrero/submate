@@ -1,5 +1,6 @@
 export { Header } from './Header'
 export { Sidebar } from './Sidebar'
 export { Layout } from './Layout'
+export { DataTable } from './DataTable'
 export { EpisodeList } from './EpisodeList'
 export { SubtitleEditor } from './SubtitleEditor'
