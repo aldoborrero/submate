@@ -4,8 +4,9 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy.orm import Session
 
-from submate.database.models import Job
+from submate.database.models import Item, Job
 from submate.server.dependencies import DbSession, ItemRepo, JobRepo, LibraryRepo, SubtitleRepo
 from submate.server.handlers.jobs.models import (
     BulkTranscribeRequest,
@@ -41,6 +42,26 @@ def _job_to_response(job: Job, item_title: str) -> JobResponse:
         started_at=job.started_at,
         completed_at=job.completed_at,
     )
+
+
+def _get_item_titles_batch(session: Session, item_ids: list[str]) -> dict[str, str]:
+    """Batch load item titles for multiple items.
+
+    Args:
+        session: SQLAlchemy session.
+        item_ids: List of item IDs to load.
+
+    Returns:
+        Dict mapping item_id to title.
+    """
+    if not item_ids:
+        return {}
+
+    # Single query to get all items
+    items = session.query(Item.id, Item.title).filter(Item.id.in_(item_ids)).all()
+
+    # Build mapping: item_id -> title
+    return {item_id: title for item_id, title in items}
 
 
 def create_jobs_router() -> APIRouter:
@@ -167,7 +188,6 @@ def create_jobs_router() -> APIRouter:
     @router.get("/jobs", response_model=JobListResponse)
     async def list_jobs(
         session: DbSession,
-        item_repo: ItemRepo,
         page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
         page_size: int = Query(default=50, ge=1, le=100, description="Jobs per page (max 100)"),
         status: str | None = None,
@@ -186,9 +206,13 @@ def create_jobs_router() -> APIRouter:
         # Get paginated jobs
         jobs = query.order_by(Job.created_at.desc()).offset(offset).limit(page_size).all()
 
-        # Convert to responses with item titles
+        # Batch load item titles (single query instead of N queries)
+        item_ids = [job.item_id for job in jobs]
+        item_titles_map = _get_item_titles_batch(session, item_ids)
+
+        # Convert to responses
         job_responses = [
-            _job_to_response(job, item.title if (item := item_repo.get_by_id(job.item_id)) else "Unknown")
+            _job_to_response(job, item_titles_map.get(job.item_id, "Unknown"))
             for job in jobs
         ]
 

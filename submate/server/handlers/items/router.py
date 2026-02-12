@@ -5,10 +5,10 @@ import logging
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from submate.config import get_config
-from submate.database.models import Item
-from submate.database.repository import SubtitleRepository
+from submate.database.models import Item, Subtitle
 from submate.server.dependencies import DbSession, ItemRepo, SubtitleRepo
 from submate.server.handlers.items.models import (
     ItemListResponse,
@@ -45,18 +45,28 @@ def _item_to_response(item: Item, subtitle_languages: list[str]) -> ItemResponse
     )
 
 
-def _get_subtitle_languages(subtitle_repo: SubtitleRepository, item_id: str) -> list[str]:
-    """Get list of subtitle languages for an item.
+def _get_subtitle_languages_batch(session: Session, item_ids: list[str]) -> dict[str, list[str]]:
+    """Batch load subtitle languages for multiple items.
 
     Args:
-        subtitle_repo: SubtitleRepository instance.
-        item_id: The item ID to get subtitles for.
+        session: SQLAlchemy session.
+        item_ids: List of item IDs to load subtitles for.
 
     Returns:
-        List of language codes.
+        Dict mapping item_id to list of language codes.
     """
-    subtitles = subtitle_repo.list_by_item(item_id)
-    return [sub.language for sub in subtitles]
+    if not item_ids:
+        return {}
+
+    # Single query to get all subtitles for the given items
+    subtitles = session.query(Subtitle).filter(Subtitle.item_id.in_(item_ids)).all()
+
+    # Build mapping: item_id -> [languages]
+    result: dict[str, list[str]] = {item_id: [] for item_id in item_ids}
+    for subtitle in subtitles:
+        result[subtitle.item_id].append(subtitle.language)
+
+    return result
 
 
 def create_items_router() -> APIRouter:
@@ -70,7 +80,6 @@ def create_items_router() -> APIRouter:
     @router.get("/movies", response_model=ItemListResponse)
     async def list_movies(
         session: DbSession,
-        subtitle_repo: SubtitleRepo,
         page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
         page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
@@ -89,9 +98,13 @@ def create_items_router() -> APIRouter:
         # Get paginated items
         items = query.offset(offset).limit(page_size).all()
 
-        # Convert to responses with subtitle languages
+        # Batch load subtitle languages (single query instead of N queries)
+        item_ids = [item.id for item in items]
+        subtitle_languages_map = _get_subtitle_languages_batch(session, item_ids)
+
+        # Convert to responses
         item_responses = [
-            _item_to_response(item, _get_subtitle_languages(subtitle_repo, item.id))
+            _item_to_response(item, subtitle_languages_map.get(item.id, []))
             for item in items
         ]
 
@@ -105,7 +118,6 @@ def create_items_router() -> APIRouter:
     @router.get("/series", response_model=ItemListResponse)
     async def list_series(
         session: DbSession,
-        subtitle_repo: SubtitleRepo,
         page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
         page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
@@ -124,9 +136,13 @@ def create_items_router() -> APIRouter:
         # Get paginated items
         items = query.offset(offset).limit(page_size).all()
 
-        # Convert to responses with subtitle languages
+        # Batch load subtitle languages (single query instead of N queries)
+        item_ids = [item.id for item in items]
+        subtitle_languages_map = _get_subtitle_languages_batch(session, item_ids)
+
+        # Convert to responses
         item_responses = [
-            _item_to_response(item, _get_subtitle_languages(subtitle_repo, item.id))
+            _item_to_response(item, subtitle_languages_map.get(item.id, []))
             for item in items
         ]
 
@@ -140,8 +156,8 @@ def create_items_router() -> APIRouter:
     @router.get("/series/{series_id}", response_model=SeriesDetailResponse)
     async def get_series_detail(
         series_id: str,
+        session: DbSession,
         item_repo: ItemRepo,
-        subtitle_repo: SubtitleRepo,
     ) -> SeriesDetailResponse:
         """Get series detail with episodes.
 
@@ -156,17 +172,18 @@ def create_items_router() -> APIRouter:
         # Get episodes for this series
         episodes = item_repo.list_by_series(series_id)
 
-        # Convert episodes to responses with subtitle languages
+        # Batch load subtitle languages for series + all episodes (single query)
+        all_item_ids = [series.id] + [episode.id for episode in episodes]
+        subtitle_languages_map = _get_subtitle_languages_batch(session, all_item_ids)
+
+        # Convert episodes to responses
         episode_responses = [
-            _item_to_response(episode, _get_subtitle_languages(subtitle_repo, episode.id))
+            _item_to_response(episode, subtitle_languages_map.get(episode.id, []))
             for episode in episodes
         ]
 
         # Calculate season count
         seasons = {ep.season_num for ep in episodes if ep.season_num is not None}
-
-        # Get subtitle languages for the series itself
-        series_subtitle_languages = _get_subtitle_languages(subtitle_repo, series.id)
 
         return SeriesDetailResponse(
             id=series.id,
@@ -180,7 +197,7 @@ def create_items_router() -> APIRouter:
             episode_num=series.episode_num,
             poster_url=series.poster_url,
             last_synced=series.last_synced,
-            subtitle_languages=series_subtitle_languages,
+            subtitle_languages=subtitle_languages_map.get(series.id, []),
             episodes=episode_responses,
             season_count=len(seasons),
             episode_count=len(episodes),
@@ -201,7 +218,9 @@ def create_items_router() -> APIRouter:
         if item is None:
             raise HTTPException(status_code=404, detail="Item not found")
 
-        subtitle_languages = _get_subtitle_languages(subtitle_repo, item.id)
+        # For single item, direct query is fine (no N+1 concern)
+        subtitles = subtitle_repo.list_by_item(item.id)
+        subtitle_languages = [sub.language for sub in subtitles]
         return _item_to_response(item, subtitle_languages)
 
     @router.get("/items/{item_id}/poster")
