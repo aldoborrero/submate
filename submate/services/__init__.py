@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from submate.services.event_bus import Event, EventBus, EventHandler, get_event_bus
+from submate.services.notifications import NotificationService, get_notification_service
 from submate.services.scanner import (
     LANGUAGE_CODES,
     SUBTITLE_EXTENSIONS,
@@ -23,8 +24,10 @@ __all__ = [
     "EventBus",
     "EventHandler",
     "get_event_bus",
+    "get_notification_service",
     "JellyfinSyncService",
     "LANGUAGE_CODES",
+    "NotificationService",
     "SUBTITLE_EXTENSIONS",
     "SubtitleScanner",
 ]
