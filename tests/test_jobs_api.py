@@ -8,12 +8,7 @@ from fastapi.testclient import TestClient
 from submate.database.repository import ItemRepository, JobRepository, LibraryRepository, SubtitleRepository
 from submate.database.session import get_db_session, init_database
 from submate.server import app
-
-
-@pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+from submate.server.dependencies import get_db_path
 
 
 @pytest.fixture
@@ -24,12 +19,20 @@ def db_path(tmp_path: Path) -> Path:
     return db_file
 
 
+@pytest.fixture
+def client(db_path: Path):
+    """FastAPI test client with database override."""
+
+    def override_get_db_path() -> Path:
+        return db_path
+
+    app.dependency_overrides[get_db_path] = override_get_db_path
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
 def test_transcribe_item(client: TestClient, db_path: Path, mocker):
     """Test POST /api/items/{item_id}/transcribe creates a job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
     # Mock event bus to verify job.created event is published
     mock_event_bus = mocker.MagicMock()
     mocker.patch(
@@ -84,13 +87,8 @@ def test_transcribe_item(client: TestClient, db_path: Path, mocker):
     assert call_args[0][1]["job_id"] == data["job_id"]
 
 
-def test_transcribe_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_transcribe_item_not_found(client: TestClient):
     """Test POST /api/items/{item_id}/transcribe returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.post(
         "/api/items/non-existent/transcribe",
         json={"language": "en"},
@@ -102,10 +100,6 @@ def test_transcribe_item_not_found(client: TestClient, db_path: Path, mocker):
 
 def test_transcribe_library(client: TestClient, db_path: Path, mocker):
     """Test POST /api/libraries/{library_id}/transcribe queues jobs for items missing subtitles."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
     mock_event_bus = mocker.MagicMock()
     mocker.patch(
         "submate.server.handlers.jobs.router.get_event_bus",
@@ -186,13 +180,8 @@ def test_transcribe_library(client: TestClient, db_path: Path, mocker):
         assert job_item_ids == {"movie-2", "movie-3"}
 
 
-def test_transcribe_library_not_found(client: TestClient, db_path: Path, mocker):
+def test_transcribe_library_not_found(client: TestClient):
     """Test POST /api/libraries/{library_id}/transcribe returns 404 for non-existent library."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.post(
         "/api/libraries/non-existent/transcribe",
         json={"language": "en"},
@@ -204,10 +193,6 @@ def test_transcribe_library_not_found(client: TestClient, db_path: Path, mocker)
 
 def test_bulk_transcribe(client: TestClient, db_path: Path, mocker):
     """Test POST /api/bulk/transcribe queues jobs for selected items."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
     mock_event_bus = mocker.MagicMock()
     mocker.patch(
         "submate.server.handlers.jobs.router.get_event_bus",
@@ -260,13 +245,8 @@ def test_bulk_transcribe(client: TestClient, db_path: Path, mocker):
             assert job.status == "pending"
 
 
-def test_list_jobs(client: TestClient, db_path: Path, mocker):
+def test_list_jobs(client: TestClient, db_path: Path):
     """Test GET /api/jobs lists jobs with pagination."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library, items, and jobs
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -325,13 +305,8 @@ def test_list_jobs(client: TestClient, db_path: Path, mocker):
     assert len(data["jobs"]) == 2
 
 
-def test_list_jobs_includes_item_title(client: TestClient, db_path: Path, mocker):
+def test_list_jobs_includes_item_title(client: TestClient, db_path: Path):
     """Test GET /api/jobs includes item_title from joined Item."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
         item_repo = ItemRepository(session)
@@ -368,10 +343,6 @@ def test_list_jobs_includes_item_title(client: TestClient, db_path: Path, mocker
 
 def test_retry_failed_job(client: TestClient, db_path: Path, mocker):
     """Test POST /api/jobs/{job_id}/retry resets failed job to pending."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
     mock_event_bus = mocker.MagicMock()
     mocker.patch(
         "submate.server.handlers.jobs.router.get_event_bus",
@@ -425,13 +396,8 @@ def test_retry_failed_job(client: TestClient, db_path: Path, mocker):
         assert job.error is None
 
 
-def test_retry_non_failed_job_returns_400(client: TestClient, db_path: Path, mocker):
+def test_retry_non_failed_job_returns_400(client: TestClient, db_path: Path):
     """Test POST /api/jobs/{job_id}/retry returns 400 for non-failed job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create a pending job
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -466,26 +432,16 @@ def test_retry_non_failed_job_returns_400(client: TestClient, db_path: Path, moc
     assert response.json()["detail"] == "Only failed jobs can be retried"
 
 
-def test_retry_job_not_found(client: TestClient, db_path: Path, mocker):
+def test_retry_job_not_found(client: TestClient):
     """Test POST /api/jobs/{job_id}/retry returns 404 for non-existent job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.post("/api/jobs/non-existent/retry")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Job not found"
 
 
-def test_cancel_pending_job(client: TestClient, db_path: Path, mocker):
+def test_cancel_pending_job(client: TestClient, db_path: Path):
     """Test DELETE /api/jobs/{job_id} cancels pending job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create a pending job
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -525,13 +481,8 @@ def test_cancel_pending_job(client: TestClient, db_path: Path, mocker):
         assert job is None
 
 
-def test_cancel_non_pending_job_returns_400(client: TestClient, db_path: Path, mocker):
+def test_cancel_non_pending_job_returns_400(client: TestClient, db_path: Path):
     """Test DELETE /api/jobs/{job_id} returns 400 for non-pending job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create a running job
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -566,13 +517,8 @@ def test_cancel_non_pending_job_returns_400(client: TestClient, db_path: Path, m
     assert response.json()["detail"] == "Only pending jobs can be cancelled"
 
 
-def test_cancel_job_not_found(client: TestClient, db_path: Path, mocker):
+def test_cancel_job_not_found(client: TestClient):
     """Test DELETE /api/jobs/{job_id} returns 404 for non-existent job."""
-    mocker.patch(
-        "submate.server.handlers.jobs.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.delete("/api/jobs/non-existent")
 
     assert response.status_code == 404

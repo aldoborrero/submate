@@ -1,7 +1,6 @@
 """Items API router for Submate UI."""
 
 import logging
-from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -9,8 +8,8 @@ from fastapi.responses import StreamingResponse
 
 from submate.config import get_config
 from submate.database.models import Item
-from submate.database.repository import ItemRepository, SubtitleRepository
-from submate.database.session import get_db_session
+from submate.database.repository import SubtitleRepository
+from submate.server.dependencies import DbSession, ItemRepo, SubtitleRepo
 from submate.server.handlers.items.models import (
     ItemListResponse,
     ItemResponse,
@@ -18,16 +17,6 @@ from submate.server.handlers.items.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _get_db_path() -> Path:
-    """Get database path from configuration.
-
-    Returns:
-        Path to the SQLite database file.
-    """
-    config = get_config()
-    return Path(config.queue.db_path)
 
 
 def _item_to_response(item: Item, subtitle_languages: list[str]) -> ItemResponse:
@@ -80,209 +69,160 @@ def create_items_router() -> APIRouter:
 
     @router.get("/movies", response_model=ItemListResponse)
     async def list_movies(
+        session: DbSession,
+        subtitle_repo: SubtitleRepo,
         page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
         page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
     ) -> ItemListResponse:
-        """List movies with pagination.
-
-        Args:
-            page: Page number (1-indexed).
-            page_size: Number of items per page.
-            library_id: Optional library ID to filter by.
-
-        Returns:
-            ItemListResponse with paginated movies.
-        """
-        db_path = _get_db_path()
+        """List movies with pagination."""
         offset = (page - 1) * page_size
 
-        with get_db_session(db_path) as session:
-            subtitle_repo = SubtitleRepository(session)
+        # Query movies
+        query = session.query(Item).filter(Item.type == "movie")
+        if library_id:
+            query = query.filter(Item.library_id == library_id)
 
-            # Query movies
-            query = session.query(Item).filter(Item.type == "movie")
-            if library_id:
-                query = query.filter(Item.library_id == library_id)
+        # Get total count
+        total = query.count()
 
-            # Get total count
-            total = query.count()
+        # Get paginated items
+        items = query.offset(offset).limit(page_size).all()
 
-            # Get paginated items
-            items = query.offset(offset).limit(page_size).all()
+        # Convert to responses with subtitle languages
+        item_responses = [
+            _item_to_response(item, _get_subtitle_languages(subtitle_repo, item.id))
+            for item in items
+        ]
 
-            # Convert to responses with subtitle languages
-            item_responses = []
-            for item in items:
-                subtitle_languages = _get_subtitle_languages(subtitle_repo, item.id)
-                item_responses.append(_item_to_response(item, subtitle_languages))
-
-            return ItemListResponse(
-                items=item_responses,
-                total=total,
-                page=page,
-                page_size=page_size,
-            )
+        return ItemListResponse(
+            items=item_responses,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     @router.get("/series", response_model=ItemListResponse)
     async def list_series(
+        session: DbSession,
+        subtitle_repo: SubtitleRepo,
         page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
         page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
     ) -> ItemListResponse:
-        """List series with pagination.
-
-        Args:
-            page: Page number (1-indexed).
-            page_size: Number of items per page.
-            library_id: Optional library ID to filter by.
-
-        Returns:
-            ItemListResponse with paginated series.
-        """
-        db_path = _get_db_path()
+        """List series with pagination."""
         offset = (page - 1) * page_size
 
-        with get_db_session(db_path) as session:
-            subtitle_repo = SubtitleRepository(session)
+        # Query series (type='series', not episodes)
+        query = session.query(Item).filter(Item.type == "series")
+        if library_id:
+            query = query.filter(Item.library_id == library_id)
 
-            # Query series (type='series', not episodes)
-            query = session.query(Item).filter(Item.type == "series")
-            if library_id:
-                query = query.filter(Item.library_id == library_id)
+        # Get total count
+        total = query.count()
 
-            # Get total count
-            total = query.count()
+        # Get paginated items
+        items = query.offset(offset).limit(page_size).all()
 
-            # Get paginated items
-            items = query.offset(offset).limit(page_size).all()
+        # Convert to responses with subtitle languages
+        item_responses = [
+            _item_to_response(item, _get_subtitle_languages(subtitle_repo, item.id))
+            for item in items
+        ]
 
-            # Convert to responses with subtitle languages
-            item_responses = []
-            for item in items:
-                subtitle_languages = _get_subtitle_languages(subtitle_repo, item.id)
-                item_responses.append(_item_to_response(item, subtitle_languages))
-
-            return ItemListResponse(
-                items=item_responses,
-                total=total,
-                page=page,
-                page_size=page_size,
-            )
+        return ItemListResponse(
+            items=item_responses,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     @router.get("/series/{series_id}", response_model=SeriesDetailResponse)
-    async def get_series_detail(series_id: str) -> SeriesDetailResponse:
+    async def get_series_detail(
+        series_id: str,
+        item_repo: ItemRepo,
+        subtitle_repo: SubtitleRepo,
+    ) -> SeriesDetailResponse:
         """Get series detail with episodes.
-
-        Args:
-            series_id: The series ID to retrieve.
-
-        Returns:
-            SeriesDetailResponse with series details and episodes.
 
         Raises:
             HTTPException: 404 if series not found.
         """
-        db_path = _get_db_path()
+        # Get the series
+        series = item_repo.get_by_id(series_id)
+        if series is None or series.type != "series":
+            raise HTTPException(status_code=404, detail="Series not found")
 
-        with get_db_session(db_path) as session:
-            item_repo = ItemRepository(session)
-            subtitle_repo = SubtitleRepository(session)
+        # Get episodes for this series
+        episodes = item_repo.list_by_series(series_id)
 
-            # Get the series
-            series = item_repo.get_by_id(series_id)
-            if series is None or series.type != "series":
-                raise HTTPException(status_code=404, detail="Series not found")
+        # Convert episodes to responses with subtitle languages
+        episode_responses = [
+            _item_to_response(episode, _get_subtitle_languages(subtitle_repo, episode.id))
+            for episode in episodes
+        ]
 
-            # Get episodes for this series
-            episodes = item_repo.list_by_series(series_id)
+        # Calculate season count
+        seasons = {ep.season_num for ep in episodes if ep.season_num is not None}
 
-            # Convert episodes to responses with subtitle languages
-            episode_responses = []
-            for episode in episodes:
-                subtitle_languages = _get_subtitle_languages(subtitle_repo, episode.id)
-                episode_responses.append(_item_to_response(episode, subtitle_languages))
+        # Get subtitle languages for the series itself
+        series_subtitle_languages = _get_subtitle_languages(subtitle_repo, series.id)
 
-            # Calculate season count
-            seasons = set()
-            for episode in episodes:
-                if episode.season_num is not None:
-                    seasons.add(episode.season_num)
-
-            # Get subtitle languages for the series itself
-            series_subtitle_languages = _get_subtitle_languages(subtitle_repo, series.id)
-
-            return SeriesDetailResponse(
-                id=series.id,
-                library_id=series.library_id,
-                type=series.type,
-                title=series.title,
-                path=series.path,
-                series_id=series.series_id,
-                series_name=series.series_name,
-                season_num=series.season_num,
-                episode_num=series.episode_num,
-                poster_url=series.poster_url,
-                last_synced=series.last_synced,
-                subtitle_languages=series_subtitle_languages,
-                episodes=episode_responses,
-                season_count=len(seasons),
-                episode_count=len(episodes),
-            )
+        return SeriesDetailResponse(
+            id=series.id,
+            library_id=series.library_id,
+            type=series.type,
+            title=series.title,
+            path=series.path,
+            series_id=series.series_id,
+            series_name=series.series_name,
+            season_num=series.season_num,
+            episode_num=series.episode_num,
+            poster_url=series.poster_url,
+            last_synced=series.last_synced,
+            subtitle_languages=series_subtitle_languages,
+            episodes=episode_responses,
+            season_count=len(seasons),
+            episode_count=len(episodes),
+        )
 
     @router.get("/items/{item_id}", response_model=ItemResponse)
-    async def get_item(item_id: str) -> ItemResponse:
+    async def get_item(
+        item_id: str,
+        item_repo: ItemRepo,
+        subtitle_repo: SubtitleRepo,
+    ) -> ItemResponse:
         """Get a single item by ID.
-
-        Args:
-            item_id: The item ID to retrieve.
-
-        Returns:
-            ItemResponse with item details.
 
         Raises:
             HTTPException: 404 if item not found.
         """
-        db_path = _get_db_path()
+        item = item_repo.get_by_id(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Item not found")
 
-        with get_db_session(db_path) as session:
-            item_repo = ItemRepository(session)
-            subtitle_repo = SubtitleRepository(session)
-
-            item = item_repo.get_by_id(item_id)
-            if item is None:
-                raise HTTPException(status_code=404, detail="Item not found")
-
-            subtitle_languages = _get_subtitle_languages(subtitle_repo, item.id)
-
-            return _item_to_response(item, subtitle_languages)
+        subtitle_languages = _get_subtitle_languages(subtitle_repo, item.id)
+        return _item_to_response(item, subtitle_languages)
 
     @router.get("/items/{item_id}/poster")
-    async def get_item_poster(item_id: str) -> StreamingResponse:
+    async def get_item_poster(
+        item_id: str,
+        item_repo: ItemRepo,
+    ) -> StreamingResponse:
         """Proxy poster image from Jellyfin.
-
-        Args:
-            item_id: The item ID to get poster for.
-
-        Returns:
-            StreamingResponse with the poster image.
 
         Raises:
             HTTPException: 404 if item not found or no poster available.
             HTTPException: 502 if Jellyfin server is unavailable.
         """
-        db_path = _get_db_path()
         config = get_config()
 
-        with get_db_session(db_path) as session:
-            item_repo = ItemRepository(session)
+        item = item_repo.get_by_id(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Item not found")
 
-            item = item_repo.get_by_id(item_id)
-            if item is None:
-                raise HTTPException(status_code=404, detail="Item not found")
-
-            if not item.poster_url:
-                raise HTTPException(status_code=404, detail="No poster available")
+        if not item.poster_url:
+            raise HTTPException(status_code=404, detail="No poster available")
 
         # Build Jellyfin URL
         jellyfin_url = config.jellyfin.server_url

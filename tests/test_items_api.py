@@ -8,12 +8,7 @@ from fastapi.testclient import TestClient
 from submate.database.repository import ItemRepository, LibraryRepository, SubtitleRepository
 from submate.database.session import get_db_session, init_database
 from submate.server import app
-
-
-@pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+from submate.server.dependencies import get_db_path
 
 
 @pytest.fixture
@@ -24,13 +19,20 @@ def db_path(tmp_path: Path) -> Path:
     return db_file
 
 
-def test_get_movies_empty(client: TestClient, db_path: Path, mocker):
-    """Test GET /api/movies returns empty list when no movies exist."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
+@pytest.fixture
+def client(db_path: Path):
+    """FastAPI test client with database override."""
 
+    def override_get_db_path() -> Path:
+        return db_path
+
+    app.dependency_overrides[get_db_path] = override_get_db_path
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_get_movies_empty(client: TestClient):
+    """Test GET /api/movies returns empty list when no movies exist."""
     response = client.get("/api/movies")
 
     assert response.status_code == 200
@@ -41,13 +43,8 @@ def test_get_movies_empty(client: TestClient, db_path: Path, mocker):
     assert data["page_size"] == 50
 
 
-def test_get_movies_with_data(client: TestClient, db_path: Path, mocker):
+def test_get_movies_with_data(client: TestClient, db_path: Path):
     """Test GET /api/movies returns movies with pagination."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library and movies
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -115,13 +112,8 @@ def test_get_movies_with_data(client: TestClient, db_path: Path, mocker):
     assert movie2["subtitle_languages"] == []
 
 
-def test_get_movies_with_library_filter(client: TestClient, db_path: Path, mocker):
+def test_get_movies_with_library_filter(client: TestClient, db_path: Path):
     """Test GET /api/movies with library_id filter."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test libraries and movies
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -171,13 +163,8 @@ def test_get_movies_with_library_filter(client: TestClient, db_path: Path, mocke
     assert data["items"][0]["library_id"] == "lib-1"
 
 
-def test_get_series_with_data(client: TestClient, db_path: Path, mocker):
+def test_get_series_with_data(client: TestClient, db_path: Path):
     """Test GET /api/series returns series."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library and series with episodes
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -241,13 +228,8 @@ def test_get_series_with_data(client: TestClient, db_path: Path, mocker):
     assert series["type"] == "series"
 
 
-def test_get_series_detail(client: TestClient, db_path: Path, mocker):
+def test_get_series_detail(client: TestClient, db_path: Path):
     """Test GET /api/series/{series_id} returns series with episodes."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library and series with episodes
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -336,26 +318,16 @@ def test_get_series_detail(client: TestClient, db_path: Path, mocker):
     assert episode1["subtitle_languages"] == ["en"]
 
 
-def test_get_series_detail_not_found(client: TestClient, db_path: Path, mocker):
+def test_get_series_detail_not_found(client: TestClient):
     """Test GET /api/series/{series_id} returns 404 for non-existent series."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.get("/api/series/non-existent")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Series not found"
 
 
-def test_get_item_by_id(client: TestClient, db_path: Path, mocker):
+def test_get_item_by_id(client: TestClient, db_path: Path):
     """Test GET /api/items/{item_id} returns a single item."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -404,26 +376,16 @@ def test_get_item_by_id(client: TestClient, db_path: Path, mocker):
     assert set(data["subtitle_languages"]) == {"en", "es"}
 
 
-def test_get_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_get_item_not_found(client: TestClient):
     """Test GET /api/items/{item_id} returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.get("/api/items/non-existent")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Item not found"
 
 
-def test_get_movies_pagination(client: TestClient, db_path: Path, mocker):
+def test_get_movies_pagination(client: TestClient, db_path: Path):
     """Test GET /api/movies with pagination parameters."""
-    mocker.patch(
-        "submate.server.handlers.items.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library and multiple movies
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)

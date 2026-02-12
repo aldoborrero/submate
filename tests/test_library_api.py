@@ -8,12 +8,7 @@ from fastapi.testclient import TestClient
 from submate.database.repository import ItemRepository, LibraryRepository
 from submate.database.session import get_db_session, init_database
 from submate.server import app
-
-
-@pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+from submate.server.dependencies import get_db_path
 
 
 @pytest.fixture
@@ -24,14 +19,20 @@ def db_path(tmp_path: Path) -> Path:
     return db_file
 
 
-def test_get_libraries_empty(client: TestClient, db_path: Path, mocker):
-    """Test GET /api/libraries returns empty list when no libraries exist."""
-    # Mock the database path helper to use our test database
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
+@pytest.fixture
+def client(db_path: Path):
+    """FastAPI test client with database override."""
 
+    def override_get_db_path() -> Path:
+        return db_path
+
+    app.dependency_overrides[get_db_path] = override_get_db_path
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_get_libraries_empty(client: TestClient):
+    """Test GET /api/libraries returns empty list when no libraries exist."""
     response = client.get("/api/libraries")
 
     assert response.status_code == 200
@@ -40,14 +41,8 @@ def test_get_libraries_empty(client: TestClient, db_path: Path, mocker):
     assert data["total"] == 0
 
 
-def test_get_libraries_with_data(client: TestClient, db_path: Path, mocker):
+def test_get_libraries_with_data(client: TestClient, db_path: Path):
     """Test GET /api/libraries returns libraries with item counts."""
-    # Mock the database path helper to use our test database
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test libraries and items
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -126,13 +121,8 @@ def test_get_libraries_with_data(client: TestClient, db_path: Path, mocker):
     assert series_lib["item_count"] == 1
 
 
-def test_get_library_by_id(client: TestClient, db_path: Path, mocker):
+def test_get_library_by_id(client: TestClient, db_path: Path):
     """Test GET /api/libraries/{library_id} returns a single library."""
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -167,26 +157,16 @@ def test_get_library_by_id(client: TestClient, db_path: Path, mocker):
     assert data["item_count"] == 1
 
 
-def test_get_library_not_found(client: TestClient, db_path: Path, mocker):
+def test_get_library_not_found(client: TestClient):
     """Test GET /api/libraries/{library_id} returns 404 for non-existent library."""
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.get("/api/libraries/non-existent")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Library not found"
 
 
-def test_update_library(client: TestClient, db_path: Path, mocker):
+def test_update_library(client: TestClient, db_path: Path):
     """Test PATCH /api/libraries/{library_id} updates library settings."""
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -217,13 +197,8 @@ def test_update_library(client: TestClient, db_path: Path, mocker):
     assert data["enabled"] is False
 
 
-def test_update_library_partial(client: TestClient, db_path: Path, mocker):
+def test_update_library_partial(client: TestClient, db_path: Path):
     """Test PATCH /api/libraries/{library_id} with partial update."""
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test library
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -252,13 +227,8 @@ def test_update_library_partial(client: TestClient, db_path: Path, mocker):
     assert data["enabled"] is False
 
 
-def test_update_library_not_found(client: TestClient, db_path: Path, mocker):
+def test_update_library_not_found(client: TestClient):
     """Test PATCH /api/libraries/{library_id} returns 404 for non-existent library."""
-    mocker.patch(
-        "submate.server.handlers.library.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.patch(
         "/api/libraries/non-existent",
         json={"enabled": False},

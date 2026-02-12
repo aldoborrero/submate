@@ -8,12 +8,7 @@ from fastapi.testclient import TestClient
 from submate.database.repository import ItemRepository, LibraryRepository, SubtitleRepository
 from submate.database.session import get_db_session, init_database
 from submate.server import app
-
-
-@pytest.fixture
-def client():
-    """FastAPI test client."""
-    return TestClient(app)
+from submate.server.dependencies import get_db_path
 
 
 @pytest.fixture
@@ -32,13 +27,20 @@ def subtitle_dir(tmp_path: Path) -> Path:
     return subs_dir
 
 
-def test_list_subtitles(client: TestClient, db_path: Path, mocker):
-    """Test GET /api/items/{item_id}/subtitles returns subtitles list."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
+@pytest.fixture
+def client(db_path: Path):
+    """FastAPI test client with database override."""
 
+    def override_get_db_path() -> Path:
+        return db_path
+
+    app.dependency_overrides[get_db_path] = override_get_db_path
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_list_subtitles(client: TestClient, db_path: Path):
+    """Test GET /api/items/{item_id}/subtitles returns subtitles list."""
     # Create test data
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -96,13 +98,8 @@ def test_list_subtitles(client: TestClient, db_path: Path, mocker):
         assert "created_at" in sub
 
 
-def test_list_subtitles_empty(client: TestClient, db_path: Path, mocker):
+def test_list_subtitles_empty(client: TestClient, db_path: Path):
     """Test GET /api/items/{item_id}/subtitles returns empty list when no subtitles exist."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item with no subtitles
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -133,26 +130,16 @@ def test_list_subtitles_empty(client: TestClient, db_path: Path, mocker):
     assert data["total"] == 0
 
 
-def test_list_subtitles_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_list_subtitles_item_not_found(client: TestClient):
     """Test GET /api/items/{item_id}/subtitles returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.get("/api/items/non-existent/subtitles")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Item not found"
 
 
-def test_get_subtitle_content(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_get_subtitle_content(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test GET /api/items/{item_id}/subtitles/{language} returns subtitle content."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create subtitle file
     subtitle_path = subtitle_dir / "test.en.srt"
     subtitle_content = """1
@@ -204,13 +191,8 @@ This is a test subtitle.
     assert data["format"] == "srt"
 
 
-def test_get_subtitle_content_ass_format(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_get_subtitle_content_ass_format(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test GET /api/items/{item_id}/subtitles/{language} detects ASS format."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create ASS subtitle file
     subtitle_path = subtitle_dir / "test.en.ass"
     subtitle_content = """[Script Info]
@@ -264,13 +246,8 @@ Dialogue: 0,0:00:01.00,0:00:04.00,Default,,Hello world
     assert data["format"] == "ass"
 
 
-def test_get_subtitle_not_found(client: TestClient, db_path: Path, mocker):
+def test_get_subtitle_not_found(client: TestClient, db_path: Path):
     """Test GET /api/items/{item_id}/subtitles/{language} returns 404 when subtitle not found."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item without subtitle
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -299,26 +276,16 @@ def test_get_subtitle_not_found(client: TestClient, db_path: Path, mocker):
     assert response.json()["detail"] == "Subtitle not found"
 
 
-def test_get_subtitle_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_get_subtitle_item_not_found(client: TestClient):
     """Test GET /api/items/{item_id}/subtitles/{language} returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.get("/api/items/non-existent/subtitles/en")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Item not found"
 
 
-def test_save_subtitle_create_new(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_save_subtitle_create_new(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test PUT /api/items/{item_id}/subtitles/{language} creates new subtitle."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -365,13 +332,8 @@ New subtitle content!
     assert subtitle_path.read_text() == new_content
 
 
-def test_save_subtitle_update_existing(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_save_subtitle_update_existing(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test PUT /api/items/{item_id}/subtitles/{language} updates existing subtitle."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create existing subtitle file
     subtitle_path = subtitle_dir / "test.en.srt"
     subtitle_path.write_text("Old content")
@@ -427,13 +389,8 @@ Updated subtitle content!
     assert subtitle_path.read_text() == new_content
 
 
-def test_save_subtitle_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_save_subtitle_item_not_found(client: TestClient):
     """Test PUT /api/items/{item_id}/subtitles/{language} returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.put(
         "/api/items/non-existent/subtitles/en",
         json={"content": "Some content"},
@@ -443,13 +400,8 @@ def test_save_subtitle_item_not_found(client: TestClient, db_path: Path, mocker)
     assert response.json()["detail"] == "Item not found"
 
 
-def test_delete_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_delete_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test DELETE /api/items/{item_id}/subtitles/{language} deletes subtitle."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create subtitle file
     subtitle_path = subtitle_dir / "test.en.srt"
     subtitle_path.write_text("Content to delete")
@@ -498,13 +450,8 @@ def test_delete_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path, 
         assert subtitle is None
 
 
-def test_delete_subtitle_not_found(client: TestClient, db_path: Path, mocker):
+def test_delete_subtitle_not_found(client: TestClient, db_path: Path):
     """Test DELETE /api/items/{item_id}/subtitles/{language} returns 404 when subtitle not found."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item without subtitle
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -533,26 +480,16 @@ def test_delete_subtitle_not_found(client: TestClient, db_path: Path, mocker):
     assert response.json()["detail"] == "Subtitle not found"
 
 
-def test_delete_subtitle_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_delete_subtitle_item_not_found(client: TestClient):
     """Test DELETE /api/items/{item_id}/subtitles/{language} returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.delete("/api/items/non-existent/subtitles/en")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Item not found"
 
 
-def test_sync_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path, mocker):
+def test_sync_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path):
     """Test POST /api/items/{item_id}/subtitles/{language}/sync returns stub response."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create subtitle file
     subtitle_path = subtitle_dir / "test.en.srt"
     subtitle_path.write_text("Content to sync")
@@ -595,13 +532,8 @@ def test_sync_subtitle(client: TestClient, db_path: Path, subtitle_dir: Path, mo
     assert "message" in data
 
 
-def test_sync_subtitle_not_found(client: TestClient, db_path: Path, mocker):
+def test_sync_subtitle_not_found(client: TestClient, db_path: Path):
     """Test POST /api/items/{item_id}/subtitles/{language}/sync returns 404 when subtitle not found."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     # Create test item without subtitle
     with get_db_session(db_path) as session:
         library_repo = LibraryRepository(session)
@@ -630,13 +562,8 @@ def test_sync_subtitle_not_found(client: TestClient, db_path: Path, mocker):
     assert response.json()["detail"] == "Subtitle not found"
 
 
-def test_sync_subtitle_item_not_found(client: TestClient, db_path: Path, mocker):
+def test_sync_subtitle_item_not_found(client: TestClient):
     """Test POST /api/items/{item_id}/subtitles/{language}/sync returns 404 for non-existent item."""
-    mocker.patch(
-        "submate.server.handlers.subtitles.router._get_db_path",
-        return_value=db_path,
-    )
-
     response = client.post("/api/items/non-existent/subtitles/en/sync")
 
     assert response.status_code == 404
