@@ -6,7 +6,7 @@ from pathlib import Path
 
 def test_load_yaml_config_basic():
     """Test loading basic YAML configuration."""
-    from submate.config_yaml import load_yaml_config
+    from submate.config import load_yaml_config
 
     yaml_content = """
 jellyfin:
@@ -24,7 +24,7 @@ jellyfin:
 
 def test_load_yaml_config_missing_file_returns_empty():
     """Test that missing file returns empty dict."""
-    from submate.config_yaml import load_yaml_config
+    from submate.config import load_yaml_config
 
     config = load_yaml_config(Path("/nonexistent/config.yaml"))
     assert config == {}
@@ -32,7 +32,7 @@ def test_load_yaml_config_missing_file_returns_empty():
 
 def test_save_yaml_config():
     """Test saving configuration to YAML file."""
-    from submate.config_yaml import load_yaml_config, save_yaml_config
+    from submate.config import load_yaml_config, save_yaml_config
 
     config = {
         "jellyfin": {"server_url": "http://localhost:8096", "api_key": "new-key"},
@@ -74,7 +74,7 @@ debug: true
         f.flush()
         yaml_path = Path(f.name)
 
-    config = get_config(yaml_path=yaml_path)
+    config = get_config(config_file=yaml_path)
 
     assert config.whisper.model == "large"
     assert config.whisper.device == "cuda"
@@ -105,7 +105,7 @@ debug: false
     monkeypatch.setenv("SUBMATE__SERVER__PORT", "9999")
     monkeypatch.setenv("SUBMATE__DEBUG", "true")
 
-    config = get_config(yaml_path=yaml_path)
+    config = get_config(config_file=yaml_path)
 
     # Env vars should override YAML values
     assert config.whisper.model == "large"
@@ -126,7 +126,7 @@ whisper:
         f.flush()
         yaml_path = Path(f.name)
 
-    config = get_config(yaml_path=yaml_path)
+    config = get_config(config_file=yaml_path)
 
     # YAML value should be used
     assert config.whisper.model == "tiny"
@@ -164,7 +164,7 @@ translation:
         f.flush()
         yaml_path = Path(f.name)
 
-    config = get_config(yaml_path=yaml_path)
+    config = get_config(config_file=yaml_path)
 
     assert config.whisper.model == "medium"
     assert config.whisper.implementation == "faster-whisper"
@@ -198,59 +198,20 @@ jellyfin:
         f.flush()
         yaml_path = Path(f.name)
 
-    config = get_config(yaml_path=yaml_path)
+    config = get_config(config_file=yaml_path)
 
     assert config.whisper.folders == ["/media/movies", "/media/tv", "/media/music"]
     assert config.jellyfin.libraries == ["Movies", "TV Shows"]
 
 
 def test_yaml_settings_source_with_nonexistent_file():
-    """Test that nonexistent YAML file falls back to defaults."""
+    """Test that nonexistent YAML file raises FileNotFoundError."""
+    import pytest
+
     from submate.config import get_config
 
-    config = get_config(yaml_path=Path("/nonexistent/config.yaml"))
-
-    # Should use all defaults
-    assert config.whisper.model == "medium"
-    assert config.server.port == 9000
-
-
-def test_yaml_settings_source_get_field_value():
-    """Test the get_field_value method of YamlSettingsSource."""
-    from pydantic.fields import FieldInfo
-
-    from submate.config import Config
-    from submate.config_yaml import YamlSettingsSource
-
-    yaml_content = """
-whisper:
-  model: "large"
-debug: true
-"""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        f.write(yaml_content)
-        f.flush()
-        yaml_path = Path(f.name)
-
-    source = YamlSettingsSource(Config, yaml_path)
-
-    # Test getting a nested field
-    value, name, is_complex = source.get_field_value(FieldInfo(), "whisper")
-    assert value == {"model": "large"}
-    assert name == "whisper"
-    assert is_complex is True  # Nested dict is complex
-
-    # Test getting a simple field
-    value, name, is_complex = source.get_field_value(FieldInfo(), "debug")
-    assert value is True
-    assert name == "debug"
-    assert is_complex is False
-
-    # Test getting a nonexistent field
-    value, name, is_complex = source.get_field_value(FieldInfo(), "nonexistent")
-    assert value is None
-    assert name == "nonexistent"
-    assert is_complex is False
+    with pytest.raises(FileNotFoundError):
+        get_config(config_file=Path("/nonexistent/config.yaml"))
 
 
 def test_yaml_string_path_accepted():
@@ -265,18 +226,17 @@ debug: true
         f.flush()
         yaml_path_str = f.name  # String path
 
-    config = get_config(yaml_path=yaml_path_str)
+    config = get_config(config_file=yaml_path_str)
 
     assert config.debug is True
 
 
 def test_combined_env_file_and_yaml(monkeypatch, tmp_path):
-    """Test using both .env file and YAML file together."""
+    """Test using env vars and YAML file together."""
     from submate.config import get_config
 
-    # Create .env file
-    env_file = tmp_path / ".env"
-    env_file.write_text("SUBMATE__SERVER__PORT=7777\n")
+    # Set env var (env vars override YAML)
+    monkeypatch.setenv("SUBMATE__SERVER__PORT", "7777")
 
     # Create YAML file
     yaml_content = """
@@ -287,9 +247,9 @@ debug: true
     yaml_file = tmp_path / "config.yaml"
     yaml_file.write_text(yaml_content)
 
-    config = get_config(config_file=str(env_file), yaml_path=yaml_file)
+    config = get_config(config_file=yaml_file)
 
-    # .env file value
+    # Env var should override
     assert config.server.port == 7777
     # YAML values
     assert config.whisper.model == "tiny"
