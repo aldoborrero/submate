@@ -2,8 +2,10 @@
 
 import logging
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Response
+from fastapi import Path as PathParam
 
 from submate.config import get_config
 from submate.database.models import Subtitle
@@ -18,6 +20,17 @@ from submate.server.handlers.subtitles.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Reusable type for validated language codes (ISO 639-1/639-2 format)
+# Validates at request level and generates OpenAPI documentation
+LanguageCode = Annotated[
+    str,
+    PathParam(
+        pattern=r"^[a-zA-Z]{2,3}(-[a-zA-Z]{2})?$",
+        description="Language code in ISO 639-1 (e.g., 'en') or ISO 639-2 (e.g., 'eng') format",
+        examples=["en", "eng", "en-US"],
+    ),
+]
 
 
 def _get_db_path() -> Path:
@@ -109,7 +122,7 @@ def create_subtitles_router() -> APIRouter:
             )
 
     @router.get("/items/{item_id}/subtitles/{language}", response_model=SubtitleContentResponse)
-    async def get_subtitle_content(item_id: str, language: str) -> SubtitleContentResponse:
+    async def get_subtitle_content(item_id: str, language: LanguageCode) -> SubtitleContentResponse:
         """Get subtitle content for an item.
 
         Args:
@@ -120,6 +133,7 @@ def create_subtitles_router() -> APIRouter:
             SubtitleContentResponse with subtitle content.
 
         Raises:
+            HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item or subtitle not found.
             HTTPException: 500 if file read fails.
         """
@@ -158,7 +172,7 @@ def create_subtitles_router() -> APIRouter:
     @router.put("/items/{item_id}/subtitles/{language}", response_model=SubtitleResponse)
     async def save_subtitle(
         item_id: str,
-        language: str,
+        language: LanguageCode,
         request: SubtitleUpdateRequest,
     ) -> SubtitleResponse:
         """Save or update subtitle content.
@@ -172,6 +186,7 @@ def create_subtitles_router() -> APIRouter:
             SubtitleResponse with saved subtitle details.
 
         Raises:
+            HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item not found.
             HTTPException: 500 if file write fails.
         """
@@ -227,7 +242,7 @@ def create_subtitles_router() -> APIRouter:
             return _subtitle_to_response(subtitle)
 
     @router.delete("/items/{item_id}/subtitles/{language}", status_code=204)
-    async def delete_subtitle(item_id: str, language: str) -> Response:
+    async def delete_subtitle(item_id: str, language: LanguageCode) -> Response:
         """Delete a subtitle.
 
         Args:
@@ -238,6 +253,7 @@ def create_subtitles_router() -> APIRouter:
             Empty response with 204 status.
 
         Raises:
+            HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item or subtitle not found.
         """
         db_path = _get_db_path()
@@ -271,7 +287,7 @@ def create_subtitles_router() -> APIRouter:
             return Response(status_code=204)
 
     @router.post("/items/{item_id}/subtitles/{language}/sync", response_model=SyncResponse)
-    async def sync_subtitle(item_id: str, language: str) -> SyncResponse:
+    async def sync_subtitle(item_id: str, language: LanguageCode) -> SyncResponse:
         """Sync subtitle timing with ffsubsync.
 
         Note: This is currently a stub implementation.
@@ -285,6 +301,7 @@ def create_subtitles_router() -> APIRouter:
             SyncResponse with operation result.
 
         Raises:
+            HTTPException: 422 if language code is invalid.
             HTTPException: 404 if item or subtitle not found.
         """
         db_path = _get_db_path()
