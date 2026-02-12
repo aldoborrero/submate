@@ -12,10 +12,10 @@ export function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex flex-col h-screen bg-background">
       <Header />
 
-      <div className="flex">
+      <div className="flex flex-1 overflow-hidden">
         {/* Mobile menu button */}
         <Button
           variant="outline"
@@ -29,7 +29,7 @@ export function Layout({ children }: LayoutProps) {
         <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
         {/* Main Content */}
-        <main className="flex-1 p-6 lg:p-8">
+        <main className="flex-1 overflow-y-auto p-6 lg:p-8">
           <div className="max-w-7xl mx-auto">{children}</div>
         </main>
       </div>
