@@ -3,7 +3,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from submate.database.models import Item, Job
@@ -17,6 +17,7 @@ from submate.server.handlers.jobs.models import (
     TranscribeResponse,
 )
 from submate.services.event_bus import get_event_bus
+from submate.types import JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ def create_jobs_router() -> APIRouter:
             id=job_id,
             item_id=item_id,
             language=request.language,
-            status="pending",
+            status=JobStatus.PENDING,
         )
 
         # Publish job.created event
@@ -142,7 +143,7 @@ def create_jobs_router() -> APIRouter:
                 id=job_id,
                 item_id=item.id,
                 language=request.language,
-                status="pending",
+                status=JobStatus.PENDING,
             )
 
             # Publish event
@@ -175,7 +176,7 @@ def create_jobs_router() -> APIRouter:
                 id=job_id,
                 item_id=item_id,
                 language=request.language,
-                status="pending",
+                status=JobStatus.PENDING,
             )
 
             # Publish event
@@ -240,11 +241,11 @@ def create_jobs_router() -> APIRouter:
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        if job.status != "failed":
+        if job.status != JobStatus.FAILED:
             raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
 
         # Reset job to pending state
-        job.status = "pending"
+        job.status = JobStatus.PENDING
         job.error = None
         job.started_at = None
         job.completed_at = None
@@ -265,7 +266,7 @@ def create_jobs_router() -> APIRouter:
         job_id: str,
         session: DbSession,
         job_repo: JobRepo,
-    ) -> Response:
+    ) -> None:
         """Cancel a pending job.
 
         Raises:
@@ -276,13 +277,11 @@ def create_jobs_router() -> APIRouter:
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        if job.status != "pending":
+        if job.status != JobStatus.PENDING:
             raise HTTPException(status_code=400, detail="Only pending jobs can be cancelled")
 
         # Delete the job
         session.delete(job)
         session.flush()
-
-        return Response(status_code=204)
 
     return router

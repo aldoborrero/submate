@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from submate.database.models import Item, Job, Library, Subtitle
+from submate.types import JobStatus
 
 
 class LibraryRepository:
@@ -405,7 +406,7 @@ class JobRepository:
         id: str,
         item_id: str,
         language: str,
-        status: str = "pending",
+        status: JobStatus = JobStatus.PENDING,
     ) -> Job:
         """Create a new transcription job.
 
@@ -413,7 +414,7 @@ class JobRepository:
             id: Job ID.
             item_id: Parent item ID.
             language: Target language code.
-            status: Initial status (default: 'pending').
+            status: Initial status (default: PENDING).
 
         Returns:
             The created Job instance.
@@ -439,7 +440,7 @@ class JobRepository:
         """
         return self.session.query(Job).filter(Job.id == id).first()
 
-    def list_by_status(self, status: str, limit: int = 50, offset: int = 0) -> list[Job]:
+    def list_by_status(self, status: JobStatus, limit: int = 50, offset: int = 0) -> list[Job]:
         """List jobs by status with pagination.
 
         Args:
@@ -463,16 +464,16 @@ class JobRepository:
         """
         return self.session.query(Job).filter(Job.item_id == item_id).all()
 
-    def update_status(self, id: str, status: str, error: str | None = None) -> Job | None:
+    def update_status(self, id: str, status: JobStatus, error: str | None = None) -> Job | None:
         """Update job status with appropriate timestamp handling.
 
-        Sets started_at when status changes to 'running'.
-        Sets completed_at when status changes to 'completed' or 'failed'.
+        Sets started_at when status changes to RUNNING.
+        Sets completed_at when status changes to COMPLETED or FAILED.
 
         Args:
             id: The job ID to update.
             status: New status value.
-            error: Error message (for 'failed' status).
+            error: Error message (for FAILED status).
 
         Returns:
             The updated Job instance if found, None otherwise.
@@ -483,9 +484,9 @@ class JobRepository:
 
         job.status = status
 
-        if status == "running":
+        if status == JobStatus.RUNNING:
             job.started_at = datetime.now(UTC)
-        elif status in ("completed", "failed"):
+        elif status in (JobStatus.COMPLETED, JobStatus.FAILED):
             job.completed_at = datetime.now(UTC)
 
         if error is not None:
@@ -494,7 +495,7 @@ class JobRepository:
         self.session.flush()
         return job
 
-    def count_by_status(self, status: str) -> int:
+    def count_by_status(self, status: JobStatus) -> int:
         """Count jobs by status.
 
         Args:

@@ -60,3 +60,12 @@ class TranslationBackend(StrEnum):
     CLAUDE = "claude"  # Anthropic Claude API
     OPENAI = "openai"  # OpenAI API
     GEMINI = "gemini"  # Google Gemini API
+
+
+class JobStatus(StrEnum):
+    """Transcription job status values."""
+
+    PENDING = "pending"  # Job queued, waiting to start
+    RUNNING = "running"  # Job currently processing
+    COMPLETED = "completed"  # Job finished successfully
+    FAILED = "failed"  # Job failed with error
