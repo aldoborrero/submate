@@ -2,51 +2,13 @@
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
+import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
 from submate.types import Device, LanguageNamingType, TranslationBackend, WhisperImplementation, WhisperModel
-
-
-class _EnvSettingsSource(PydanticBaseSettingsSource):
-    """Custom env settings source that passes string values to validators without JSON parsing."""
-
-    def __call__(self) -> dict[str, Any]:
-        """Get settings from environment variables with nested delimiter support."""
-        d: dict[str, Any] = {}
-
-        # Get env_prefix from model_config (e.g., "SUBMATE__")
-        env_prefix = self.settings_cls.model_config.get("env_prefix", "")
-
-        for field_name, field_info in self.settings_cls.model_fields.items():
-            field_type = field_info.annotation
-
-            # Handle nested models
-            if field_type is not None and hasattr(field_type, "model_fields") and field_type.model_fields is not None:
-                nested_dict: dict[str, Any] = {}
-                for nested_field_name in field_type.model_fields.keys():  # type: ignore[union-attr]
-                    env_var_name = f"{env_prefix}{field_name}__{nested_field_name}".upper()
-                    env_value = os.getenv(env_var_name)
-                    if env_value is not None:
-                        # Pass raw string to Pydantic - validators will handle parsing
-                        nested_dict[nested_field_name] = env_value
-
-                if nested_dict:
-                    d[field_name] = nested_dict
-            else:
-                # Top-level field
-                env_var_name = f"{env_prefix}{field_name}".upper()
-                env_value = os.getenv(env_var_name)
-                if env_value is not None:
-                    d[field_name] = env_value
-
-        return d
-
-    def get_field_value(self, field_info: Any, field_name: str) -> tuple[Any, str, bool]:  # type: ignore[override]
-        """Required by abstract class but not used."""
-        return None, field_name, False
 
 
 def get_xdg_data_home() -> Path:
@@ -59,6 +21,34 @@ def get_xdg_data_home() -> Path:
     if xdg_data_home:
         return Path(xdg_data_home)
     return Path.home() / ".local" / "share"
+
+
+def load_yaml_config(path: Path) -> dict[str, Any]:
+    """Load configuration from YAML file.
+
+    Args:
+        path: Path to YAML configuration file
+
+    Returns:
+        Configuration dictionary, empty if file doesn't exist
+    """
+    if not path.exists():
+        return {}
+
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def save_yaml_config(path: Path, config: dict[str, Any]) -> None:
+    """Save configuration to YAML file.
+
+    Args:
+        path: Path to YAML configuration file
+        config: Configuration dictionary to save
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
 class WhisperSettings(BaseModel):
@@ -381,7 +371,8 @@ class Config(BaseSettings):
     Configuration is loaded from (in order of precedence):
     1. Environment variables
     2. .env file (if present)
-    3. Default values
+    3. YAML configuration file (if provided or ./config.yaml exists)
+    4. Default values
 
     Nested configuration uses __ delimiter (e.g., WHISPER__MODEL).
     Pipe-separated lists are parsed for folders and libraries fields.
@@ -394,7 +385,11 @@ class Config(BaseSettings):
         case_sensitive=False,
         extra="ignore",  # Ignore unknown env vars
         env_nested_delimiter="__",
+        enable_decoding=False,  # Let validators handle string parsing (pipe-separated lists, etc.)
     )
+
+    # Class variable for YAML path (set by get_config before instantiation)
+    _yaml_file: ClassVar[Path | None] = None
 
     whisper: WhisperSettings = Field(default_factory=WhisperSettings)
     stable_ts: StableTsSettings = Field(default_factory=StableTsSettings)
@@ -418,13 +413,19 @@ class Config(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Use custom env source that doesn't JSON-parse list fields."""
-        return (
+        """Configure settings sources with optional YAML support."""
+        sources: list[PydanticBaseSettingsSource] = [
             init_settings,
-            _EnvSettingsSource(settings_cls),
+            env_settings,
             dotenv_settings,
-            file_secret_settings,
-        )
+        ]
+
+        # Add YAML source if path is set and file exists
+        if cls._yaml_file and cls._yaml_file.exists():
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_file))
+
+        sources.append(file_secret_settings)
+        return tuple(sources)
 
     @field_validator("queue", mode="before")
     @classmethod
@@ -451,63 +452,37 @@ class Config(BaseSettings):
         return {"db_path": str(data_dir / "queue.db")}
 
 
-def get_config(
-    config_file: str | None = None,
-    yaml_path: Path | str | None = None,
-) -> Config:
-    """Load configuration from environment, YAML file, or .env file.
+def get_config(config_file: Path | str | None = None) -> Config:
+    """Load configuration from environment, .env file, and optional YAML.
 
     Configuration sources are applied in order of precedence (highest first):
     1. Environment variables (always override)
-    2. YAML configuration file (if provided)
-    3. .env file (if provided)
+    2. .env file (if exists)
+    3. YAML configuration file (if provided or ./config.yaml exists)
     4. Default values
 
     Args:
-        config_file: Optional path to .env file
-        yaml_path: Optional path to YAML configuration file
+        config_file: Optional path to YAML configuration file.
+                    If not provided, auto-detects ./config.yaml in current directory.
 
     Returns:
         Populated Config instance with validation
+
+    Raises:
+        FileNotFoundError: If explicit config_file path doesn't exist
     """
-    from submate.config_yaml import YamlSettingsSource
+    if isinstance(config_file, str):
+        config_file = Path(config_file)
 
-    # Convert string path to Path object if needed
-    yaml_path_obj = Path(yaml_path) if isinstance(yaml_path, str) else yaml_path
+    # Auto-detect ./config.yaml if no explicit path provided
+    if config_file is None and Path("config.yaml").exists():
+        config_file = Path("config.yaml")
 
-    if config_file or yaml_path_obj:
-        # Create a new Config class with custom sources
-        class CustomConfig(Config):
-            model_config = SettingsConfigDict(
-                env_file=config_file if config_file else ".env",
-                env_file_encoding="utf-8",
-                env_prefix="SUBMATE__",
-                case_sensitive=False,
-                extra="ignore",
-                env_nested_delimiter="__",
-            )
+    # Validate explicit config file exists
+    if config_file is not None and not config_file.exists():
+        raise FileNotFoundError(f"Config file not found: {config_file}")
 
-            @classmethod
-            def settings_customise_sources(
-                cls,
-                settings_cls: type[BaseSettings],
-                init_settings: PydanticBaseSettingsSource,
-                env_settings: PydanticBaseSettingsSource,
-                dotenv_settings: PydanticBaseSettingsSource,
-                file_secret_settings: PydanticBaseSettingsSource,
-            ) -> tuple[PydanticBaseSettingsSource, ...]:
-                """Customize sources to include YAML configuration."""
-                sources: list[PydanticBaseSettingsSource] = [
-                    init_settings,
-                    _EnvSettingsSource(settings_cls),
-                ]
+    # Set class variable before instantiation
+    Config._yaml_file = config_file
 
-                # Add YAML source if path provided (lower priority than env)
-                if yaml_path_obj:
-                    sources.append(YamlSettingsSource(settings_cls, yaml_path_obj))
-
-                sources.extend([dotenv_settings, file_secret_settings])
-                return tuple(sources)
-
-        return CustomConfig()
     return Config()
