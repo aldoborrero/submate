@@ -4,7 +4,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from submate.config import get_config
 from submate.database.models import Job
@@ -202,8 +202,8 @@ def create_jobs_router() -> APIRouter:
 
     @router.get("/jobs", response_model=JobListResponse)
     async def list_jobs(
-        page: int = 1,
-        page_size: int = 50,
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        page_size: int = Query(default=50, ge=1, le=100, description="Jobs per page (max 100)"),
         status: str | None = None,
     ) -> JobListResponse:
         """List jobs with filtering and pagination.

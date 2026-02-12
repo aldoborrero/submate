@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from submate.config import get_config
@@ -80,8 +80,8 @@ def create_items_router() -> APIRouter:
 
     @router.get("/movies", response_model=ItemListResponse)
     async def list_movies(
-        page: int = 1,
-        page_size: int = 50,
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
     ) -> ItemListResponse:
         """List movies with pagination.
@@ -126,8 +126,8 @@ def create_items_router() -> APIRouter:
 
     @router.get("/series", response_model=ItemListResponse)
     async def list_series(
-        page: int = 1,
-        page_size: int = 50,
+        page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+        page_size: int = Query(default=50, ge=1, le=100, description="Items per page (max 100)"),
         library_id: str | None = None,
     ) -> ItemListResponse:
         """List series with pagination.
