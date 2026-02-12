@@ -67,6 +67,24 @@ def create_app() -> FastAPI:
     else:
         logger.info("Jellyfin integration disabled")
 
+    # Include library API router (always enabled for UI)
+    try:
+        from submate.server.handlers.library.router import create_library_router
+
+        app.include_router(create_library_router())
+        logger.info("Library API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Library router: %s", e)
+
+    # Include items API router (always enabled for UI)
+    try:
+        from submate.server.handlers.items.router import create_items_router
+
+        app.include_router(create_items_router())
+        logger.info("Items API router loaded")
+    except Exception as e:
+        logger.warning("Could not load Items router: %s", e)
+
     # Global exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
