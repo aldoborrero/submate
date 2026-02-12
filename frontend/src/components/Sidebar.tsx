@@ -88,7 +88,7 @@ function SidebarContent() {
           variant="secondary"
         >
           <RefreshCw className={cn("h-4 w-4 mr-2", syncing && "animate-spin")} />
-          {syncing ? 'Syncing...' : 'Sync Libraries'}
+          {syncing ? 'Syncing...' : 'Sync from Jellyfin'}
         </Button>
       </div>
     </div>

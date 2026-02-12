@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Library, Film, Clock, XCircle, RefreshCw, Loader2 } from 'lucide-react'
+import { Library, Film, Clock, XCircle } from 'lucide-react'
 import { librariesApi, jobsApi, subscribeToEvents } from '@/api'
 import type { Library as LibraryType, Job, SSEEvent } from '@/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,7 +18,6 @@ export function DashboardPage() {
     failed: 0,
   })
   const [loading, setLoading] = useState(true)
-  const [syncing, setSyncing] = useState(false)
 
   const calculateJobCounts = (jobsList: Job[]) => {
     const counts = { pending: 0, running: 0, completed: 0, failed: 0 }
@@ -58,21 +57,10 @@ export function DashboardPage() {
         librariesApi.list().then((response) => {
           setLibraries(response.libraries)
         })
-        setSyncing(false)
       }
     })
     return unsubscribe
   }, [])
-
-  const handleSync = async () => {
-    setSyncing(true)
-    try {
-      await librariesApi.sync()
-    } catch (error) {
-      console.error('Sync failed:', error)
-      setSyncing(false)
-    }
-  }
 
   const handleRetry = async (jobId: string) => {
     try {
@@ -90,12 +78,9 @@ export function DashboardPage() {
   if (loading) {
     return (
       <div className="space-y-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-8 w-32" />
-            <Skeleton className="h-4 w-48 mt-2" />
-          </div>
-          <Skeleton className="h-10 w-32" />
+        <div>
+          <Skeleton className="h-8 w-32" />
+          <Skeleton className="h-4 w-48 mt-2" />
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {[...Array(4)].map((_, i) => (
@@ -116,24 +101,9 @@ export function DashboardPage() {
   return (
     <div className="space-y-8">
       {/* Page Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <p className="text-muted-foreground mt-1">Overview of your Submate instance</p>
-        </div>
-        <Button onClick={handleSync} disabled={syncing}>
-          {syncing ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Syncing...
-            </>
-          ) : (
-            <>
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Sync Jellyfin
-            </>
-          )}
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <p className="text-muted-foreground mt-1">Overview of your Submate instance</p>
       </div>
 
       {/* Stats Cards */}
