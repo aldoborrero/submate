@@ -1,6 +1,5 @@
 export { Header } from './Header'
 export { Sidebar } from './Sidebar'
 export { Layout } from './Layout'
-export { JobItem } from './JobItem'
 export { EpisodeList } from './EpisodeList'
 export { SubtitleEditor } from './SubtitleEditor'
