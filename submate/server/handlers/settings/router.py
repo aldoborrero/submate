@@ -220,10 +220,10 @@ def create_settings_router(config_path: Path | None = None) -> APIRouter:
             )
 
         # Try webhook first
-        if has_webhook:
+        if has_webhook and settings.webhook_url:
             try:
                 response = requests.post(
-                    settings.webhook_url,  # type: ignore[arg-type]
+                    settings.webhook_url,
                     json={
                         "text": "Test notification from Submate",
                         "event": "test",
@@ -245,9 +245,9 @@ def create_settings_router(config_path: Path | None = None) -> APIRouter:
                 )
 
         # Try ntfy
-        if has_ntfy:
+        if has_ntfy and settings.ntfy_url and settings.ntfy_topic:
             try:
-                ntfy_url = f"{settings.ntfy_url.rstrip('/')}/{settings.ntfy_topic}"  # type: ignore[union-attr]
+                ntfy_url = f"{settings.ntfy_url.rstrip('/')}/{settings.ntfy_topic}"
                 response = requests.post(
                     ntfy_url,
                     data="Test notification from Submate",
