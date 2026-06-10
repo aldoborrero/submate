@@ -93,9 +93,15 @@ class TranscriptionService:
             # Write initial SRT file
             result.to_srt_vtt(subtitle_path, word_level=self.config.stable_ts.word_level_highlight)
 
-            # Post-transcription LLM translation (only for non-English targets)
+            # Post-transcription LLM translation (only for non-English targets).
+            # Compare normalized codes so different spellings of the same language
+            # (e.g. "spa"/"Spanish" vs Whisper's "es") don't trigger a needless round-trip.
             final_text = result.text
-            if translate_to and not use_whisper_translate and translate_to != source_language:
+            if (
+                translate_to
+                and not use_whisper_translate
+                and LanguageCode.from_string(translate_to) != LanguageCode.from_string(source_language)
+            ):
                 logger.info(f"Translating subtitles from {source_language} to {translate_to} via LLM")
                 translation_service = TranslationService(self.config)
 
