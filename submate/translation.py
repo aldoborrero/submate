@@ -66,11 +66,21 @@ def validate_ass_tags(original: str, translated: str) -> bool:
 
 
 class TranslationBackendBase(ABC):
-    """Abstract base class for translation backends."""
+    """Abstract base class for translation backends.
 
-    @abstractmethod
+    Subclasses implement only :meth:`_complete` (client construction and
+    response extraction). Prompt construction is shared here.
+    """
+
     def translate(self, text: str, source_lang: str, target_lang: str, prompt_template: str | None = None) -> str:
         """Translate text from source language to target language."""
+        template = prompt_template or TRANSLATION_PROMPT
+        prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
+        return self._complete(prompt)
+
+    @abstractmethod
+    def _complete(self, prompt: str) -> str:
+        """Send a fully-formed prompt to the model and return the reply text."""
         pass
 
 
@@ -81,16 +91,13 @@ class OllamaBackend(TranslationBackendBase):
         self.model = model
         self.base_url = base_url
 
-    def translate(self, text: str, source_lang: str, target_lang: str, prompt_template: str | None = None) -> str:
+    def _complete(self, prompt: str) -> str:
         try:
             import ollama
         except ImportError as e:
             raise ImportError("ollama package not installed. Install with: pip install submate[ollama]") from e
 
         client = ollama.Client(host=self.base_url)
-        template = prompt_template or TRANSLATION_PROMPT
-        prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
-
         response = client.chat(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
@@ -106,16 +113,13 @@ class ClaudeBackend(TranslationBackendBase):
         self.api_key = api_key
         self.model = model
 
-    def translate(self, text: str, source_lang: str, target_lang: str, prompt_template: str | None = None) -> str:
+    def _complete(self, prompt: str) -> str:
         try:
             import anthropic
         except ImportError as e:
             raise ImportError("anthropic package not installed. Install with: pip install submate[claude]") from e
 
         client = anthropic.Anthropic(api_key=self.api_key)
-        template = prompt_template or TRANSLATION_PROMPT
-        prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
-
         message = client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -136,16 +140,13 @@ class OpenAIBackend(TranslationBackendBase):
         self.api_key = api_key
         self.model = model
 
-    def translate(self, text: str, source_lang: str, target_lang: str, prompt_template: str | None = None) -> str:
+    def _complete(self, prompt: str) -> str:
         try:
             import openai
         except ImportError as e:
             raise ImportError("openai package not installed. Install with: pip install submate[openai]") from e
 
         client = openai.OpenAI(api_key=self.api_key)
-        template = prompt_template or TRANSLATION_PROMPT
-        prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
-
         response = client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
@@ -162,16 +163,13 @@ class GeminiBackend(TranslationBackendBase):
         self.api_key = api_key
         self.model = model
 
-    def translate(self, text: str, source_lang: str, target_lang: str, prompt_template: str | None = None) -> str:
+    def _complete(self, prompt: str) -> str:
         try:
             from google import genai  # type: ignore[attr-defined]
         except ImportError as e:
             raise ImportError("google-genai package not installed. Install with: pip install submate[gemini]") from e
 
         client = genai.Client(api_key=self.api_key)
-        template = prompt_template or TRANSLATION_PROMPT
-        prompt = template.format(source_lang=source_lang, target_lang=target_lang, text=text)
-
         response = client.models.generate_content(model=self.model, contents=prompt)
 
         return str(response.text).strip()
@@ -280,6 +278,40 @@ class TranslationService:
 
         return translated_subtitles
 
+    def _translate_batch(
+        self,
+        texts: list[str],
+        source_lang: str,
+        target_lang: str,
+        *,
+        separator_token: str,
+        prompt_template: str | None = None,
+    ) -> list[str]:
+        """Translate a batch of texts in one request and realign the result.
+
+        Joins the texts with ``separator_token``, translates the combined string,
+        then splits the response back into blocks. If the model returns a
+        different number of blocks than were sent, alignment is unreliable, so
+        every input falls back to its original text instead of silently shifting
+        each translation onto the wrong cue. The returned list always has the
+        same length as ``texts``.
+        """
+        separator = f"\n{separator_token}\n"
+        combined = separator.join(texts)
+
+        translated = self.backend.translate(combined, source_lang, target_lang, prompt_template=prompt_template)
+        parts = [t.strip() for t in translated.split(separator_token)]
+
+        if len(parts) != len(texts):
+            logger.warning(
+                "Translation returned %d block(s) for %d input(s); keeping originals for this batch",
+                len(parts),
+                len(texts),
+            )
+            return list(texts)
+
+        return parts
+
     def _translate_chunk(self, chunk: list[srt.Subtitle], source_lang: str, target_lang: str) -> list[srt.Subtitle]:
         """Translate a single chunk of subtitles.
 
@@ -291,32 +323,19 @@ class TranslationService:
         Returns:
             List of translated srt.Subtitle objects
         """
-        separator = "\n---BREAK---\n"
         texts = [sub.content for sub in chunk]
-        combined_text = separator.join(texts)
+        translated_texts = self._translate_batch(texts, source_lang, target_lang, separator_token="---BREAK---")
 
-        # Translate the chunk
-        translated_combined = self.backend.translate(combined_text, source_lang, target_lang)
-
-        # Split back into individual blocks
-        translated_texts = translated_combined.split("---BREAK---")
-        translated_texts = [t.strip() for t in translated_texts]
-
-        # Create new subtitle objects with translated content
-        translated_chunk = []
-        for i, sub in enumerate(chunk):
-            translated_content = translated_texts[i] if i < len(translated_texts) else sub.content
-            translated_chunk.append(
-                srt.Subtitle(
-                    index=sub.index,
-                    start=sub.start,
-                    end=sub.end,
-                    content=translated_content,
-                    proprietary=sub.proprietary,
-                )
+        return [
+            srt.Subtitle(
+                index=sub.index,
+                start=sub.start,
+                end=sub.end,
+                content=translated_texts[i],
+                proprietary=sub.proprietary,
             )
-
-        return translated_chunk
+            for i, sub in enumerate(chunk)
+        ]
 
     def translate_srt_content(self, srt_content: str, source_lang: str, target_lang: str) -> str:
         """Translate SRT content string.
@@ -370,19 +389,16 @@ class TranslationService:
             return vtt_content
 
         chunk_size = self.config.translation.chunk_size
-        separator = "\n|||SUBTITLE_BREAK|||\n"
 
         for chunk_start in range(0, len(events_to_translate), chunk_size):
             chunk = events_to_translate[chunk_start : chunk_start + chunk_size]
             texts = [event.text for _, event in chunk]
-            combined = separator.join(texts)
+            translated_texts = self._translate_batch(
+                texts, source_lang, target_lang, separator_token="|||SUBTITLE_BREAK|||"
+            )
 
-            translated = self.backend.translate(combined, source_lang, target_lang)
-            translated_texts = [t.strip() for t in translated.split("|||SUBTITLE_BREAK|||")]
-
-            for j, (idx, _event) in enumerate(chunk):
-                if j < len(translated_texts):
-                    subs[idx].text = translated_texts[j]
+            for (idx, _event), new_text in zip(chunk, translated_texts):
+                subs[idx].text = new_text
 
         return subs.to_string("vtt")
 
@@ -416,36 +432,29 @@ class TranslationService:
 
         # Translate in chunks
         chunk_size = self.config.translation.chunk_size
-        separator = "\n|||SUBTITLE_BREAK|||\n"
 
         for chunk_start in range(0, len(events_to_translate), chunk_size):
             chunk = events_to_translate[chunk_start : chunk_start + chunk_size]
 
-            # Combine texts for batch translation
             texts = [event.text for _, event in chunk]
-            combined = separator.join(texts)
-
-            # Translate with ASS-specific prompt
-            translated = self.backend.translate(
-                combined, source_lang, target_lang, prompt_template=ASS_TRANSLATION_PROMPT
+            translated_texts = self._translate_batch(
+                texts,
+                source_lang,
+                target_lang,
+                separator_token="|||SUBTITLE_BREAK|||",
+                prompt_template=ASS_TRANSLATION_PROMPT,
             )
 
-            # Split back and apply
-            translated_texts = translated.split("|||SUBTITLE_BREAK|||")
-            translated_texts = [t.strip() for t in translated_texts]
-
-            for j, (idx, event) in enumerate(chunk):
-                if j < len(translated_texts):
-                    new_text = translated_texts[j]
-                    # Validate tags are preserved
-                    if validate_ass_tags(event.text, new_text):
-                        subs[idx].text = new_text
-                    else:
-                        logger.warning(
-                            "Tag mismatch in subtitle %d, keeping original. Original: %r, Translated: %r",
-                            idx,
-                            event.text,
-                            new_text,
-                        )
+            for (idx, event), new_text in zip(chunk, translated_texts):
+                # Validate tags are preserved
+                if validate_ass_tags(event.text, new_text):
+                    subs[idx].text = new_text
+                else:
+                    logger.warning(
+                        "Tag mismatch in subtitle %d, keeping original. Original: %r, Translated: %r",
+                        idx,
+                        event.text,
+                        new_text,
+                    )
 
         return subs.to_string("ass")
