@@ -64,8 +64,9 @@ def get_external_subtitle_paths(video_path: Path) -> list[Path]:
                 continue
             if file.suffix.lower() not in SUBTITLE_EXTENSIONS:
                 continue
-            # Check if subtitle filename starts with video name
-            if file.stem.startswith(video_stem):
+            # Match the video stem exactly or up to a dot boundary so that
+            # "Episode 10.en.srt" is not treated as a subtitle for "Episode 1".
+            if file.stem == video_stem or file.stem.startswith(video_stem + "."):
                 subtitle_paths.append(file)
     except OSError as e:
         logger.debug(f"Failed to scan directory {video_dir}: {e}")
@@ -89,9 +90,10 @@ def parse_subtitle_language(subtitle_path: Path, video_stem: str) -> LanguageCod
     Returns:
         LanguageCode parsed from filename, or NONE if not found
     """
-    # Get the part after the video name
+    # Get the part after the video name. Require a dot boundary so a longer
+    # sibling stem (e.g. "Episode 10" vs video "Episode 1") is not matched.
     subtitle_stem = subtitle_path.stem
-    if not subtitle_stem.startswith(video_stem):
+    if subtitle_stem != video_stem and not subtitle_stem.startswith(video_stem + "."):
         return LanguageCode.NONE
 
     # Extract parts after video name (e.g., ".en" or ".subgen.medium.en")
@@ -99,9 +101,12 @@ def parse_subtitle_language(subtitle_path: Path, video_stem: str) -> LanguageCod
     if not suffix:
         return LanguageCode.NONE
 
-    # Try each part as a potential language code
+    # The language tag is conventionally the last segment before the extension
+    # (e.g. movie.subgen.medium.en). Match from the end so a leading non-language
+    # flag whose token collides with an ISO code (movie.no.forced.en -> "no" is
+    # Norwegian) does not shadow the real trailing tag.
     parts = suffix.split(".")
-    for part in parts:
+    for part in reversed(parts):
         lang = LanguageCode.from_string(part)
         if lang is not LanguageCode.NONE:
             return lang
