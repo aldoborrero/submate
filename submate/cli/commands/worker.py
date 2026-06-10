@@ -8,24 +8,14 @@ from huey.consumer import Consumer
 import submate.queue.registered_tasks  # noqa: F401 (side effect: registers tasks)
 from submate.queue.task_queue import get_huey
 
-from ..utils import console, setup_logging
+from ..utils import console, logging_options, setup_logging
 
 
 @click.command()
 @click.option("--workers", "-w", type=int, default=2, help="Number of worker threads")
-@click.option(
-    "--log-level",
-    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
-    default="INFO",
-    help="Set logging level (DEBUG, INFO, WARNING, ERROR)",
-)
-@click.option(
-    "--log-file",
-    type=click.Path(writable=True),
-    help="Write logs to specified file (in addition to console)",
-)
+@logging_options
 @click.option("--daemonize", "-d", is_flag=True, help="Run as background daemon")
-def worker(workers: int, log_level: str, log_file: click.Path | None, daemonize: bool) -> None:
+def worker(workers: int, log_level: str, log_file: str | None, daemonize: bool) -> None:
     """Start the Huey task worker for processing transcriptions.
 
     The worker processes tasks from the Huey queue. Run this alongside

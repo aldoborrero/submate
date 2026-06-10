@@ -1,10 +1,33 @@
 """Shared CLI utilities and helpers."""
 
 import logging
+from collections.abc import Callable
+from typing import Any
 
+import click
 from rich.console import Console
 
 console = Console()
+
+
+def logging_options(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Attach the shared --log-level / --log-file options to a command.
+
+    Keeps the option names, choices, and help text defined in one place so
+    commands that configure logging stay in sync.
+    """
+    func = click.option(
+        "--log-file",
+        type=click.Path(writable=True),
+        help="Write logs to specified file (in addition to console)",
+    )(func)
+    func = click.option(
+        "--log-level",
+        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+        default="INFO",
+        help="Set logging level (DEBUG, INFO, WARNING, ERROR)",
+    )(func)
+    return func
 
 
 def setup_logging(verbose: bool = False, level: str = "INFO", log_file: str | None = None) -> None:

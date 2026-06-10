@@ -15,7 +15,7 @@ from submate.queue import get_task_queue
 from submate.queue.models import TranscriptionSkippedError
 from submate.queue.tasks import TranscriptionTask
 
-from ..utils import console, setup_logging
+from ..utils import console, logging_options, setup_logging
 
 
 def format_supported_extensions(extensions: set[str]) -> str:
@@ -36,17 +36,7 @@ def format_supported_extensions(extensions: set[str]) -> str:
     help="Translate subtitles to target language (e.g., 'es', 'fr', 'de'). Uses LLM backend.",
 )
 @click.option("--force", "-f", is_flag=True, help="Overwrite existing subtitle files")
-@click.option(
-    "--log-level",
-    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
-    default="INFO",
-    help="Set logging level (DEBUG, INFO, WARNING, ERROR)",
-)
-@click.option(
-    "--log-file",
-    type=click.Path(writable=True),
-    help="Write logs to specified file (in addition to console)",
-)
+@logging_options
 @click.option("--recursive", "-r", is_flag=True, help="Process subdirectories recursively")
 @click.option("--fail-fast", is_flag=True, help="Stop immediately on first error")
 @click.option("--sync", is_flag=True, help="Process files immediately (synchronous)")
