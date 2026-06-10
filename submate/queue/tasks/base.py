@@ -46,7 +46,13 @@ class BaseTask[TResult](ABC):
         except self.propagate_exceptions:
             raise
         except Exception as e:
-            logger.error("Task '%s' failed", self.task_name, exc_info=True)
+            # Include the file path when present so file-based task failures keep
+            # the context they logged before this wrapper was centralized.
+            file_path = kwargs.get("file_path")
+            if file_path:
+                logger.error("Task '%s' failed for %s", self.task_name, file_path, exc_info=True)
+            else:
+                logger.error("Task '%s' failed", self.task_name, exc_info=True)
             return TaskResult(success=False, error=str(e), data=self.failure_data)
 
     def validate_input(self, **kwargs: Any) -> None:
