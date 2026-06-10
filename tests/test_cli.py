@@ -144,3 +144,39 @@ class TestTranslateCommandASS:
         from pathlib import Path
 
         assert is_subtitle_file(Path(ass_file))
+
+
+def test_enqueue_files_fail_fast_stops_on_first_error(monkeypatch):
+    """--fail-fast must stop processing after the first failure."""
+    import importlib
+    from pathlib import Path
+
+    transcribe_mod = importlib.import_module("submate.cli.commands.transcribe")
+
+    task_queue = Mock()
+    task_queue.enqueue.side_effect = RuntimeError("boom")
+    task_queue.size = 0
+    monkeypatch.setattr(transcribe_mod, "get_task_queue", lambda: task_queue)
+
+    files = [Path("/a.mkv"), Path("/b.mkv"), Path("/c.mkv")]
+    transcribe_mod._enqueue_files(files, None, None, False, immediate=False, fail_fast=True)
+
+    assert task_queue.enqueue.call_count == 1
+
+
+def test_enqueue_files_without_fail_fast_continues(monkeypatch):
+    """Default behavior keeps processing all files despite errors."""
+    import importlib
+    from pathlib import Path
+
+    transcribe_mod = importlib.import_module("submate.cli.commands.transcribe")
+
+    task_queue = Mock()
+    task_queue.enqueue.side_effect = RuntimeError("boom")
+    task_queue.size = 0
+    monkeypatch.setattr(transcribe_mod, "get_task_queue", lambda: task_queue)
+
+    files = [Path("/a.mkv"), Path("/b.mkv"), Path("/c.mkv")]
+    transcribe_mod._enqueue_files(files, None, None, False, immediate=False, fail_fast=False)
+
+    assert task_queue.enqueue.call_count == 3
