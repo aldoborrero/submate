@@ -62,10 +62,7 @@ def transcribe_audio_task(
         bazarr_service = BazarrService(config)
 
         # Convert string to OutputFormat enum
-        try:
-            output_format_enum = OutputFormat(output_format)
-        except ValueError:
-            output_format_enum = OutputFormat.SRT
+        output_format_enum = OutputFormat.from_value(output_format)
 
         subtitle_content = bazarr_service.transcribe_audio_bytes(
             audio_bytes=audio_bytes,

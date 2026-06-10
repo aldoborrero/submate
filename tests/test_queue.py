@@ -176,3 +176,12 @@ def test_transcribe_file_task_handles_skip():
     assert result["success"] is True
     assert result["skipped"] is True
     assert result["reason"] == SkipReason.TARGET_SUBTITLE_EXISTS.value
+
+
+def test_output_format_from_value_normalizes():
+    from submate.queue.models import OutputFormat
+
+    assert OutputFormat.from_value("vtt") is OutputFormat.VTT
+    assert OutputFormat.from_value(OutputFormat.JSON) is OutputFormat.JSON
+    assert OutputFormat.from_value("nonsense") is OutputFormat.SRT
+    assert OutputFormat.from_value("nonsense", default=OutputFormat.TXT) is OutputFormat.TXT
