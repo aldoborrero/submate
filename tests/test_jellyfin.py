@@ -229,3 +229,21 @@ def test_payload_event_types():
     assert not added.is_playback_start()
     assert playback.is_playback_start()
     assert not playback.is_item_added()
+
+
+def test_jellyfin_connect_uses_authorization_header(mocker):
+    """All Jellyfin requests should use the same Authorization scheme."""
+    from submate.config import Config
+    from submate.media_servers.jellyfin import JellyfinClient
+
+    config = Config()
+    config.jellyfin.server_url = "http://jf:8096"
+    config.jellyfin.api_key = "secret"
+
+    client = JellyfinClient(config)
+    mock_get = mocker.patch("submate.media_servers.jellyfin.requests.get")
+
+    client.connect()
+
+    headers = mock_get.call_args.kwargs["headers"]
+    assert headers == {"Authorization": "MediaBrowser Token=secret"}
