@@ -227,12 +227,24 @@ def test_transcribe_invalid_task(config: Config) -> None:
             model.transcribe("/path/to/audio.wav", task="invalid")  # type: ignore[arg-type]
 
 
-def test_transcribe_model_not_loaded(config: Config) -> None:
-    """Test transcribe without loading raises RuntimeError."""
+def test_transcribe_auto_loads_when_not_loaded(config: Config) -> None:
+    """transcribe() lazy-loads so an idle-unloaded shared model reloads on demand."""
     model = WhisperModelWrapper(config)
 
-    with pytest.raises(RuntimeError, match="Model not loaded"):
-        model.transcribe("/path/to/audio.wav")
+    with patch("stable_whisper.load_faster_whisper") as mock_load:
+        mock_model = MagicMock()
+        mock_result = MagicMock()
+        mock_result.language = "en"
+        mock_result.text = "Hello"
+        mock_model.transcribe_stable.return_value = mock_result
+        mock_load.return_value = mock_model
+
+        assert not model.is_loaded
+        result = model.transcribe("/path/to/audio.wav")
+
+        assert model.is_loaded
+        mock_load.assert_called_once()
+        assert result.language == "en"
 
 
 def test_transcribe_failure(config: Config) -> None:
@@ -330,3 +342,68 @@ def test_save_audio_removes_temp_file_on_write_error(monkeypatch):
 
     assert not Path(created["path"]).exists()
     assert wrapper._temp_audio_file is None
+
+
+# Shared-model lifecycle
+
+
+def test_effective_idle_timeout_matrix(config: Config) -> None:
+    """The idle policy maps the server settings onto a single timeout."""
+    import submate.whisper as whisper_mod
+
+    config.server.bazarr_keep_model_loaded = False
+    assert whisper_mod._effective_idle_timeout(config) == 0.0
+
+    config.server.bazarr_keep_model_loaded = True
+    config.server.bazarr_model_idle_timeout = 0
+    assert whisper_mod._effective_idle_timeout(config) is None  # resident
+
+    config.server.bazarr_model_idle_timeout = 120
+    assert whisper_mod._effective_idle_timeout(config) == 120.0
+
+
+def test_unload_if_idle_unloads_when_quiet(config: Config) -> None:
+    """A model untouched past the idle window is unloaded."""
+    model = WhisperModelWrapper(config)
+
+    with patch("stable_whisper.load_faster_whisper") as mock_load:
+        mock_load.return_value = MagicMock()
+        model.load()
+        assert model.is_loaded
+
+        model._last_used -= 1000  # pretend it has been idle a long time
+        model.unload_if_idle(300)
+
+        assert not model.is_loaded
+
+
+def test_unload_if_idle_keeps_recently_used_model(config: Config) -> None:
+    """A model used within the idle window stays loaded."""
+    model = WhisperModelWrapper(config)
+
+    with patch("stable_whisper.load_faster_whisper") as mock_load:
+        mock_load.return_value = MagicMock()
+        model.load()
+
+        model.unload_if_idle(300)  # just loaded -> not idle
+
+        assert model.is_loaded
+
+
+def test_get_whisper_model_returns_shared_singleton(config: Config) -> None:
+    """All callers share one model instance, so memory stays at 1x the model."""
+    import submate.whisper as whisper_mod
+
+    # keep_model_loaded=True with idle_timeout=0 -> resident, so no watchdog
+    # thread is spawned for this test.
+    config.server.bazarr_keep_model_loaded = True
+    config.server.bazarr_model_idle_timeout = 0
+    whisper_mod._shared_model = None
+    try:
+        first = whisper_mod.get_whisper_model(config)
+        second = whisper_mod.get_whisper_model(config)
+
+        assert first is second
+        assert isinstance(first, WhisperModelWrapper)
+    finally:
+        whisper_mod._shared_model = None

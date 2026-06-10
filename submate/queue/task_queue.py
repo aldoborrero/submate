@@ -117,15 +117,11 @@ class TaskQueue:
 
         # Handle immediate mode (synchronous execution)
         if immediate:
-            # Temporarily set immediate mode for sync processing
-            original_immediate = self.huey.immediate
-            self.huey.immediate = True
-            try:
-                # Execute task directly without queuing
-                return task.execute(**kwargs)
-            finally:
-                # Always restore original immediate setting
-                self.huey.immediate = original_immediate
+            # Execute the task inline. This bypasses Huey entirely, so there is
+            # no need to flip the global ``huey.immediate`` flag -- doing so would
+            # only mutate shared state that other threads/processes rely on to
+            # decide whether their own tasks are queued or run inline.
+            return task.execute(**kwargs)
         else:
             # Dispatch to a statically-registered Huey task. The worker process
             # only knows tasks registered at import time, so registering a new

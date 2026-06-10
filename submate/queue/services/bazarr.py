@@ -5,7 +5,7 @@ from typing import Literal
 
 from submate.config import Config
 from submate.translation import TranslationService
-from submate.whisper import WhisperModelWrapper
+from submate.whisper import get_whisper_model
 
 from ..models import LanguageDetectionResult, OutputFormat
 
@@ -63,17 +63,17 @@ class BazarrService:
         """
         logger.info("Detecting language from audio (%d bytes)", len(audio_bytes))
         try:
-            with WhisperModelWrapper(self.config) as model:
-                # Transcribe a short segment to detect language
-                result = model.transcribe(audio_bytes)
-                language_code = result.language or "und"
-                language_name = self.LANGUAGE_NAMES.get(language_code, "Unknown")
+            model = get_whisper_model(self.config)
+            # Transcribe a short segment to detect language
+            result = model.transcribe(audio_bytes)
+            language_code = result.language or "und"
+            language_name = self.LANGUAGE_NAMES.get(language_code, "Unknown")
 
-                logger.info("Language detected: %s (%s)", language_name, language_code)
-                return {
-                    "detected_language": language_name,
-                    "language_code": language_code,
-                }
+            logger.info("Language detected: %s (%s)", language_name, language_code)
+            return {
+                "detected_language": language_name,
+                "language_code": language_code,
+            }
         except Exception:
             logger.error("Failed to detect language", exc_info=True)
             raise
@@ -110,35 +110,35 @@ class BazarrService:
             output_format.value,
         )
         try:
-            with WhisperModelWrapper(self.config) as model:
-                result = model.transcribe(audio_bytes, language=language, task=task)
-                detected_language = result.language or "en"
+            model = get_whisper_model(self.config)
+            result = model.transcribe(audio_bytes, language=language, task=task)
+            detected_language = result.language or "en"
 
-                # Get formatted output based on enum
-                match output_format:
-                    case OutputFormat.SRT:
-                        content = result.to_srt_vtt(filepath=None, word_level=word_timestamps)
-                        content = content if content is not None else ""
-                    case OutputFormat.VTT:
-                        content = result.to_srt_vtt(filepath=None, word_level=word_timestamps, vtt=True)
-                        content = content if content is not None else ""
-                    case OutputFormat.TXT:
-                        content = result.text
-                    case OutputFormat.JSON:
-                        content = json.dumps(result.to_dict())
-                    case _:
-                        raise ValueError(f"Unsupported output format: {output_format}")
+            # Get formatted output based on enum
+            match output_format:
+                case OutputFormat.SRT:
+                    content = result.to_srt_vtt(filepath=None, word_level=word_timestamps)
+                    content = content if content is not None else ""
+                case OutputFormat.VTT:
+                    content = result.to_srt_vtt(filepath=None, word_level=word_timestamps, vtt=True)
+                    content = content if content is not None else ""
+                case OutputFormat.TXT:
+                    content = result.text
+                case OutputFormat.JSON:
+                    content = json.dumps(result.to_dict())
+                case _:
+                    raise ValueError(f"Unsupported output format: {output_format}")
 
-                # Translate if target language differs from detected language
-                if target_language and target_language != detected_language:
-                    content = self._translate_content(
-                        content=content,
-                        source_lang=detected_language,
-                        target_lang=target_language,
-                        output_format=output_format,
-                    )
+            # Translate if target language differs from detected language
+            if target_language and target_language != detected_language:
+                content = self._translate_content(
+                    content=content,
+                    source_lang=detected_language,
+                    target_lang=target_language,
+                    output_format=output_format,
+                )
 
-                return content
+            return content
 
         except Exception:
             logger.error(

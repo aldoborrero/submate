@@ -33,7 +33,7 @@
 
 buildPythonApplication rec {
   pname = "submate";
-  version = "1.0.0";
+  version = "0.2.1";
   pyproject = true;
 
   disabled = pythonOlder "3.13";

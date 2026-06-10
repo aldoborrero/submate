@@ -86,3 +86,8 @@ def _run_worker(workers: int, log_level: str, log_file: str | None) -> None:
         consumer.run()
     except KeyboardInterrupt:
         console.print("\n[yellow]Worker stopped[/yellow]")
+    finally:
+        # Release the shared Whisper model (frees VRAM if clear_vram_on_complete).
+        from submate.whisper import shutdown_whisper_model
+
+        shutdown_whisper_model()

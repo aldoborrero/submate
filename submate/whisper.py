@@ -9,6 +9,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -92,6 +93,9 @@ class WhisperModelWrapper:
         self._lock = threading.RLock()
         self._loaded = False
         self._temp_audio_file: str | None = None
+        # Monotonic timestamp of the last transcribe() call, used by the idle
+        # watchdog (see get_whisper_model) to unload a model that has gone quiet.
+        self._last_used = time.monotonic()
 
     @property
     def is_loaded(self) -> bool:
@@ -177,6 +181,20 @@ class WhisperModelWrapper:
             if self._config.clear_vram_on_complete:
                 self._clear_vram()
 
+    def unload_if_idle(self, idle_seconds: float) -> None:
+        """Unload the model if it has been unused for at least ``idle_seconds``.
+
+        Holding the lock guarantees we never unload mid-transcription: an active
+        transcribe() owns the lock, and once it releases, ``_last_used`` is fresh
+        so this is a no-op. Called by the idle watchdog in get_whisper_model.
+        """
+        with self._lock:
+            if not self._loaded:
+                return
+            if time.monotonic() - self._last_used >= idle_seconds:
+                logger.info("Unloading Whisper model after %.0fs idle", idle_seconds)
+                self.unload()
+
     def _clear_vram(self) -> None:
         """Clear CUDA VRAM.
 
@@ -227,9 +245,10 @@ class WhisperModelWrapper:
             raise ValueError(f"Invalid task: {task}. Valid options: {', '.join(self.VALID_TASKS)}")
 
         with self._lock:
-            # Ensure model is loaded
-            if not self._loaded or self._model is None:
-                raise RuntimeError("Model not loaded. Use context manager or call .load() first")
+            # Lazy-load so the shared, idle-unloaded model (see get_whisper_model)
+            # transparently reloads when a request arrives after an idle unload.
+            # load() is idempotent, so an already-loaded model is untouched.
+            self.load()
 
             # Prepare audio input
             audio_input = self._prepare_audio(audio)
@@ -270,6 +289,9 @@ class WhisperModelWrapper:
             finally:
                 # Clean up temp audio file if created
                 self._cleanup_temp_audio()
+                # Refresh the idle clock on every exit (success or failure) so a
+                # brief failure doesn't make the watchdog unload a hot model.
+                self._last_used = time.monotonic()
 
     def _cleanup_temp_audio(self) -> None:
         """Clean up temporary audio file if one was created."""
@@ -390,3 +412,84 @@ class WhisperModelWrapper:
         """
         self.unload()
         # Return None to propagate exceptions
+
+
+# --- Process-wide shared model -------------------------------------------------
+#
+# Transcription is GPU/CPU-bound and inherently serial: two concurrent runs on
+# one device don't go faster, they just duplicate the model in memory (and OOM a
+# GPU). So the worker (and the CLI --sync path) share ONE model instance whose
+# RLock serializes transcribe() across worker threads. Memory stays at 1x the
+# model regardless of how many worker threads run, while those threads still
+# overlap the non-model work (ffmpeg, file IO, LLM translation).
+
+_shared_model: WhisperModelWrapper | None = None
+_shared_model_lock = threading.Lock()
+
+
+def _effective_idle_timeout(config: Config) -> float | None:
+    """Seconds of inactivity before the shared model is unloaded.
+
+    Returns ``None`` to keep the model resident for the whole process lifetime.
+    Driven by the server's model-lifecycle settings:
+
+    - ``bazarr_keep_model_loaded=False`` -> ``0`` (unload as soon as it goes idle)
+    - ``bazarr_model_idle_timeout <= 0``  -> ``None`` (never auto-unload)
+    - otherwise -> the configured idle timeout
+    """
+    server = config.server
+    if not server.bazarr_keep_model_loaded:
+        return 0.0
+    if server.bazarr_model_idle_timeout <= 0:
+        return None
+    return float(server.bazarr_model_idle_timeout)
+
+
+def _start_idle_watchdog(model: WhisperModelWrapper) -> None:
+    """Start a daemon thread that unloads ``model`` once it has been idle.
+
+    No-op when the model is configured to stay resident.
+    """
+    idle = _effective_idle_timeout(model.config)
+    if idle is None:
+        return
+
+    # Check often enough to honor short timeouts without busy-waiting on long ones.
+    interval = max(5.0, min(idle, 30.0))
+
+    def _watch() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                model.unload_if_idle(idle)
+            except Exception:
+                logger.error("Idle model-unload check failed", exc_info=True)
+
+    threading.Thread(target=_watch, name="whisper-idle-unload", daemon=True).start()
+
+
+def get_whisper_model(config: Config) -> WhisperModelWrapper:
+    """Return the process-wide shared Whisper model, creating it on first use.
+
+    The model loads lazily on the first transcribe() and is reused across all
+    tasks. Do NOT use it as a context manager -- its lifecycle is managed here
+    (kept loaded, with an optional idle-unload watchdog), not per call.
+
+    The first caller's ``config`` fixes the model for the process lifetime, which
+    matches how config is resolved as a process-global singleton elsewhere.
+    """
+    global _shared_model
+    if _shared_model is None:
+        with _shared_model_lock:
+            if _shared_model is None:
+                model = WhisperModelWrapper(config)
+                _start_idle_watchdog(model)
+                _shared_model = model
+    return _shared_model
+
+
+def shutdown_whisper_model() -> None:
+    """Unload the shared model if one exists (e.g. on worker shutdown)."""
+    with _shared_model_lock:
+        if _shared_model is not None:
+            _shared_model.unload()

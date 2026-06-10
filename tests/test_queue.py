@@ -158,8 +158,8 @@ def test_registered_task_for_unknown_raises():
 
 
 def test_transcribe_file_task_handles_skip():
-    """The worker task converts a skip into a successful, serializable result
-    instead of letting Huey retry it."""
+    """A skip is swallowed (no exception) so Huey doesn't retry it. The task is
+    fire-and-forget, so it returns None and stores no result."""
     from submate.queue.models import SkipReason, TranscriptionSkippedError
 
     service = Mock()
@@ -173,9 +173,64 @@ def test_transcribe_file_task_handles_skip():
 
         result = transcribe_file_task.call_local(file_path="/movie.mkv")
 
-    assert result["success"] is True
-    assert result["skipped"] is True
-    assert result["reason"] == SkipReason.TARGET_SUBTITLE_EXISTS.value
+    assert result is None
+    service.transcribe_file.assert_called_once()
+
+
+def test_transcribe_file_task_drops_duplicate_inflight():
+    """A task whose params are already in-flight is dropped without re-running."""
+    import submate.queue.registered_tasks as rt
+
+    service = Mock()
+    key = ("/movie.mkv", None, None, False)
+    rt._inflight_tasks.add(key)
+    try:
+        with (
+            patch("submate.queue.services.TranscriptionService", return_value=service),
+            patch("submate.config.get_config", return_value=Mock()),
+        ):
+            result = rt.transcribe_file_task.call_local(file_path="/movie.mkv")
+
+        assert result is None
+        service.transcribe_file.assert_not_called()
+    finally:
+        rt._inflight_tasks.discard(key)
+
+
+def test_transcribe_file_task_reraises_failure_for_retry():
+    """A genuine failure propagates so Huey's retry machinery engages, and the
+    in-flight marker is still cleared (so the retry can run)."""
+    import submate.queue.registered_tasks as rt
+
+    service = Mock()
+    service.transcribe_file.side_effect = RuntimeError("disk error")
+
+    with (
+        patch("submate.queue.services.TranscriptionService", return_value=service),
+        patch("submate.config.get_config", return_value=Mock()),
+    ):
+        with pytest.raises(RuntimeError, match="disk error"):
+            rt.transcribe_file_task.call_local(file_path="/movie.mkv")
+
+    assert ("/movie.mkv", None, None, False) not in rt._inflight_tasks
+
+
+def test_transcribe_file_task_releases_inflight_after_run():
+    """The in-flight marker is cleared once the task finishes, so a later
+    (sequential) re-enqueue of the same file is allowed to run."""
+    import submate.queue.registered_tasks as rt
+
+    service = Mock()
+    service.transcribe_file.return_value = TranscriptionResult(
+        subtitle_path="/out.srt", language="en", segments=1, text="hi"
+    )
+    with (
+        patch("submate.queue.services.TranscriptionService", return_value=service),
+        patch("submate.config.get_config", return_value=Mock()),
+    ):
+        rt.transcribe_file_task.call_local(file_path="/movie.mkv")
+
+    assert ("/movie.mkv", None, None, False) not in rt._inflight_tasks
 
 
 def test_output_format_from_value_normalizes():
@@ -236,8 +291,9 @@ def test_queued_transcription_runs_in_a_separate_worker_registry(tmp_path, monke
         assert task is not None
         result = worker.execute(task)
 
-        assert result["success"] is True
-        assert result["data"] is fake_result
+        # Fire-and-forget: the worker runs the service but stores no result.
+        assert result is None
+        assert worker.storage.result_store_size() == 0
         service.transcribe_file.assert_called_once_with(video, None, None, False)
     finally:
         producer.storage.close()

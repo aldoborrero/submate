@@ -1,8 +1,10 @@
 """Bazarr webhook handlers for ASR and language detection."""
 
+import asyncio
 import logging
 from io import BytesIO
 
+from submate.config import get_config
 from submate.queue.registered_tasks import detect_language_task, transcribe_audio_task
 from submate.server.handlers.bazarr.audio import extract_audio_segment
 from submate.server.handlers.bazarr.models import LanguageDetectionResponse
@@ -76,8 +78,13 @@ async def handle_asr_request(
             target_language=language,  # Translate to this language if needed
         )
 
-        # Block until worker completes the task
-        result = result_handle(blocking=True)
+        # Wait for the worker to finish. result_handle(blocking=True) is a
+        # synchronous polling call, so run it in a thread to avoid blocking the
+        # event loop (which would freeze every other request for the whole
+        # transcription). The timeout prevents an indefinite hang if no worker
+        # is running to process the task.
+        timeout = get_config().queue.result_timeout
+        result = await asyncio.to_thread(result_handle, blocking=True, timeout=timeout)
 
         if result.get("success"):
             logger.info(f"{task.capitalize()} complete for Bazarr request")
@@ -116,14 +123,16 @@ async def handle_detect_language(
     )
 
     try:
-        # Extract audio segment
-        segment_data = extract_audio_segment(audio_file, offset=offset, length=length)
+        # Extract audio segment. ffmpeg is blocking, so keep it off the event loop.
+        segment_data = await asyncio.to_thread(extract_audio_segment, audio_file, offset=offset, length=length)
 
         # Call the statically registered task and wait for result
         result_handle = detect_language_task(audio_bytes=segment_data)
 
-        # Block until worker completes the task
-        result = result_handle(blocking=True)
+        # Wait for the worker off the event loop, with a timeout so a missing
+        # worker falls back to "Unknown" instead of hanging the server.
+        timeout = get_config().queue.detect_language_timeout
+        result = await asyncio.to_thread(result_handle, blocking=True, timeout=timeout)
 
         if result.get("success"):
             return LanguageDetectionResponse(**result.get("data", {}))

@@ -1,5 +1,7 @@
 # submate/queue/services/transcription.py
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 import srt
@@ -16,7 +18,7 @@ from submate.subtitle import (
     has_subtitle_language,
 )
 from submate.translation import TranslationService
-from submate.whisper import WhisperModelWrapper
+from submate.whisper import get_whisper_model
 
 from ..models import SkipReason, TranscriptionResult, TranscriptionSkippedError
 
@@ -56,42 +58,52 @@ class TranscriptionService:
         # Determine if we should use Whisper's built-in translation (only works for → English)
         use_whisper_translate = translate_to and LanguageCode.from_string(translate_to) == LanguageCode.ENGLISH
 
-        with WhisperModelWrapper(self.config) as model:
-            audio = prepare_audio_for_transcription(file_path, audio_language)
+        # Borrow the process-wide shared model (loads lazily, stays resident).
+        model = get_whisper_model(self.config)
+        audio = prepare_audio_for_transcription(file_path, audio_language)
 
-            if use_whisper_translate:
-                # Use Whisper's built-in translation to English (free, no LLM API needed)
-                logger.info("Using Whisper's built-in translation to English")
-                result = model.transcribe(audio, language=audio_language, task="translate")
-            else:
-                # Transcribe only - LLM will handle translation to other languages
-                result = model.transcribe(audio, language=audio_language, task="transcribe")
+        if use_whisper_translate:
+            # Use Whisper's built-in translation to English (free, no LLM API needed)
+            logger.info("Using Whisper's built-in translation to English")
+            result = model.transcribe(audio, language=audio_language, task="translate")
+        else:
+            # Transcribe only - LLM will handle translation to other languages
+            result = model.transcribe(audio, language=audio_language, task="transcribe")
 
-            # Determine source language (detected by Whisper)
-            source_language = audio_language or result.language
-            subtitle_settings = self.config.subtitle
+        # Determine source language (detected by Whisper)
+        source_language = audio_language or result.language
+        subtitle_settings = self.config.subtitle
 
-            # Determine final output language
-            if subtitle_settings.force_detected_language_to:
-                output_language = subtitle_settings.force_detected_language_to
-                logger.debug(f"Forcing output language to: {output_language}")
-            elif translate_to:
-                output_language = translate_to
-            else:
-                output_language = source_language
+        # Determine final output language
+        if subtitle_settings.force_detected_language_to:
+            output_language = subtitle_settings.force_detected_language_to
+            logger.debug(f"Forcing output language to: {output_language}")
+        elif translate_to:
+            output_language = translate_to
+        else:
+            output_language = source_language
 
-            # Build subtitle path with naming options from config
-            subtitle_path = build_subtitle_path(
-                file_path,
-                language=output_language,
-                naming_type=subtitle_settings.language_naming_type,
-                include_subgen_marker=subtitle_settings.include_subgen_marker,
-                include_model=subtitle_settings.include_model_in_filename,
-                model_name=self.config.whisper.model,
-            )
+        # Build subtitle path with naming options from config
+        subtitle_path = build_subtitle_path(
+            file_path,
+            language=output_language,
+            naming_type=subtitle_settings.language_naming_type,
+            include_subgen_marker=subtitle_settings.include_subgen_marker,
+            include_model=subtitle_settings.include_model_in_filename,
+            model_name=self.config.whisper.model,
+        )
 
-            # Write initial SRT file
-            result.to_srt_vtt(subtitle_path, word_level=self.config.stable_ts.word_level_highlight)
+        # Render to a temp file in the destination directory, then atomically
+        # move it into place. If the same target is produced concurrently (e.g.
+        # a duplicate enqueue across worker processes), a reader never observes a
+        # half-written subtitle -- it sees either the old file or the complete
+        # new one. Building in a temp file also keeps the LLM-translation rewrite
+        # off the published path entirely.
+        dest_dir = os.path.dirname(subtitle_path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dest_dir, suffix=".srt.tmp")
+        os.close(fd)
+        try:
+            result.to_srt_vtt(tmp_path, word_level=self.config.stable_ts.word_level_highlight)
 
             # Post-transcription LLM translation (only for non-English targets).
             # Compare normalized codes so different spellings of the same language
@@ -105,27 +117,34 @@ class TranscriptionService:
                 logger.info(f"Translating subtitles from {source_language} to {translate_to} via LLM")
                 translation_service = TranslationService(self.config)
 
-                # Read the SRT file, translate, and write back
-                with open(subtitle_path, encoding="utf-8") as f:
+                # Translate the rendered SRT in the temp file before publishing it.
+                with open(tmp_path, encoding="utf-8") as f:
                     srt_content = f.read()
 
                 translated_content = translation_service.translate_srt_content(
                     srt_content, source_language, translate_to
                 )
 
-                with open(subtitle_path, "w", encoding="utf-8") as f:
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     f.write(translated_content)
 
                 # Extract translated text for result
                 translated_subs = list(srt.parse(translated_content))
                 final_text = "\n".join(sub.content for sub in translated_subs)
 
-            return TranscriptionResult(
-                subtitle_path=subtitle_path,
-                language=output_language,
-                segments=len(result.segments),
-                text=final_text,
-            )
+            os.replace(tmp_path, subtitle_path)
+        except BaseException:
+            # Never leave a partial temp artifact behind on failure.
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+        return TranscriptionResult(
+            subtitle_path=subtitle_path,
+            language=output_language,
+            segments=len(result.segments),
+            text=final_text,
+        )
 
     def _should_skip_transcription(
         self,

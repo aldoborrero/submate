@@ -1,8 +1,9 @@
 """Jellyfin webhook handler."""
 
+import asyncio
 import logging
 
-from submate.config import get_config
+from submate.config import Config, get_config
 from submate.media_servers.jellyfin import JellyfinClient
 from submate.paths import map_path
 from submate.queue import get_task_queue
@@ -10,6 +11,23 @@ from submate.queue.tasks import TranscriptionTask
 from submate.server.handlers.jellyfin.models import JellyfinWebhookPayload
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_media_path(jellyfin: JellyfinClient, config: Config, item_id: str) -> str:
+    """Look up the media path for an item via Jellyfin's HTTP API.
+
+    JellyfinClient uses blocking ``requests``, so this is meant to be run off the
+    event loop (via asyncio.to_thread). Path mapping is applied here too so the
+    whole resolve step is a single thread hop.
+    """
+    jellyfin.connect()
+    file_path = jellyfin.get_file_path(item_id)
+    return map_path(
+        file_path,
+        use_mapping=config.path_mapping.enabled,
+        path_from=config.path_mapping.from_path,
+        path_to=config.path_mapping.to_path,
+    )
 
 
 async def handle_jellyfin_webhook(payload: JellyfinWebhookPayload) -> dict:
@@ -40,18 +58,10 @@ async def handle_jellyfin_webhook(payload: JellyfinWebhookPayload) -> dict:
         }
 
     try:
-        # Get file path from Jellyfin
+        # Resolve the media path via Jellyfin's blocking HTTP API off the event
+        # loop so a slow/unreachable Jellyfin doesn't freeze the whole server.
         jellyfin = JellyfinClient(config)
-        jellyfin.connect()
-        file_path = jellyfin.get_file_path(payload.item_id)
-
-        # Apply path mapping if configured (for Docker)
-        mapped_path = map_path(
-            file_path,
-            use_mapping=config.path_mapping.enabled,
-            path_from=config.path_mapping.from_path,
-            path_to=config.path_mapping.to_path,
-        )
+        mapped_path = await asyncio.to_thread(_resolve_media_path, jellyfin, config, payload.item_id)
 
         logger.info(f"Processing file: {mapped_path}")
 
@@ -64,9 +74,9 @@ async def handle_jellyfin_webhook(payload: JellyfinWebhookPayload) -> dict:
             force=False,
         )
 
-        # Refresh Jellyfin metadata
+        # Refresh Jellyfin metadata (another blocking HTTP call -> off the loop)
         try:
-            jellyfin.refresh_item(payload.item_id)
+            await asyncio.to_thread(jellyfin.refresh_item, payload.item_id)
         except Exception as e:
             logger.warning(f"Failed to refresh Jellyfin metadata: {e}")
 

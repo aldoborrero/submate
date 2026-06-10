@@ -19,10 +19,8 @@ Example:
     >>> print(f"Queue size: {task_queue.size}")
 """
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from huey import SqliteHuey
+import threading
+from typing import Any
 
 # Core queue classes
 # Data models
@@ -40,8 +38,10 @@ from .tasks import (
     TranscriptionTask,
 )
 
-# Global singleton instance
+# Global singleton instance, guarded by a lock (double-checked) so concurrent
+# first-callers don't each build a TaskQueue and its services.
 _task_queue: TaskQueue | None = None
+_task_queue_lock = threading.Lock()
 
 
 def get_task_queue() -> TaskQueue:
@@ -57,22 +57,12 @@ def get_task_queue() -> TaskQueue:
     """
     global _task_queue
     if _task_queue is None:
-        from submate.config import get_config
+        with _task_queue_lock:
+            if _task_queue is None:
+                from submate.config import get_config
 
-        _task_queue = TaskQueue(get_config())
+                _task_queue = TaskQueue(get_config())
     return _task_queue
-
-
-# Lazy Huey instance - only initialized when accessed
-_huey_instance: "SqliteHuey | None" = None
-
-
-def _get_lazy_huey() -> "SqliteHuey":
-    """Get lazily-initialized Huey instance."""
-    global _huey_instance
-    if _huey_instance is None:
-        _huey_instance = get_huey()
-    return _huey_instance
 
 
 # For backwards compatibility, provide huey as a property-like access
@@ -80,7 +70,9 @@ def _get_lazy_huey() -> "SqliteHuey":
 def __getattr__(name: str) -> Any:
     """Lazy attribute access for module-level huey instance."""
     if name == "huey":
-        return _get_lazy_huey()
+        # get_huey() is itself a lock-guarded process singleton, so no extra
+        # caching (or extra race) is needed here.
+        return get_huey()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

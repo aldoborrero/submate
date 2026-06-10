@@ -182,11 +182,11 @@ class ServerSettings(BaseModel):
     # Bazarr settings
     bazarr_keep_model_loaded: bool = Field(
         default=True,
-        description="Keep model loaded for faster Bazarr responses",
+        description="Keep the shared Whisper model resident between tasks for faster responses",
     )
     bazarr_model_idle_timeout: int = Field(
         default=300,
-        description="Seconds before unloading idle model",
+        description="Seconds of inactivity before the shared model is unloaded (0 = never; ignored if not kept loaded)",
     )
 
 
@@ -222,8 +222,16 @@ class QueueSettings(BaseModel):
     """Queue and retry settings."""
 
     db_path: str = Field(default="", description="Path to queue database")
-    max_retries: int = Field(default=3, description="Maximum retry attempts")
-    retry_delay: int = Field(default=5, description="Retry delay in seconds")
+    max_retries: int = Field(default=3, description="Maximum retry attempts per task")
+    retry_delay: int = Field(default=60, description="Seconds to wait between task retries")
+    result_timeout: int = Field(
+        default=1800,
+        description="Max seconds to wait for a queued transcription result before failing (guards a dead worker)",
+    )
+    detect_language_timeout: int = Field(
+        default=120,
+        description="Max seconds to wait for a queued language-detection result before falling back to Unknown",
+    )
 
 
 class SubtitleSettings(BaseModel):
