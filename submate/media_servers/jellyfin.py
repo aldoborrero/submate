@@ -31,6 +31,10 @@ class JellyfinClient:
         """
         return bool(self.config.jellyfin.server_url and self.config.jellyfin.api_key)
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Build the Jellyfin authentication headers used for every request."""
+        return {"Authorization": f"MediaBrowser Token={self.api_key}"}
+
     def connect(self) -> None:
         """Connect to the Jellyfin server.
 
@@ -47,7 +51,7 @@ class JellyfinClient:
             self.api_key = self.config.jellyfin.api_key
 
             # Test connection by fetching library sections
-            headers = {"X-MediaBrowser-Token": self.api_key}
+            headers = self._auth_headers()
             response = requests.get(
                 f"{self.server_url}/Library/VirtualFolders",
                 headers=headers,
@@ -75,7 +79,7 @@ class JellyfinClient:
         if not self.server_url or not self.api_key:
             raise RuntimeError("Not connected to Jellyfin server")
 
-        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+        headers = self._auth_headers()
         response = requests.get(
             f"{self.server_url}/Users",
             headers=headers,
@@ -107,7 +111,7 @@ class JellyfinClient:
             raise RuntimeError("Not connected to Jellyfin server")
 
         admin_id = self._get_admin_user_id()
-        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+        headers = self._auth_headers()
 
         try:
             url = f"{self.server_url}/Users/{admin_id}/Items/{item_id}"
@@ -140,7 +144,7 @@ class JellyfinClient:
             raise RuntimeError("Not connected to Jellyfin server")
 
         url = f"{self.server_url}/Items/{item_id}/Refresh"
-        headers = {"Authorization": f"MediaBrowser Token={self.api_key}"}
+        headers = self._auth_headers()
 
         try:
             response = requests.post(
@@ -170,7 +174,7 @@ class JellyfinClient:
         logger.info("Refreshing Jellyfin library: %s", library_name)
 
         try:
-            headers = {"X-MediaBrowser-Token": self.api_key}
+            headers = self._auth_headers()
 
             # Get all libraries
             response = requests.get(

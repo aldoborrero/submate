@@ -50,7 +50,7 @@ class LanguageCode(Enum):
     CROATIAN = ("hr", "hrv", "hrv", "Croatian", "Hrvatski")
     HAITIAN_CREOLE = ("ht", "hat", "hat", "Haitian Creole", "Kreyòl Ayisyen")
     HUNGARIAN = ("hu", "hun", "hun", "Hungarian", "Magyar")
-    ARMENIAN = ("hy", "hye", "arm", "Armenian", "Հայdelays")
+    ARMENIAN = ("hy", "hye", "arm", "Armenian", "Հայերեն")
     INDONESIAN = ("id", "ind", "ind", "Indonesian", "Bahasa Indonesia")
     ICELANDIC = ("is", "isl", "ice", "Icelandic", "Íslenska")
     ITALIAN = ("it", "ita", "ita", "Italian", "Italiano")

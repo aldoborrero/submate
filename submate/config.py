@@ -1,6 +1,7 @@
 """Configuration management using Pydantic Settings."""
 
 import os
+import typing
 from pathlib import Path
 from typing import Any
 
@@ -10,39 +11,52 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 from submate.types import Device, LanguageNamingType, TranslationBackend, WhisperImplementation, WhisperModel
 
 
+def _resolve_nested_model(annotation: Any) -> type[BaseModel] | None:
+    """Return the nested BaseModel for an annotation, unwrapping Optional/Union.
+
+    Returns None for leaf annotations (str, bool, list[...], etc.).
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in typing.get_args(annotation):
+        model = _resolve_nested_model(arg)
+        if model is not None:
+            return model
+    return None
+
+
 class _EnvSettingsSource(PydanticBaseSettingsSource):
     """Custom env settings source that passes string values to validators without JSON parsing."""
 
     def __call__(self) -> dict[str, Any]:
         """Get settings from environment variables with nested delimiter support."""
-        d: dict[str, Any] = {}
+        config = self.settings_cls.model_config
+        env_prefix = config.get("env_prefix", "")
+        delimiter = config.get("env_nested_delimiter") or "__"
+        return self._collect(self.settings_cls, env_prefix, delimiter)
 
-        # Get env_prefix from model_config (e.g., "SUBMATE__")
-        env_prefix = self.settings_cls.model_config.get("env_prefix", "")
+    def _collect(self, model_cls: type[BaseModel], prefix: str, delimiter: str) -> dict[str, Any]:
+        """Recursively gather env values for ``model_cls`` under ``prefix``.
 
-        for field_name, field_info in self.settings_cls.model_fields.items():
-            field_type = field_info.annotation
+        Descends into nested models to any depth so that deeply-nested fields
+        (and Optional[Model] fields) resolve via the configured delimiter.
+        """
+        result: dict[str, Any] = {}
 
-            # Handle nested models
-            if field_type is not None and hasattr(field_type, "model_fields") and field_type.model_fields is not None:
-                nested_dict: dict[str, Any] = {}
-                for nested_field_name in field_type.model_fields.keys():  # type: ignore[union-attr]
-                    env_var_name = f"{env_prefix}{field_name}__{nested_field_name}".upper()
-                    env_value = os.getenv(env_var_name)
-                    if env_value is not None:
-                        # Pass raw string to Pydantic - validators will handle parsing
-                        nested_dict[nested_field_name] = env_value
+        for field_name, field_info in model_cls.model_fields.items():
+            nested_model = _resolve_nested_model(field_info.annotation)
 
-                if nested_dict:
-                    d[field_name] = nested_dict
+            if nested_model is not None:
+                nested = self._collect(nested_model, f"{prefix}{field_name}{delimiter}", delimiter)
+                if nested:
+                    result[field_name] = nested
             else:
-                # Top-level field
-                env_var_name = f"{env_prefix}{field_name}".upper()
-                env_value = os.getenv(env_var_name)
+                env_value = os.getenv(f"{prefix}{field_name}".upper())
                 if env_value is not None:
-                    d[field_name] = env_value
+                    # Pass raw string to Pydantic - validators will handle parsing
+                    result[field_name] = env_value
 
-        return d
+        return result
 
     def get_field_value(self, field_info: Any, field_name: str) -> tuple[Any, str, bool]:  # type: ignore[override]
         """Required by abstract class but not used."""

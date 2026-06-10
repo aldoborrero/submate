@@ -322,25 +322,31 @@ class WhisperModelWrapper:
         temp_path = temp_file.name
         temp_file.close()
 
-        # Check if data already has WAV header (starts with "RIFF")
-        if pcm_data[:4] == b"RIFF":
-            # Already a WAV file, just save it
-            with open(temp_path, "wb") as f:
-                f.write(pcm_data)
-        else:
-            # Raw PCM - add WAV headers
-            # Bazarr format: s16le (signed 16-bit LE), mono, 16kHz
-            channels = 1
-            sample_rate = 16000
-            sample_width = 2  # 16-bit = 2 bytes
-
-            with wave.open(temp_path, "wb") as wav_file:
-                wav_file.setnchannels(channels)
-                wav_file.setsampwidth(sample_width)
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(pcm_data)
-
+        # Track the file immediately so a write failure below doesn't orphan it.
         self._temp_audio_file = temp_path
+
+        try:
+            # Check if data already has WAV header (starts with "RIFF")
+            if pcm_data[:4] == b"RIFF":
+                # Already a WAV file, just save it
+                with open(temp_path, "wb") as f:
+                    f.write(pcm_data)
+            else:
+                # Raw PCM - add WAV headers
+                # Bazarr format: s16le (signed 16-bit LE), mono, 16kHz
+                channels = 1
+                sample_rate = 16000
+                sample_width = 2  # 16-bit = 2 bytes
+
+                with wave.open(temp_path, "wb") as wav_file:
+                    wav_file.setnchannels(channels)
+                    wav_file.setsampwidth(sample_width)
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(pcm_data)
+        except Exception:
+            self._cleanup_temp_audio()
+            raise
+
         return temp_path
 
     def _audio_description(self, audio: Path | str | bytes | BytesIO) -> str:

@@ -15,7 +15,7 @@ from submate.queue import get_task_queue
 from submate.queue.models import TranscriptionSkippedError
 from submate.queue.tasks import TranscriptionTask
 
-from ..utils import console, setup_logging
+from ..utils import console, logging_options, setup_logging
 
 
 def format_supported_extensions(extensions: set[str]) -> str:
@@ -36,17 +36,7 @@ def format_supported_extensions(extensions: set[str]) -> str:
     help="Translate subtitles to target language (e.g., 'es', 'fr', 'de'). Uses LLM backend.",
 )
 @click.option("--force", "-f", is_flag=True, help="Overwrite existing subtitle files")
-@click.option(
-    "--log-level",
-    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
-    default="INFO",
-    help="Set logging level (DEBUG, INFO, WARNING, ERROR)",
-)
-@click.option(
-    "--log-file",
-    type=click.Path(writable=True),
-    help="Write logs to specified file (in addition to console)",
-)
+@logging_options
 @click.option("--recursive", "-r", is_flag=True, help="Process subdirectories recursively")
 @click.option("--fail-fast", is_flag=True, help="Stop immediately on first error")
 @click.option("--sync", is_flag=True, help="Process files immediately (synchronous)")
@@ -150,6 +140,7 @@ def transcribe(
         translate_to=translate_to,
         force=force,
         immediate=sync,
+        fail_fast=fail_fast,
     )
 
     # Refresh Jellyfin if requested (only makes sense in sync mode)
@@ -163,6 +154,7 @@ def _enqueue_files(
     translate_to: str | None,
     force: bool,
     immediate: bool = False,
+    fail_fast: bool = False,
 ) -> None:
     """Enqueue files for processing (immediate if sync mode, queued otherwise)."""
     queued = 0
@@ -191,6 +183,9 @@ def _enqueue_files(
                         failed += 1
                         error_msg = getattr(result, "error", "Unknown error")
                         console.print(f"  [red]✗[/red] Failed: {file.name} - {error_msg}")
+                        if fail_fast:
+                            console.print("  [red]Stopping (--fail-fast)[/red]")
+                            break
                         continue
                     console.print(f"  [green]✓[/green] Processed: {file.name}")
                 else:
@@ -205,6 +200,9 @@ def _enqueue_files(
             except Exception as e:
                 failed += 1
                 console.print(f"  [red]✗[/red] Failed: {file.name} - {str(e)[:100]}")
+                if fail_fast:
+                    console.print("  [red]Stopping (--fail-fast)[/red]")
+                    break
 
     # Summary
     console.print("\n[bold]Results:[/bold]")

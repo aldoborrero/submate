@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum, StrEnum
-from typing import Any, TypedDict, TypeVar
-
-T = TypeVar("T")
+from typing import Any, TypedDict
 
 
 class OutputFormat(Enum):
@@ -16,6 +14,20 @@ class OutputFormat(Enum):
     @property
     def extension(self) -> str:
         return f".{self.value}"
+
+    @classmethod
+    def from_value(cls, value: "str | OutputFormat", default: "OutputFormat | None" = None) -> "OutputFormat":
+        """Coerce a string or enum into an OutputFormat, falling back to default.
+
+        Accepts an existing OutputFormat unchanged; unknown strings return
+        ``default`` (SRT if not given) instead of raising.
+        """
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls(value)
+        except ValueError:
+            return default if default is not None else cls.SRT
 
 
 class SkipReason(StrEnum):

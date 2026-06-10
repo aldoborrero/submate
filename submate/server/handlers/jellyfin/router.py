@@ -26,7 +26,7 @@ def create_jellyfin_router(config: Config) -> APIRouter:
 
     @router.post("/jellyfin")
     async def jellyfin_webhook(
-        user_agent: str = Header(None),
+        user_agent: str | None = Header(default=None),
         payload: JellyfinWebhookPayload = Body(...),
     ) -> dict:
         """Handle Jellyfin webhook events.

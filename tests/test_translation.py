@@ -171,3 +171,93 @@ class TestASSTranslationPrompt:
         assert "{\\i1}" in ASS_TRANSLATION_PROMPT or "{{\\i1}}" in ASS_TRANSLATION_PROMPT
         assert "PRESERVE" in ASS_TRANSLATION_PROMPT.upper()
         assert "tag" in ASS_TRANSLATION_PROMPT.lower()
+
+
+class TestTranslateVtt:
+    """Tests for WebVTT translation (must not route VTT through the SRT parser)."""
+
+    def _service(self, translated: str):
+        from unittest.mock import Mock
+
+        from submate.config import Config
+        from submate.translation import TranslationService
+
+        service = TranslationService(Config())
+        service.backend = Mock()
+        service.backend.translate.return_value = translated
+        return service
+
+    def test_translate_vtt_returns_valid_vtt(self) -> None:
+        service = self._service("Hola mundo")
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world\n"
+
+        out = service.translate_vtt_content(vtt, "en", "es")
+
+        assert out.lstrip().startswith("WEBVTT")
+        assert "Hola mundo" in out
+        assert "Hello world" not in out
+
+    def test_translate_vtt_same_language_is_noop(self) -> None:
+        service = self._service("ignored")
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world\n"
+
+        assert service.translate_vtt_content(vtt, "en", "en") == vtt
+        service.backend.translate.assert_not_called()
+
+
+class TestTranslateBatch:
+    """Tests for the shared batch-translate/realign helper."""
+
+    def _service(self, returns: str):
+        from unittest.mock import Mock
+
+        from submate.config import Config
+        from submate.translation import TranslationService
+
+        service = TranslationService(Config())
+        service.backend = Mock()
+        service.backend.translate.return_value = returns
+        return service
+
+    def test_aligns_when_block_count_matches(self) -> None:
+        service = self._service("Uno\n---BREAK---\nDos")
+
+        out = service._translate_batch(["one", "two"], "en", "es", separator_token="---BREAK---")
+
+        assert out == ["Uno", "Dos"]
+
+    def test_keeps_originals_when_block_count_mismatches(self) -> None:
+        """A model that merges/splits blocks must not silently shift alignment."""
+        service = self._service("just one block")
+
+        out = service._translate_batch(["one", "two", "three"], "en", "es", separator_token="---BREAK---")
+
+        assert out == ["one", "two", "three"]
+
+    def test_returns_same_length_as_input(self) -> None:
+        service = self._service("A\n---BREAK---\nB\n---BREAK---\nC")
+
+        out = service._translate_batch(["a", "b", "c"], "en", "es", separator_token="---BREAK---")
+
+        assert len(out) == 3
+
+
+def test_backend_translate_builds_prompt_and_delegates_to_complete():
+    """The base translate() formats the prompt once and delegates to _complete."""
+    from submate.translation import TranslationBackendBase
+
+    class SpyBackend(TranslationBackendBase):
+        def __init__(self) -> None:
+            self.seen_prompt: str | None = None
+
+        def _complete(self, prompt: str) -> str:
+            self.seen_prompt = prompt
+            return "done"
+
+    backend = SpyBackend()
+    result = backend.translate("hello", "en", "es")
+
+    assert result == "done"
+    assert backend.seen_prompt is not None
+    assert "hello" in backend.seen_prompt
+    assert "en" in backend.seen_prompt and "es" in backend.seen_prompt

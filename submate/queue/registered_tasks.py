@@ -62,10 +62,7 @@ def transcribe_audio_task(
         bazarr_service = BazarrService(config)
 
         # Convert string to OutputFormat enum
-        try:
-            output_format_enum = OutputFormat(output_format)
-        except ValueError:
-            output_format_enum = OutputFormat.SRT
+        output_format_enum = OutputFormat.from_value(output_format)
 
         subtitle_content = bazarr_service.transcribe_audio_bytes(
             audio_bytes=audio_bytes,
@@ -126,5 +123,53 @@ def detect_language_task(audio_bytes: bytes) -> dict[str, Any]:
         }
 
 
+@huey.task(retries=3, retry_delay=60)
+def transcribe_file_task(
+    file_path: str,
+    audio_language: str | None = None,
+    translate_to: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Transcribe a media file on disk.
+
+    Statically registered so a separate worker process can find it in its
+    registry and execute it. Only plain serializable arguments are accepted;
+    the service is reconstructed from config inside the worker.
+
+    Args:
+        file_path: Path to the media file to transcribe
+        audio_language: Optional source language hint (e.g., "en", "es")
+        translate_to: Optional target language for LLM translation
+        force: Re-transcribe even if subtitles already exist
+
+    Returns:
+        Dict with 'success', 'data' (TranscriptionResult), and optionally
+        'error' or skip details.
+    """
+    from pathlib import Path
+
+    from submate.config import get_config
+    from submate.queue.models import TranscriptionSkippedError
+    from submate.queue.services import TranscriptionService
+
+    logger.info("Worker executing transcribe_file_task: %s", file_path)
+
+    try:
+        config = get_config()
+        service = TranscriptionService(config)
+        result = service.transcribe_file(Path(file_path), audio_language, translate_to, force)
+        logger.info("Worker completed transcribe_file_task: %s", file_path)
+        return {"success": True, "data": result}
+
+    except TranscriptionSkippedError as e:
+        # Skips are an expected outcome, not a failure to retry.
+        logger.info("Transcription skipped for %s: %s", file_path, e.reason.value)
+        return {"success": True, "skipped": True, "reason": e.reason.value, "data": None}
+
+    except Exception as e:
+        logger.error("Worker transcribe_file_task failed for %s: %s", file_path, e, exc_info=True)
+        return {"success": False, "error": str(e), "data": None}
+
+
 # Export the tasks so they can be called from handlers
-__all__ = ["transcribe_audio_task", "detect_language_task", "huey"]
+__all__ = ["transcribe_audio_task", "detect_language_task", "transcribe_file_task", "huey"]

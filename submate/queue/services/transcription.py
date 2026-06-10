@@ -93,9 +93,15 @@ class TranscriptionService:
             # Write initial SRT file
             result.to_srt_vtt(subtitle_path, word_level=self.config.stable_ts.word_level_highlight)
 
-            # Post-transcription LLM translation (only for non-English targets)
+            # Post-transcription LLM translation (only for non-English targets).
+            # Compare normalized codes so different spellings of the same language
+            # (e.g. "spa"/"Spanish" vs Whisper's "es") don't trigger a needless round-trip.
             final_text = result.text
-            if translate_to and not use_whisper_translate and translate_to != source_language:
+            if (
+                translate_to
+                and not use_whisper_translate
+                and LanguageCode.from_string(translate_to) != LanguageCode.from_string(source_language)
+            ):
                 logger.info(f"Translating subtitles from {source_language} to {translate_to} via LLM")
                 translation_service = TranslationService(self.config)
 
@@ -155,7 +161,10 @@ class TranscriptionService:
                 return True, SkipReason.LRC_FILE_EXISTS
 
         # Condition 2: Unknown language
-        if settings.skip_unknown_language and target_language is None:
+        # target_language is LanguageCode.from_string(...), which returns the
+        # LanguageCode.NONE sentinel (falsy) rather than Python None for unknown
+        # input, so test falsiness instead of identity.
+        if settings.skip_unknown_language and not target_language:
             logger.debug(f"Skipping {file_path.name}: Unknown language and skip_unknown_language enabled")
             return True, SkipReason.UNKNOWN_LANGUAGE
 
@@ -215,7 +224,7 @@ class TranscriptionService:
 
         # Condition 9: Language not set but subtitles exist
         if settings.skip_if_no_language_but_subtitles_exist:
-            if target_language is None:
+            if not target_language:
                 existing_internal_langs = get_internal_subtitle_languages(file_path)
                 if existing_internal_langs:
                     logger.debug(f"Skipping {file_path.name}: Language not set but internal subtitles exist")
