@@ -296,3 +296,37 @@ def test_context_manager_full_workflow(config: Config) -> None:
         with WhisperModelWrapper(config) as model:
             result = model.transcribe("/path/to/audio.wav")
             assert result.language == "en"
+
+
+def test_save_audio_removes_temp_file_on_write_error(monkeypatch):
+    """A failed WAV write must not leave an orphaned temp file behind."""
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    import pytest
+
+    from submate.whisper import WhisperModelWrapper
+
+    created: dict[str, str] = {}
+    real_ntf = tempfile.NamedTemporaryFile
+
+    def spy_ntf(*args, **kwargs):
+        handle = real_ntf(*args, **kwargs)
+        created["path"] = handle.name
+        return handle
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", spy_ntf)
+    monkeypatch.setattr(wave, "open", boom)
+
+    wrapper = WhisperModelWrapper.__new__(WhisperModelWrapper)
+    wrapper._temp_audio_file = None
+
+    with pytest.raises(OSError):
+        wrapper._save_audio_with_wav_headers(b"\x00\x01\x02\x03")
+
+    assert not Path(created["path"]).exists()
+    assert wrapper._temp_audio_file is None
