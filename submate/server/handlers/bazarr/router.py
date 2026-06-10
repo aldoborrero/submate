@@ -2,13 +2,13 @@
 """Bazarr ASR router factory for modular server composition."""
 
 from collections.abc import Iterator
-from io import BytesIO
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from submate.config import Config
 
+from .audio import uploaded_audio
 from .handlers import handle_asr_request, handle_detect_language
 from .models import LanguageDetectionResponse
 
@@ -44,20 +44,17 @@ def create_bazarr_router(config: Config) -> APIRouter:
         2. Endpoint: http://your-server:9000/bazarr/asr
         """
         try:
-            # Read uploaded file
-            audio_content = await audio_file.read()
-            audio_bytes = BytesIO(audio_content)
-
-            # Handle transcription
-            result = await handle_asr_request(
-                audio_file=audio_bytes,
-                task=task,
-                language=language,
-                output=output,
-                encode=encode,
-                word_timestamps=word_timestamps,
-                video_file=video_file,
-            )
+            async with uploaded_audio(audio_file) as audio_bytes:
+                # Handle transcription
+                result = await handle_asr_request(
+                    audio_file=audio_bytes,
+                    task=task,
+                    language=language,
+                    output=output,
+                    encode=encode,
+                    word_timestamps=word_timestamps,
+                    video_file=video_file,
+                )
 
             # Stream response
             def generate() -> Iterator[str]:
@@ -73,8 +70,6 @@ def create_bazarr_router(config: Config) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception:
             raise HTTPException(status_code=500, detail="Transcription failed")
-        finally:
-            await audio_file.close()
 
     @router.post("/detect-language")
     async def detect_language_endpoint(
@@ -94,19 +89,14 @@ def create_bazarr_router(config: Config) -> APIRouter:
         2. Language detection: Enabled
         """
         try:
-            # Read uploaded file
-            audio_content = await audio_file.read()
-            audio_bytes = BytesIO(audio_content)
-
-            # Handle language detection
-            result = await handle_detect_language(
-                audio_file=audio_bytes,
-                offset=detect_lang_offset,
-                length=detect_lang_length,
-                video_file=video_file,
-            )
-
-            return result
+            async with uploaded_audio(audio_file) as audio_bytes:
+                # Handle language detection
+                return await handle_detect_language(
+                    audio_file=audio_bytes,
+                    offset=detect_lang_offset,
+                    length=detect_lang_length,
+                    video_file=video_file,
+                )
 
         except Exception:
             # Return unknown instead of error (Bazarr compatible)
@@ -114,7 +104,5 @@ def create_bazarr_router(config: Config) -> APIRouter:
                 detected_language="Unknown",
                 language_code="und",
             )
-        finally:
-            await audio_file.close()
 
     return router

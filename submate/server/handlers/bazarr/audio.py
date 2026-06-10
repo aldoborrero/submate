@@ -1,11 +1,24 @@
 """Audio utilities for Bazarr integration."""
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from io import BytesIO
 
 import ffmpeg
+from fastapi import UploadFile
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def uploaded_audio(audio_file: UploadFile) -> AsyncIterator[BytesIO]:
+    """Read an uploaded file into a BytesIO buffer, closing the upload on exit."""
+    try:
+        content = await audio_file.read()
+        yield BytesIO(content)
+    finally:
+        await audio_file.close()
 
 
 def extract_audio_segment(
