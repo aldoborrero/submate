@@ -171,3 +171,35 @@ class TestASSTranslationPrompt:
         assert "{\\i1}" in ASS_TRANSLATION_PROMPT or "{{\\i1}}" in ASS_TRANSLATION_PROMPT
         assert "PRESERVE" in ASS_TRANSLATION_PROMPT.upper()
         assert "tag" in ASS_TRANSLATION_PROMPT.lower()
+
+
+class TestTranslateVtt:
+    """Tests for WebVTT translation (must not route VTT through the SRT parser)."""
+
+    def _service(self, translated: str):
+        from unittest.mock import Mock
+
+        from submate.config import Config
+        from submate.translation import TranslationService
+
+        service = TranslationService(Config())
+        service.backend = Mock()
+        service.backend.translate.return_value = translated
+        return service
+
+    def test_translate_vtt_returns_valid_vtt(self) -> None:
+        service = self._service("Hola mundo")
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world\n"
+
+        out = service.translate_vtt_content(vtt, "en", "es")
+
+        assert out.lstrip().startswith("WEBVTT")
+        assert "Hola mundo" in out
+        assert "Hello world" not in out
+
+    def test_translate_vtt_same_language_is_noop(self) -> None:
+        service = self._service("ignored")
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello world\n"
+
+        assert service.translate_vtt_content(vtt, "en", "en") == vtt
+        service.backend.translate.assert_not_called()

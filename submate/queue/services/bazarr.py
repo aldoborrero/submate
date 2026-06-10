@@ -183,9 +183,7 @@ class BazarrService:
                 case OutputFormat.SRT:
                     return translation_service.translate_srt_content(content, source_lang, target_lang)
                 case OutputFormat.VTT:
-                    # VTT is similar to SRT, convert timestamps if needed
-                    # For now, use SRT translation which works for most cases
-                    return translation_service.translate_srt_content(content, source_lang, target_lang)
+                    return translation_service.translate_vtt_content(content, source_lang, target_lang)
                 case OutputFormat.TXT:
                     return translation_service.translate_text(content, source_lang, target_lang)
                 case OutputFormat.JSON:

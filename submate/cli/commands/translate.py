@@ -108,8 +108,15 @@ def translate(
                 detected_source = "en"
 
             # Use appropriate translation method based on file type
-            if file.suffix.lower() in {".ass", ".ssa"}:
+            suffix = file.suffix.lower()
+            if suffix in {".ass", ".ssa"}:
                 translated = service.translate_ass_content(
+                    content,
+                    source_lang=detected_source,
+                    target_lang=target_lang,
+                )
+            elif suffix == ".vtt":
+                translated = service.translate_vtt_content(
                     content,
                     source_lang=detected_source,
                     target_lang=target_lang,

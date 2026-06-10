@@ -343,6 +343,49 @@ class TranslationService:
         # Compose back to SRT string
         return str(srt.compose(translated_subtitles))
 
+    def translate_vtt_content(self, vtt_content: str, source_lang: str, target_lang: str) -> str:
+        """Translate WebVTT content while preserving cue timing and structure.
+
+        Parses the VTT with pysubs2 and translates the cue text in chunks, then
+        re-serializes as VTT. WebVTT must not be fed to the SRT parser, which
+        cannot handle the ``WEBVTT`` header or dot-separated millisecond stamps.
+
+        Args:
+            vtt_content: Raw WebVTT file content
+            source_lang: Source language code
+            target_lang: Target language code
+
+        Returns:
+            Translated WebVTT content string
+        """
+        import pysubs2
+
+        if source_lang == target_lang:
+            return vtt_content
+
+        subs = pysubs2.SSAFile.from_string(vtt_content, format_="vtt")
+        events_to_translate = [(i, event) for i, event in enumerate(subs) if event.is_text and event.text.strip()]
+
+        if not events_to_translate:
+            return vtt_content
+
+        chunk_size = self.config.translation.chunk_size
+        separator = "\n|||SUBTITLE_BREAK|||\n"
+
+        for chunk_start in range(0, len(events_to_translate), chunk_size):
+            chunk = events_to_translate[chunk_start : chunk_start + chunk_size]
+            texts = [event.text for _, event in chunk]
+            combined = separator.join(texts)
+
+            translated = self.backend.translate(combined, source_lang, target_lang)
+            translated_texts = [t.strip() for t in translated.split("|||SUBTITLE_BREAK|||")]
+
+            for j, (idx, _event) in enumerate(chunk):
+                if j < len(translated_texts):
+                    subs[idx].text = translated_texts[j]
+
+        return subs.to_string("vtt")
+
     def translate_ass_content(self, ass_content: str, source_lang: str, target_lang: str) -> str:
         """Translate ASS/SSA subtitle content while preserving formatting tags.
 
