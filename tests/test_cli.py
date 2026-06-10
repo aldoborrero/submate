@@ -180,3 +180,52 @@ def test_enqueue_files_without_fail_fast_continues(monkeypatch):
     transcribe_mod._enqueue_files(files, None, None, False, immediate=False, fail_fast=False)
 
     assert task_queue.enqueue.call_count == 3
+
+
+def test_config_show_flattens_nested_settings(monkeypatch):
+    """Nested settings must render as readable rows, not raw dict reprs."""
+    monkeypatch.setenv("SUBMATE__WHISPER__MODEL", "large")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "large" in result.output
+    assert "{'" not in result.output  # no raw Python dict repr leaking through
+
+
+def test_translate_output_with_multiple_files_errors(tmp_path):
+    """--output with more than one input file must error, not be silently ignored."""
+    (tmp_path / "a.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n\n")
+    (tmp_path / "b.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nHi\n\n")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["translate", str(tmp_path), "-t", "es", "-o", str(tmp_path / "out.srt")])
+
+    assert result.exit_code != 0
+    assert "single input file" in result.output.lower()
+
+
+def test_detect_source_language_uses_valid_tag():
+    from pathlib import Path
+
+    from submate.cli.commands.translate import detect_source_language
+
+    assert detect_source_language(Path("movie.fr.srt"), "auto") == "fr"
+
+
+def test_detect_source_language_rejects_non_language_token():
+    from pathlib import Path
+
+    from submate.cli.commands.translate import detect_source_language
+
+    assert detect_source_language(Path("movie.v2.srt"), "auto") == "en"
+    assert detect_source_language(Path("episode.01.srt"), "auto") == "en"
+
+
+def test_detect_source_language_respects_explicit():
+    from pathlib import Path
+
+    from submate.cli.commands.translate import detect_source_language
+
+    assert detect_source_language(Path("movie.fr.srt"), "es") == "es"

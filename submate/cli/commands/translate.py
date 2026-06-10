@@ -7,6 +7,7 @@ import click
 
 from submate.cli.utils import console, setup_logging
 from submate.config import get_config
+from submate.language import LanguageCode
 from submate.translation import TranslationService
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,25 @@ SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa"}
 def is_subtitle_file(path: Path) -> bool:
     """Check if path is a subtitle file."""
     return path.suffix.lower() in SUBTITLE_EXTENSIONS
+
+
+def detect_source_language(file: Path, source_lang: str) -> str:
+    """Resolve the source language for a subtitle file.
+
+    When ``source_lang`` is "auto", use the last dotted stem segment only if it
+    is a recognized language code (e.g. movie.fr.srt -> "fr"); otherwise fall
+    back to English so non-language tokens like "v2" or "01" are not passed to
+    the translator as a language.
+    """
+    if source_lang != "auto":
+        return source_lang
+
+    if "." in file.stem:
+        candidate = file.stem.rsplit(".", 1)[-1]
+        if LanguageCode.from_string(candidate) is not LanguageCode.NONE:
+            return candidate
+
+    return "en"
 
 
 def find_subtitle_files(path: Path, recursive: bool = False) -> list[Path]:
@@ -73,6 +93,9 @@ def translate(
         console.print(f"[red]No subtitle files found in {path}[/red]")
         raise click.Abort()
 
+    if output and len(files) != 1:
+        raise click.UsageError("--output can only be used with a single input file")
+
     service = TranslationService(config)
 
     for file in files:
@@ -99,13 +122,7 @@ def translate(
             content = file.read_text(encoding="utf-8")
 
             # Auto-detect source language from filename if not specified
-            detected_source = source_lang
-            if source_lang == "auto" and "." in file.stem:
-                detected_source = file.stem.rsplit(".", 1)[-1]
-                if len(detected_source) > 3:  # Not a language code
-                    detected_source = "en"  # Default fallback
-            elif source_lang == "auto":
-                detected_source = "en"
+            detected_source = detect_source_language(file, source_lang)
 
             # Use appropriate translation method based on file type
             suffix = file.suffix.lower()
