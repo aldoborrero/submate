@@ -129,3 +129,50 @@ def test_language_detection_execute():
     assert result.success is True
     assert result.data == expected
     service.detect_language.assert_called_once_with(b"test_audio")
+
+
+# Queued-dispatch tests: non-immediate enqueue must route through a statically
+# registered Huey task so a separate worker process can find and execute it.
+
+
+def test_registered_task_for_transcription():
+    """TranscriptionTask maps to the statically registered transcribe_file_task."""
+    import submate.queue.registered_tasks as registered_tasks
+    from submate.queue.task_queue import TaskQueue
+
+    queue = TaskQueue.__new__(TaskQueue)  # skip service/huey initialization
+    task = TranscriptionTask(Mock(), transcription_service=Mock())
+
+    assert queue._registered_task_for(task) is registered_tasks.transcribe_file_task
+
+
+def test_registered_task_for_unknown_raises():
+    """A task with no registered worker task cannot be queued."""
+    from submate.queue.task_queue import TaskQueue
+
+    queue = TaskQueue.__new__(TaskQueue)
+    task = LanguageDetectionTask(Mock(), bazarr_service=Mock())
+
+    with pytest.raises(ValueError, match="No statically-registered"):
+        queue._registered_task_for(task)
+
+
+def test_transcribe_file_task_handles_skip():
+    """The worker task converts a skip into a successful, serializable result
+    instead of letting Huey retry it."""
+    from submate.queue.models import SkipReason, TranscriptionSkippedError
+
+    service = Mock()
+    service.transcribe_file.side_effect = TranscriptionSkippedError(SkipReason.TARGET_SUBTITLE_EXISTS)
+
+    with (
+        patch("submate.queue.services.TranscriptionService", return_value=service),
+        patch("submate.config.get_config", return_value=Mock()),
+    ):
+        from submate.queue.registered_tasks import transcribe_file_task
+
+        result = transcribe_file_task.call_local(file_path="/movie.mkv")
+
+    assert result["success"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == SkipReason.TARGET_SUBTITLE_EXISTS.value

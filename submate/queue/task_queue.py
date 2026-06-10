@@ -103,19 +103,37 @@ class TaskQueue:
                 # Always restore original immediate setting
                 self.huey.immediate = original_immediate
         else:
-            # Create Huey task function dynamically with unique name
-            task_name = f"execute_{task.task_name}_{task_id}"
-            # Use default args to capture values at definition time (avoid closure issues)
-            execute_task = self.huey.task(retries=3, retry_delay=60, name=task_name)(
-                lambda t=task, kw=kwargs: t.execute(**kw)
-            )
-
-            # Execute task (Huey handles queuing automatically)
-            result = execute_task()
+            # Dispatch to a statically-registered Huey task. The worker process
+            # only knows tasks registered at import time, so registering a new
+            # per-call task here would be invisible to it (and a lambda body is
+            # not serializable). Pass only plain serializable kwargs; the worker
+            # reconstructs its own services from config.
+            huey_task = self._registered_task_for(task)
+            result = huey_task(**kwargs)
 
             if blocking:
                 return result()  # Wait for completion
             return result
+
+    def _registered_task_for(self, task: BaseTask) -> Any:
+        """Return the statically-registered Huey task used to run a queued task.
+
+        Queued (non-immediate) execution must go through a task registered at
+        import time so a separate worker process can find it in its registry.
+        """
+        from submate.queue import registered_tasks
+
+        registered = {
+            "transcription": registered_tasks.transcribe_file_task,
+        }
+        huey_task = registered.get(task.task_name)
+        if huey_task is None:
+            raise ValueError(
+                f"No statically-registered Huey task for '{task.task_name}'. "
+                "Queued execution requires a task registered in registered_tasks.py; "
+                "use immediate=True or add a registered task."
+            )
+        return huey_task
 
     @property
     def size(self) -> int:

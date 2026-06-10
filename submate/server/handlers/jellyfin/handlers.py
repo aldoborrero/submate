@@ -60,7 +60,7 @@ async def handle_jellyfin_webhook(payload: JellyfinWebhookPayload) -> dict:
         task_queue.enqueue(
             TranscriptionTask,
             file_path=mapped_path,
-            language=None,  # Auto-detect
+            audio_language=None,  # Auto-detect
             force=False,
         )
 
