@@ -155,7 +155,10 @@ class TranscriptionService:
                 return True, SkipReason.LRC_FILE_EXISTS
 
         # Condition 2: Unknown language
-        if settings.skip_unknown_language and target_language is None:
+        # target_language is LanguageCode.from_string(...), which returns the
+        # LanguageCode.NONE sentinel (falsy) rather than Python None for unknown
+        # input, so test falsiness instead of identity.
+        if settings.skip_unknown_language and not target_language:
             logger.debug(f"Skipping {file_path.name}: Unknown language and skip_unknown_language enabled")
             return True, SkipReason.UNKNOWN_LANGUAGE
 
@@ -215,7 +218,7 @@ class TranscriptionService:
 
         # Condition 9: Language not set but subtitles exist
         if settings.skip_if_no_language_but_subtitles_exist:
-            if target_language is None:
+            if not target_language:
                 existing_internal_langs = get_internal_subtitle_languages(file_path)
                 if existing_internal_langs:
                     logger.debug(f"Skipping {file_path.name}: Language not set but internal subtitles exist")
