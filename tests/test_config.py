@@ -213,3 +213,72 @@ def test_whisper_config_valid_hf_model(monkeypatch):
     config = get_config()
     assert config.whisper.implementation == "hf-whisper"
     assert config.whisper.model == "openai/whisper-tiny"
+
+
+# --- Nested env-source resolution (arbitrary depth + Optional models) ---
+
+from pydantic import BaseModel, Field  # noqa: E402
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict  # noqa: E402
+
+from submate.config import _EnvSettingsSource, _resolve_nested_model  # noqa: E402
+
+
+class _Inner(BaseModel):
+    value: str = "default"
+
+
+class _Middle(BaseModel):
+    inner: _Inner = Field(default_factory=_Inner)
+    name: str = "m"
+
+
+class _Deep(BaseModel):
+    middle: _Middle = Field(default_factory=_Middle)
+    optional_inner: _Inner | None = None
+
+
+class _DeepSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="DEEP__",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    deep: _Deep = Field(default_factory=_Deep)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings, _EnvSettingsSource(settings_cls), dotenv_settings, file_secret_settings)
+
+
+def test_resolve_nested_model_unwraps_optional():
+    assert _resolve_nested_model(_Inner) is _Inner
+    assert _resolve_nested_model(_Inner | None) is _Inner
+    assert _resolve_nested_model(str) is None
+    assert _resolve_nested_model(list[str]) is None
+    assert _resolve_nested_model(str | None) is None
+
+
+def test_env_source_resolves_three_levels(monkeypatch):
+    monkeypatch.setenv("DEEP__DEEP__MIDDLE__INNER__VALUE", "deepvalue")
+
+    settings = _DeepSettings()
+
+    assert settings.deep.middle.inner.value == "deepvalue"
+
+
+def test_env_source_resolves_through_optional_model(monkeypatch):
+    monkeypatch.setenv("DEEP__DEEP__OPTIONAL_INNER__VALUE", "optvalue")
+
+    settings = _DeepSettings()
+
+    assert settings.deep.optional_inner is not None
+    assert settings.deep.optional_inner.value == "optvalue"
