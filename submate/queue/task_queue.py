@@ -2,11 +2,12 @@
 
 import logging
 import threading
-from typing import Any
+from typing import Any, Literal, overload
 
 from huey import SqliteHuey
 
 from submate.config import Config
+from submate.queue.models import TaskResult
 from submate.queue.tasks.base import BaseTask
 
 logger = logging.getLogger(__name__)
@@ -63,8 +64,31 @@ class TaskQueue:
         """Get the global Huey queue instance."""
         return get_huey()
 
-    def enqueue(
-        self, task_class: type[BaseTask], blocking: bool = False, immediate: bool = False, **kwargs: Any
+    @overload
+    def enqueue[TResult](
+        self,
+        task_class: type[BaseTask[TResult]],
+        blocking: bool = ...,
+        *,
+        immediate: Literal[True],
+        **kwargs: Any,
+    ) -> TaskResult[TResult]: ...
+
+    @overload
+    def enqueue[TResult](
+        self,
+        task_class: type[BaseTask[TResult]],
+        blocking: bool = ...,
+        immediate: bool = ...,
+        **kwargs: Any,
+    ) -> Any: ...
+
+    def enqueue[TResult](
+        self,
+        task_class: type[BaseTask[TResult]],
+        blocking: bool = False,
+        immediate: bool = False,
+        **kwargs: Any,
     ) -> Any:
         """Enqueue a task for execution.
 
