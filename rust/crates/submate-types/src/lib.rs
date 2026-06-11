@@ -10,7 +10,7 @@
 //! `Display`/`FromStr` come from `strum` and serde `Serialize`/`Deserialize`
 //! is derived from the same per-variant rename, so all four directions agree
 //! on the exact Python string. Parity against the captured Python values is
-//! enforced by `tests/enum_values.rs` (falsifier `parity::enum_values`).
+//! enforced by `tests/parity.rs` (falsifier `parity::enum_values`).
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
