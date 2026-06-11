@@ -34,9 +34,9 @@
 // grind reads origin/main, not the user tree; triage step 0 sweeps for
 // orphans left untracked/unpushed there but the writer should not rely on it.
 
-const MAX_ROUNDS = args?.rounds ?? Infinity
+const MAX_ROUNDS = args?.rounds ?? CONFIG.maxRounds ?? Infinity
 const IMPLEMENTERS = args?.implementers ?? CONFIG.implementers ?? 6
-const DRY_LIMIT = args?.dryLimit ?? 2
+const DRY_LIMIT = args?.dryLimit ?? CONFIG.dryLimit ?? 2
 const ARCH_CADENCE = args?.archCadence ?? CONFIG.archCadence ?? 5
 const SPECIALIST_NAMES = CONFIG.rotation ?? Object.keys(CONFIG.specialists)
 const REPO = '$(git rev-parse --show-toplevel)'
