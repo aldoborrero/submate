@@ -39,3 +39,11 @@ samples/
 
 # Worktrees
 .worktrees/
+
+# Claude Code local-only artifacts (the grind config/command/workflow ARE tracked)
+/.claude/code/
+/.claude/scheduled_tasks.lock
+/.claude/profile/
+# grind runtime
+/.grind-stop
+/rust/target/

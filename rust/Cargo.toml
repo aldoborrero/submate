@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/submate-types",
+    "crates/submate-lang",
+    "crates/submate-config",
+    "crates/submate-proto",
+    "crates/stable-ts",
+    "crates/submate-subtitle",
+    "crates/submate-paths",
+    "crates/submate-media",
+    "crates/submate-whisper",
+    "crates/submate-node",
+    "crates/submate-translate",
+    "crates/submate-jellyfin",
+    "crates/submate-bazarr",
+    "crates/submate-queue",
+    "crates/submate-server",
+    "crates/submate-cli",
+    "crates/parity",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/aldoborrero/submate"
+
+# One pinned version per shared dependency. Crates opt in with
+# `dep = { workspace = true }`. Unused entries are not resolved, so the
+# empty-stub baseline builds without fetching any of these.
+[workspace.dependencies]
+# async + runtime
+tokio = { version = "1", features = ["full"] }
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# enums matching Python `.value` strings
+strum = { version = "0.26", features = ["derive"] }
+# config (Pydantic-Settings analogue)
+figment = { version = "0.10", features = ["env", "json"] }
+# http
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+tower = "0.5"
+# cli + logging
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+# paths
+camino = "1"
+# errors
+thiserror = "2"
+anyhow = "1"
+# whisper (added by the port-whisper-rs-wire backlog item, not the stub)
+whisper-rs = "0.12"
+# test-only
+float-cmp = "0.10"
+pretty_assertions = "1"
+wiremock = "0.6"
+
+# Shared lints — every crate sets `[lints] workspace = true`.
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unused_must_use = "warn"

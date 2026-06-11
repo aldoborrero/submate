@@ -1,0 +1,43 @@
+{
+  "Device": {
+    "AUTO": "auto",
+    "CPU": "cpu",
+    "CUDA": "cuda"
+  },
+  "LanguageNamingType": {
+    "ISO_639_1": "iso_639_1",
+    "ISO_639_2_B": "iso_639_2_b",
+    "ISO_639_2_T": "iso_639_2_t",
+    "NAME": "name",
+    "NATIVE": "native"
+  },
+  "TranscriptionTask": {
+    "TRANSCRIBE": "transcribe",
+    "TRANSLATE": "translate"
+  },
+  "TranslationBackend": {
+    "CLAUDE": "claude",
+    "GEMINI": "gemini",
+    "OLLAMA": "ollama",
+    "OPENAI": "openai"
+  },
+  "WhisperImplementation": {
+    "FASTER_WHISPER": "faster-whisper",
+    "HF_WHISPER": "hf-whisper",
+    "OPENAI_WHISPER": "openai-whisper"
+  },
+  "WhisperModel": {
+    "BASE": "base",
+    "BASE_EN": "base.en",
+    "LARGE": "large",
+    "LARGE_V1": "large-v1",
+    "LARGE_V2": "large-v2",
+    "LARGE_V3": "large-v3",
+    "MEDIUM": "medium",
+    "MEDIUM_EN": "medium.en",
+    "SMALL": "small",
+    "SMALL_EN": "small.en",
+    "TINY": "tiny",
+    "TINY_EN": "tiny.en"
+  }
+}

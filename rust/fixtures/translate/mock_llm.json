@@ -1,0 +1,3 @@
+{
+  "Translate the following subtitle text from en to es.\n\nRules:\n- Only output the translated text, nothing else\n- Preserve line breaks where they appear\n- Maintain natural speech patterns suitable for subtitles\n- Keep the same number of subtitle blocks (separated by ---BREAK---)\n\nText to translate:\nHello, world.\n---BREAK---\nThis is a test subtitle.\n---BREAK---\nGoodbye.": "Translate the following subtitle text from en to es.\n\nRules:\n- Only output the translated text, nothing else\n- Preserve line breaks where they appear\n- Maintain natural speech patterns suitable for subtitles\n- Keep the same number of subtitle blocks (separated by ---BREAK---)\n\nText to translate:\nHello, world.\n---BREAK---\nThis is a test subtitle.\n---BREAK---\nGoodbye."
+}

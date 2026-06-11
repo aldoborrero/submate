@@ -39,6 +39,19 @@ perSystem.devshell.mkShell {
       uv
       just
       perSystem.self.formatter
+
+      # Rust toolchain for the rust/ port (kept in sync within one nixpkgs rev).
+      cargo
+      rustc
+      clippy
+      rustfmt
+      rust-analyzer
+      cargo-audit
+
+      # whisper-rs builds whisper.cpp and runs bindgen.
+      clang
+      cmake
+      pkg-config
     ]
   );
 
@@ -50,6 +63,11 @@ perSystem.devshell.mkShell {
     {
       name = "NIX_DIR";
       eval = "$PRJ_ROOT/nix";
+    }
+    {
+      # bindgen (whisper-rs) needs to locate libclang.
+      name = "LIBCLANG_PATH";
+      value = "${pkgs.libclang.lib}/lib";
     }
   ];
 
