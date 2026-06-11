@@ -129,6 +129,10 @@ version = "0.1.0"
 [[package]]
 name = "submate-lang"
 version = "0.1.0"
+dependencies = [
+ "parity",
+ "serde_json",
+]
 
 [[package]]
 name = "submate-media"
