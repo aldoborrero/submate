@@ -51,6 +51,11 @@ pub type Result<T> = std::result::Result<T, QueueError>;
 /// Server-side job identifier (the `jobs.id` primary key).
 pub type JobId = i64;
 
+/// The full ordered column list, shared by every `SELECT`/`RETURNING` that
+/// hydrates a [`Job`] so the projection and [`Job::from_row`] stay in lockstep.
+const JOB_COLUMNS: &str =
+    "id, kind, payload, state, attempts, max_attempts, run_at, locked_by, locked_at";
+
 /// Lifecycle state of a job.
 ///
 /// Stored as its lowercase string form so the table is readable and stable
@@ -307,19 +312,20 @@ impl JobStore {
         let job = self
             .conn
             .query_row(
-                "UPDATE jobs
-                    SET state = 'running',
-                        locked_by = ?1,
-                        locked_at = ?2,
-                        attempts = attempts + 1
-                  WHERE id = (
-                      SELECT id FROM jobs
-                       WHERE state = 'queued' AND run_at <= ?2
-                       ORDER BY run_at, id
-                       LIMIT 1
-                  )
-                  RETURNING id, kind, payload, state, attempts, max_attempts,
-                            run_at, locked_by, locked_at",
+                &format!(
+                    "UPDATE jobs
+                        SET state = 'running',
+                            locked_by = ?1,
+                            locked_at = ?2,
+                            attempts = attempts + 1
+                      WHERE id = (
+                          SELECT id FROM jobs
+                           WHERE state = 'queued' AND run_at <= ?2
+                           ORDER BY run_at, id
+                           LIMIT 1
+                      )
+                      RETURNING {JOB_COLUMNS}"
+                ),
                 rusqlite::params![worker, now],
                 Job::from_row,
             )
@@ -349,17 +355,7 @@ impl JobStore {
     /// becomes terminally `failed`. Returns the post-transition [`Job`].
     pub fn fail(&self, id: JobId) -> Result<Job> {
         let now = self.clock.now_ms();
-        let job = self
-            .conn
-            .query_row(
-                "SELECT id, kind, payload, state, attempts, max_attempts,
-                        run_at, locked_by, locked_at
-                   FROM jobs WHERE id = ?1",
-                rusqlite::params![id],
-                Job::from_row,
-            )
-            .optional()?
-            .ok_or(QueueError::NotFound(id))?;
+        let job = self.get(id)?.ok_or(QueueError::NotFound(id))?;
 
         if job.attempts >= job.max_attempts {
             self.conn.execute(
@@ -403,9 +399,7 @@ impl JobStore {
         let job = self
             .conn
             .query_row(
-                "SELECT id, kind, payload, state, attempts, max_attempts,
-                        run_at, locked_by, locked_at
-                   FROM jobs WHERE id = ?1",
+                &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1"),
                 rusqlite::params![id],
                 Job::from_row,
             )
