@@ -1,25 +1,45 @@
 //! Layered configuration via figment (ports `submate/config.py`).
 //!
-//! This crate defines the *schema + defaults* layer only: the settings structs
-//! that mirror the Pydantic `BaseModel`/`BaseSettings` classes, each field
-//! carrying a `#[serde(default = ...)]` whose value matches the Python default
-//! byte-for-byte. Env/file layering (the figment provider chain) and the
-//! `field_validator`/`model_validator` logic are separate downstream items.
+//! This crate defines the settings structs that mirror the Pydantic
+//! `BaseModel`/`BaseSettings` classes (each field carrying a
+//! `#[serde(default = ...)]` whose value matches the Python default
+//! byte-for-byte) *and* the figment provider chain that resolves them from the
+//! `SUBMATE__` environment and an optional `--config-file`.
 //!
 //! Enums are reused from [`submate_types`] rather than redefined, so their
 //! string forms stay in lockstep with the rest of the port.
 //!
-//! Parity is enforced by `tests/parity.rs` (falsifier `parity::defaults`),
-//! which serializes a default-constructed [`Config`] and diffs it against
-//! `rust/fixtures/config/defaults.resolved.json`.
+//! # Precedence
+//!
+//! Mirrors Pydantic-Settings' source order (`settings_customise_sources` in
+//! `submate/config.py`): environment variables win over the config file, which
+//! wins over the built-in defaults. In figment terms the chain merges, in
+//! order, `Serialized::defaults(Config::default())`, then the `--config-file`
+//! JSON (if any), then `Env::prefixed("SUBMATE__").split("__")` — figment's
+//! merge lets later providers override earlier ones.
+//!
+//! Nested settings use the `__` delimiter, e.g. `SUBMATE__WHISPER__MODEL` maps
+//! to `whisper.model`, exactly as the Python `env_nested_delimiter="__"`.
+//!
+//! # Parity
+//!
+//! * `tests/parity.rs` falsifier `parity::defaults` serializes a
+//!   default-constructed [`Config`] and diffs it against
+//!   `rust/fixtures/config/defaults.resolved.json`.
+//! * `tests/parity.rs` falsifier `parity::env_nesting` loads
+//!   `rust/fixtures/config/nested.env` through [`Config::from_env`] and diffs
+//!   the result against `rust/fixtures/config/nested.resolved.json`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use submate_types::{Device, LanguageNamingType, TranslationBackend, WhisperImplementation};
 
-// figment is a declared dependency of this crate: it is the provider chain the
-// downstream env/file-layering item builds on top of these schema structs.
-use figment as _;
+use std::path::Path;
+
+use figment::{
+    providers::{Env, Format, Json, Serialized},
+    Figment,
+};
 
 /// A field that is either a string or a bool (`str | bool` in Python).
 ///
@@ -373,6 +393,49 @@ pub struct Config {
     pub debug: bool,
     #[serde(default)]
     pub clear_vram_on_complete: bool,
+}
+
+impl Config {
+    /// Build the figment provider chain: defaults < config file < env.
+    ///
+    /// Kept separate from [`Config::from_env`] so resolution can be exercised
+    /// without extracting, and so the chain order lives in one place.
+    fn figment(config_file: Option<&Path>) -> Figment {
+        let mut figment = Figment::from(Serialized::defaults(Config::default()));
+
+        // Optional `--config-file` JSON layer. Ports `get_config(config_file)`:
+        // a file supplies overrides on top of the defaults, but the env still
+        // wins. `Json::file` is a no-op if the path is absent, so a missing
+        // file simply contributes nothing rather than erroring.
+        if let Some(path) = config_file {
+            figment = figment.merge(Json::file(path));
+        }
+
+        // `SUBMATE__WHISPER__MODEL` -> `whisper.model`. `split("__")` turns the
+        // nested delimiter into figment key-path components, matching Pydantic's
+        // `env_nested_delimiter="__"`. Env is merged last, so it has the final
+        // say — Pydantic's env-over-file precedence.
+        figment.merge(Env::prefixed("SUBMATE__").split("__"))
+    }
+
+    /// Resolve configuration from the `SUBMATE__` environment plus an optional
+    /// `--config-file` JSON path.
+    ///
+    /// Ports `submate.config.get_config`. Precedence is env > file > defaults
+    /// (see the module-level docs). Returns a figment error if a value fails to
+    /// coerce into its field type (e.g. a non-numeric `SUBMATE__SERVER__PORT`).
+    ///
+    /// The error is boxed: `figment::Error` is a large enum, so an unboxed
+    /// `Result` would bloat every caller's stack frame on the happy path.
+    pub fn from_env(config_file: Option<&Path>) -> Result<Config, Box<figment::Error>> {
+        Self::figment(config_file).extract().map_err(Box::new)
+    }
+
+    /// Convenience entrypoint equivalent to `from_env(None)`: resolve purely
+    /// from defaults and the `SUBMATE__` environment.
+    pub fn load() -> Result<Config, Box<figment::Error>> {
+        Self::from_env(None)
+    }
 }
 
 /// `serde` default helper for `bool` fields that default to `true`.
