@@ -6,7 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# `model` pulls in whisper-rs and compiles whisper.cpp. Off by default so CI
+# without a model (and without LIBCLANG_PATH/cmake) still builds the crate.
+default = []
+model = ["dep:whisper-rs"]
+
 [dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+whisper-rs = { workspace = true, optional = true }
 
 [lints]
 workspace = true
