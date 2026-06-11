@@ -419,6 +419,9 @@ version = "0.1.0"
 [[package]]
 name = "submate-translate"
 version = "0.1.0"
+dependencies = [
+ "parity",
+]
 
 [[package]]
 name = "submate-types"
