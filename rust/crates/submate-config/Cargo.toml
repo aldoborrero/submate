@@ -15,6 +15,10 @@ figment = { workspace = true }
 [dev-dependencies]
 parity = { path = "../parity" }
 serde_json = { workspace = true }
+# `test` adds `figment::Jail`, which sets env vars in a serialized, isolated
+# scope so the env-nesting parity test can drive resolution from a `.env`
+# fixture without racing other tests over the process environment.
+figment = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true
