@@ -7,6 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+submate-whisper = { path = "../submate-whisper" }
+tokio = { workspace = true }
+
+[features]
+# `model` forwards to submate-whisper's real whisper.cpp inference, enabling
+# `Dispatcher::transcribe_pcm`. Off by default so CI builds without a model.
+default = []
+model = ["submate-whisper/model"]
 
 [lints]
 workspace = true
