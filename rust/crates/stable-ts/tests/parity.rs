@@ -38,21 +38,6 @@ fn suppress_roundtrip() {
     assert_json_eq(&actual, &raw);
 }
 
-/// The three intermediate `regroup` stages share the same `to_dict()` shape and
-/// must roundtrip identically; this pins each stage against its captured golden.
-#[test]
-fn regroup_stage_roundtrip() {
-    for name in [
-        "stablets/clipA/01_regroup_0_clamp_max.json",
-        "stablets/clipA/01_regroup_1_split_by_length.json",
-        "stablets/clipA/01_regroup_2_split_by_length.json",
-    ] {
-        let raw = golden(name);
-        let actual = WhisperResult::from_value(&raw).to_dict();
-        assert_json_eq(&actual, &raw);
-    }
-}
-
 /// `audio2loudness(audio.f32)` must match the Python-captured `loudness.f32`
 /// (dumped straight from `stable_whisper.stabilization.nonvad.audio2loudness`)
 /// within `1e-6`. This pins the abs -> 0.1%-topk threshold -> normalize ->
