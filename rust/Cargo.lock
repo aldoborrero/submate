@@ -1700,8 +1700,15 @@ dependencies = [
 name = "submate-node"
 version = "0.1.0"
 dependencies = [
+ "reqwest",
+ "serde_json",
+ "submate-proto",
+ "submate-types",
  "submate-whisper",
+ "thiserror",
  "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]
