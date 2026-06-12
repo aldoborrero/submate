@@ -110,3 +110,26 @@ reduced to module declarations + router assembly. This pre-empts the same
 append-only contention before it forces serialization. Tracked separately as a
 port-refactor item if/when a server wave is queued; noted here so the trend is
 in git.
+
+## fourth pattern (observed parity round, 2026-06-12): rust/Cargo.lock merge conflicts
+
+The `grind/port-cli-translate-filename-logic` merge (`a7c1de7`) conflicted on
+`rust/Cargo.lock` — the only conflict in the last 20 first-parent merges, so a
+leading indicator rather than a chronic locus yet. Cause is structural and
+purely additive: any two concurrent ports that add or bump a crate dependency
+both rewrite overlapping `[[package]]` blocks in the single lockfile, which
+three-way merge cannot reconcile even though the intents are independent. As the
+remaining backlog (translation backends over reqwest, server handlers over axum,
+queue services) keeps pulling new crates, concurrent waves will hit this more
+often.
+
+### proposed triage rule
+
+`Cargo.lock` conflicts are mechanical, not semantic — never hand-resolve the
+block markers. Resolve by taking either side then running `cargo update
+--workspace --offline` (or a plain `cargo build`) to regenerate a consistent
+lockfile, which the merge-queue step can do automatically. Cheaper still: when a
+wave dispatches 2+ items that each add dependencies, have the merge queue
+`git checkout --theirs rust/Cargo.lock && cargo build` as the standard
+conflict-resolution path for that one file rather than treating it as a real
+conflict. Noted here so the trend is in git.
