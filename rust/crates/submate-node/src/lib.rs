@@ -569,11 +569,17 @@ pub fn whisper_processor(
                 language,
                 task: submate_whisper::Task::Transcribe,
             };
-            dispatcher
-                .transcribe_pcm(model_path, samples, options)
+            // Decode, then run the full subtitle assembly (regroup -> suppress ->
+            // SRT formatting) so the job output is a real timestamped SRT, not raw
+            // text. The assembly stages are the stable-ts slice (already ported).
+            let raw = dispatcher
+                .transcribe_pcm(model_path, samples.clone(), options)
                 .await
-                .map(|r| r.text)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let assembled =
+                submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &samples)
+                    .map_err(|e| e.to_string())?;
+            Ok(assembled.to_srt_vtt(false))
         }
     }
 }

@@ -535,8 +535,16 @@ async fn transcribe_files(
 
         if args.sync {
             match coord.wait_for_result(job_id).await {
-                Some(submate_proto::JobOutcome::Ok { .. }) => {
-                    println!("  Processed: {}", file.display());
+                Some(submate_proto::JobOutcome::Ok { output }) => {
+                    // Persist the produced subtitle next to the input. (The full
+                    // skip-condition + language-suffixed naming lives in
+                    // port-queue-transcription-service; this writes the result the
+                    // sync coordinator already returns so `transcribe --sync`
+                    // produces a file today.)
+                    let out_path = file.with_extension("srt");
+                    std::fs::write(&out_path, output)
+                        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out_path.display()))?;
+                    println!("  Processed: {} -> {}", file.display(), out_path.display());
                 }
                 other => {
                     failed += 1;
