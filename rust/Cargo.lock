@@ -1738,6 +1738,7 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "submate-jellyfin",
  "thiserror",
  "tokio",
  "tower",
