@@ -104,6 +104,45 @@ struct VirtualFolder {
     id: Option<String>,
 }
 
+/// Pick the administrator user ID from a `/Users` array.
+///
+/// Ports `_get_admin_user_id`'s selection loop: returns the `Id` of the first
+/// user whose `Policy.IsAdministrator` is true. A missing `Policy` (or one with
+/// `IsAdministrator` absent, which `serde` defaults to `false`) is not an admin.
+/// Raises [`JellyfinError::NoAdminUser`] when no user qualifies.
+fn pick_admin_user_id(users: &[User]) -> Result<String> {
+    for user in users {
+        if user.policy.as_ref().map(|p| p.is_administrator).unwrap_or(false) {
+            return Ok(user.id.clone());
+        }
+    }
+    Err(JellyfinError::NoAdminUser)
+}
+
+/// Extract the on-disk path from a `/Users/{admin}/Items/{item}` object.
+///
+/// Ports `get_file_path`'s truthiness check: a missing or empty `Path` raises
+/// [`JellyfinError::NoFilePath`] (Python treats an empty string as "no path").
+fn extract_file_path(item: &Item, item_id: &str) -> Result<String> {
+    match &item.path {
+        Some(path) if !path.is_empty() => Ok(path.clone()),
+        _ => Err(JellyfinError::NoFilePath(item_id.to_string())),
+    }
+}
+
+/// Find a library's ID by name from a `/Library/VirtualFolders` array.
+///
+/// Ports `refresh_library`'s lookup: returns the matched entry's `Id`. A missing
+/// match is **not** an error — the caller logs a warning and skips the refresh —
+/// so this returns the outer `None` to mean "no library by that name", and an
+/// inner `Some(None)` to mean "matched, but the entry carried no `Id`".
+fn match_library_id(libraries: &[VirtualFolder], library_name: &str) -> Option<Option<String>> {
+    libraries
+        .iter()
+        .find(|library| library.name.as_deref() == Some(library_name))
+        .map(|library| library.id.clone())
+}
+
 /// Client for interacting with a Jellyfin Media Server.
 ///
 /// Ported from `submate/media_servers/jellyfin.py`. The client starts
@@ -204,14 +243,9 @@ impl JellyfinClient {
         let url = format!("{server}/Users");
         let users: Vec<User> = self.get(&url).send().await?.error_for_status()?.json().await?;
 
-        for user in users {
-            if user.policy.map(|p| p.is_administrator).unwrap_or(false) {
-                self.admin_user_id = Some(user.id.clone());
-                return Ok(user.id);
-            }
-        }
-
-        Err(JellyfinError::NoAdminUser)
+        let admin_id = pick_admin_user_id(&users)?;
+        self.admin_user_id = Some(admin_id.clone());
+        Ok(admin_id)
     }
 
     /// Get the on-disk file path for a media item.
@@ -225,13 +259,9 @@ impl JellyfinClient {
         let url = format!("{server}/Users/{admin_id}/Items/{item_id}");
         let item: Item = self.get(&url).send().await?.error_for_status()?.json().await?;
 
-        match item.path {
-            Some(path) if !path.is_empty() => {
-                tracing::debug!(item_id, path, "Retrieved file path");
-                Ok(path)
-            }
-            _ => Err(JellyfinError::NoFilePath(item_id.to_string())),
-        }
+        let path = extract_file_path(&item, item_id)?;
+        tracing::debug!(item_id, path, "Retrieved file path");
+        Ok(path)
     }
 
     /// Refresh metadata for a specific item.
@@ -264,9 +294,9 @@ impl JellyfinClient {
         let libraries: Vec<VirtualFolder> =
             self.get(&url).send().await?.error_for_status()?.json().await?;
 
-        for library in libraries {
-            if library.name.as_deref() == Some(library_name) {
-                if let Some(library_id) = library.id {
+        match match_library_id(&libraries, library_name) {
+            Some(library_id) => {
+                if let Some(library_id) = library_id {
                     let refresh_url = format!("{server}/Items/{library_id}/Refresh");
                     self.post(&refresh_url)
                         .query(&[("Recursive", "true")])
@@ -275,12 +305,13 @@ impl JellyfinClient {
                         .error_for_status()?;
                     tracing::info!(library = library_name, "Refreshed library");
                 }
-                return Ok(());
+                Ok(())
+            }
+            None => {
+                tracing::warn!(library = library_name, "Library not found");
+                Ok(())
             }
         }
-
-        tracing::warn!(library = library_name, "Library not found");
-        Ok(())
     }
 
     /// Refresh all configured libraries.
@@ -349,5 +380,162 @@ mod tests {
             r#"{"NotificationType":"ItemAdded","ItemType":"Movie"}"#,
         );
         assert!(missing.is_err());
+    }
+}
+
+/// Unit B — response-parsing parity against the golden Jellyfin bodies.
+///
+/// These tests drive the private selection helpers (`pick_admin_user_id`,
+/// `extract_file_path`, `match_library_id`) with the golden response bodies and
+/// assert the derived values match the Python-derived values in `expected.json`.
+///
+/// `rust/fixtures/` is denylisted for the port, so the goldens are captured
+/// separately. Until they land, each golden-dependent test skips with an
+/// `eprintln` (same pattern as `submate-media`'s `extract_pcm_sha`) so it arms
+/// itself the moment the fixtures appear. The non-golden semantics (no-admin,
+/// empty-`Path`, unknown-library) are pinned inline and always run.
+#[cfg(test)]
+mod parity {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn fixtures_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/jellyfin")
+    }
+
+    /// Read and parse a golden JSON body, or `None` (with an `eprintln` skip
+    /// note) when the fixture has not been captured yet.
+    fn golden(name: &str) -> Option<serde_json::Value> {
+        let path = fixtures_dir().join(name);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Some(
+                serde_json::from_str(&text)
+                    .unwrap_or_else(|e| panic!("malformed golden {}: {e}", path.display())),
+            ),
+            Err(_) => {
+                eprintln!(
+                    "skipping golden assertion: rust/fixtures/jellyfin/{name} not captured yet \
+                     (rust/fixtures/ is denylisted — capture first)"
+                );
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn admin_selection_matches_golden() {
+        let (Some(users_body), Some(expected)) = (golden("users.json"), golden("expected.json"))
+        else {
+            return;
+        };
+
+        let users: Vec<User> = serde_json::from_value(users_body).expect("users.json shape");
+        let admin_id = pick_admin_user_id(&users).expect("golden /Users has an admin");
+
+        let want = expected["admin_user_id"]
+            .as_str()
+            .expect("expected.json has admin_user_id");
+        assert_eq!(admin_id, want, "admin id must equal Python-derived value");
+    }
+
+    #[test]
+    fn file_path_matches_golden() {
+        let (Some(item_body), Some(expected)) = (golden("item.json"), golden("expected.json"))
+        else {
+            return;
+        };
+
+        let item: Item = serde_json::from_value(item_body).expect("item.json shape");
+        let path = extract_file_path(&item, "golden-item").expect("golden item has a Path");
+
+        let want = expected["file_path"]
+            .as_str()
+            .expect("expected.json has file_path");
+        assert_eq!(path, want, "file path must equal Python-derived value");
+    }
+
+    #[test]
+    fn library_lookup_matches_golden() {
+        let (Some(folders_body), Some(expected)) =
+            (golden("virtual_folders.json"), golden("expected.json"))
+        else {
+            return;
+        };
+
+        let folders: Vec<VirtualFolder> =
+            serde_json::from_value(folders_body).expect("virtual_folders.json shape");
+
+        let name = expected["library_name"]
+            .as_str()
+            .expect("expected.json has library_name");
+        let want = expected["library_id"]
+            .as_str()
+            .expect("expected.json has library_id");
+
+        // Outer Some => matched by Name; inner Some => the entry carried an Id.
+        let library_id = match_library_id(&folders, name)
+            .expect("golden folders contain the library")
+            .expect("matched library has an Id");
+        assert_eq!(library_id, want, "library id must equal Python-derived value");
+    }
+
+    // ---- Non-golden semantics: always run (no fixture needed). ----
+
+    #[test]
+    fn no_admin_user_raises() {
+        // Missing Policy => not admin; explicit IsAdministrator=false => not admin.
+        let users: Vec<User> = serde_json::from_value(serde_json::json!([
+            { "Id": "no-policy" },
+            { "Id": "non-admin", "Policy": { "IsAdministrator": false } }
+        ]))
+        .unwrap();
+        assert!(matches!(
+            pick_admin_user_id(&users),
+            Err(JellyfinError::NoAdminUser)
+        ));
+    }
+
+    #[test]
+    fn first_admin_wins_and_missing_policy_is_not_admin() {
+        let users: Vec<User> = serde_json::from_value(serde_json::json!([
+            { "Id": "no-policy" },
+            { "Id": "admin-a", "Policy": { "IsAdministrator": true } },
+            { "Id": "admin-b", "Policy": { "IsAdministrator": true } }
+        ]))
+        .unwrap();
+        assert_eq!(pick_admin_user_id(&users).unwrap(), "admin-a");
+    }
+
+    #[test]
+    fn empty_or_missing_path_raises_no_file_path() {
+        // Empty string is falsy in Python: counts as "no path".
+        let empty: Item = serde_json::from_value(serde_json::json!({ "Path": "" })).unwrap();
+        assert!(matches!(
+            extract_file_path(&empty, "item-x"),
+            Err(JellyfinError::NoFilePath(id)) if id == "item-x"
+        ));
+
+        // Absent Path field likewise raises.
+        let missing: Item = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(matches!(
+            extract_file_path(&missing, "item-y"),
+            Err(JellyfinError::NoFilePath(id)) if id == "item-y"
+        ));
+    }
+
+    #[test]
+    fn unknown_library_is_not_an_error() {
+        // Python logs a warning and returns without refreshing: no match => None,
+        // so the caller issues no POST and does not raise.
+        let folders: Vec<VirtualFolder> = serde_json::from_value(serde_json::json!([
+            { "Name": "Movies", "Id": "library-1" },
+            { "Name": "TV Shows", "Id": "library-2" }
+        ]))
+        .unwrap();
+        assert_eq!(match_library_id(&folders, "Nope"), None);
+        assert_eq!(
+            match_library_id(&folders, "Movies"),
+            Some(Some("library-1".to_string()))
+        );
     }
 }
