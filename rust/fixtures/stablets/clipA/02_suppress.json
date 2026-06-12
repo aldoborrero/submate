@@ -1,0 +1,693 @@
+{
+  "language": "english",
+  "nonspeech_sections": [
+    {
+      "end": 0.14,
+      "start": 0.0
+    },
+    {
+      "end": 1.3,
+      "start": 0.82
+    },
+    {
+      "end": 1.76,
+      "start": 1.58
+    },
+    {
+      "end": 2.0,
+      "start": 1.9
+    },
+    {
+      "end": 2.16,
+      "start": 2.14
+    },
+    {
+      "end": 2.34,
+      "start": 2.32
+    },
+    {
+      "end": 2.6,
+      "start": 2.5
+    },
+    {
+      "end": 3.12,
+      "start": 2.74
+    },
+    {
+      "end": 3.46,
+      "start": 3.44
+    },
+    {
+      "end": 3.66,
+      "start": 3.6
+    },
+    {
+      "end": 3.98,
+      "start": 3.86
+    },
+    {
+      "end": 4.84,
+      "start": 4.1
+    },
+    {
+      "end": 5.16,
+      "start": 5.02
+    },
+    {
+      "end": 5.52,
+      "start": 5.5
+    },
+    {
+      "end": 5.84,
+      "start": 5.66
+    },
+    {
+      "end": 6.24,
+      "start": 5.98
+    },
+    {
+      "end": 6.64,
+      "start": 6.46
+    },
+    {
+      "end": 7.04,
+      "start": 7.0
+    },
+    {
+      "end": 7.92,
+      "start": 7.36
+    },
+    {
+      "end": 8.52,
+      "start": 8.32
+    },
+    {
+      "end": 8.86,
+      "start": 8.76
+    },
+    {
+      "end": 9.2,
+      "start": 9.1
+    },
+    {
+      "end": 9.44,
+      "start": 9.42
+    },
+    {
+      "end": 9.84,
+      "start": 9.6
+    },
+    {
+      "end": 10.3,
+      "start": 10.06
+    },
+    {
+      "end": 10.52,
+      "start": 10.44
+    },
+    {
+      "end": 11.16,
+      "start": 10.68
+    }
+  ],
+  "ori_dict": {
+    "language": "english",
+    "nonspeech_sections": [
+      {
+        "end": 0.14,
+        "start": 0.0
+      },
+      {
+        "end": 1.3,
+        "start": 0.82
+      },
+      {
+        "end": 1.76,
+        "start": 1.58
+      },
+      {
+        "end": 2.0,
+        "start": 1.9
+      },
+      {
+        "end": 2.16,
+        "start": 2.14
+      },
+      {
+        "end": 2.34,
+        "start": 2.32
+      },
+      {
+        "end": 2.6,
+        "start": 2.5
+      },
+      {
+        "end": 3.12,
+        "start": 2.74
+      },
+      {
+        "end": 3.46,
+        "start": 3.44
+      },
+      {
+        "end": 3.66,
+        "start": 3.6
+      },
+      {
+        "end": 3.98,
+        "start": 3.86
+      },
+      {
+        "end": 4.84,
+        "start": 4.1
+      },
+      {
+        "end": 5.16,
+        "start": 5.02
+      },
+      {
+        "end": 5.52,
+        "start": 5.5
+      },
+      {
+        "end": 5.84,
+        "start": 5.66
+      },
+      {
+        "end": 6.24,
+        "start": 5.98
+      },
+      {
+        "end": 6.64,
+        "start": 6.46
+      },
+      {
+        "end": 7.04,
+        "start": 7.0
+      },
+      {
+        "end": 7.92,
+        "start": 7.36
+      },
+      {
+        "end": 8.52,
+        "start": 8.32
+      },
+      {
+        "end": 8.86,
+        "start": 8.76
+      },
+      {
+        "end": 9.2,
+        "start": 9.1
+      },
+      {
+        "end": 9.44,
+        "start": 9.42
+      },
+      {
+        "end": 9.84,
+        "start": 9.6
+      },
+      {
+        "end": 10.3,
+        "start": 10.06
+      },
+      {
+        "end": 10.52,
+        "start": 10.44
+      },
+      {
+        "end": 11.16,
+        "start": 10.68
+      }
+    ],
+    "ori_dict": {},
+    "regroup_history": "",
+    "segments": [
+      {
+        "avg_logprob": -0.46307755280763674,
+        "compression_ratio": 1.2868852459016393,
+        "end": 5.9,
+        "no_speech_prob": 0.01799260638654232,
+        "seek": 0,
+        "start": 0.04,
+        "temperature": 0.0,
+        "text": " The Low World. This is a test on the subtitle generation system. The quick brown fox dumps",
+        "tokens": [],
+        "words": [
+          {
+            "end": 0.14,
+            "probability": 0.21138422191143036,
+            "start": 0.04,
+            "tokens": null,
+            "word": " The"
+          },
+          {
+            "end": 0.32,
+            "probability": 0.6640255451202393,
+            "start": 0.14,
+            "tokens": null,
+            "word": " Low"
+          },
+          {
+            "end": 0.62,
+            "probability": 0.6842073798179626,
+            "start": 0.32,
+            "tokens": null,
+            "word": " World."
+          },
+          {
+            "end": 1.4,
+            "probability": 0.9735618233680725,
+            "start": 1.3,
+            "tokens": null,
+            "word": " This"
+          },
+          {
+            "end": 1.52,
+            "probability": 0.9909353852272034,
+            "start": 1.4,
+            "tokens": null,
+            "word": " is"
+          },
+          {
+            "end": 1.66,
+            "probability": 0.924985945224762,
+            "start": 1.52,
+            "tokens": null,
+            "word": " a"
+          },
+          {
+            "end": 1.92,
+            "probability": 0.9853213429450989,
+            "start": 1.76,
+            "tokens": null,
+            "word": " test"
+          },
+          {
+            "end": 2.1,
+            "probability": 0.6709198951721191,
+            "start": 2.0,
+            "tokens": null,
+            "word": " on"
+          },
+          {
+            "end": 2.24,
+            "probability": 0.9944076538085938,
+            "start": 2.1,
+            "tokens": null,
+            "word": " the"
+          },
+          {
+            "end": 2.44,
+            "probability": 0.6789307594299316,
+            "start": 2.24,
+            "tokens": null,
+            "word": " subtitle"
+          },
+          {
+            "end": 3.16,
+            "probability": 0.8242701292037964,
+            "start": 2.44,
+            "tokens": null,
+            "word": " generation"
+          },
+          {
+            "end": 3.86,
+            "probability": 0.9936368465423584,
+            "start": 3.16,
+            "tokens": null,
+            "word": " system."
+          },
+          {
+            "end": 4.68,
+            "probability": 0.9625715613365173,
+            "start": 4.66,
+            "tokens": null,
+            "word": " The"
+          },
+          {
+            "end": 4.92,
+            "probability": 0.4105794429779053,
+            "start": 4.82,
+            "tokens": null,
+            "word": " quick"
+          },
+          {
+            "end": 5.26,
+            "probability": 0.8982424139976501,
+            "start": 4.92,
+            "tokens": null,
+            "word": " brown"
+          },
+          {
+            "end": 5.58,
+            "probability": 0.45425131916999817,
+            "start": 5.26,
+            "tokens": null,
+            "word": " fox"
+          },
+          {
+            "end": 5.9,
+            "probability": 0.5528780817985535,
+            "start": 5.58,
+            "tokens": null,
+            "word": " dumps"
+          }
+        ]
+      },
+      {
+        "avg_logprob": -0.46307755280763674,
+        "compression_ratio": 1.2868852459016393,
+        "end": 10.36,
+        "no_speech_prob": 0.01799260638654232,
+        "seek": 0,
+        "start": 5.9,
+        "temperature": 0.0,
+        "text": " over the lazy dog. Some made transcribe for the own two subtitles.",
+        "tokens": [],
+        "words": [
+          {
+            "end": 6.5,
+            "probability": 0.9967398047447205,
+            "start": 5.9,
+            "tokens": null,
+            "word": " over"
+          },
+          {
+            "end": 6.68,
+            "probability": 0.9880425930023193,
+            "start": 6.58,
+            "tokens": null,
+            "word": " the"
+          },
+          {
+            "end": 6.94,
+            "probability": 0.8912246823310852,
+            "start": 6.68,
+            "tokens": null,
+            "word": " lazy"
+          },
+          {
+            "end": 7.28,
+            "probability": 0.9702566266059875,
+            "start": 6.94,
+            "tokens": null,
+            "word": " dog."
+          },
+          {
+            "end": 8.0,
+            "probability": 0.3974990248680115,
+            "start": 7.9,
+            "tokens": null,
+            "word": " Some"
+          },
+          {
+            "end": 8.24,
+            "probability": 0.29507333040237427,
+            "start": 8.0,
+            "tokens": null,
+            "word": " made"
+          },
+          {
+            "end": 9.04,
+            "probability": 0.9480599164962769,
+            "start": 8.24,
+            "tokens": null,
+            "word": " transcribe"
+          },
+          {
+            "end": 9.24,
+            "probability": 0.6017677783966064,
+            "start": 9.04,
+            "tokens": null,
+            "word": " for"
+          },
+          {
+            "end": 9.46,
+            "probability": 0.938645601272583,
+            "start": 9.24,
+            "tokens": null,
+            "word": " the"
+          },
+          {
+            "end": 9.6,
+            "probability": 0.06606418639421463,
+            "start": 9.46,
+            "tokens": null,
+            "word": " own"
+          },
+          {
+            "end": 9.84,
+            "probability": 0.5259387493133545,
+            "start": 9.74,
+            "tokens": null,
+            "word": " two"
+          },
+          {
+            "end": 10.36,
+            "probability": 0.8922597765922546,
+            "start": 9.84,
+            "tokens": null,
+            "word": " subtitles."
+          }
+        ]
+      }
+    ],
+    "text": " The Low World. This is a test on the subtitle generation system. The quick brown fox dumps over the lazy dog. Some made transcribe for the own two subtitles."
+  },
+  "regroup_history": "",
+  "segments": [
+    {
+      "avg_logprob": -0.46307755280763674,
+      "compression_ratio": 1.2868852459016393,
+      "end": 5.9,
+      "no_speech_prob": 0.01799260638654232,
+      "seek": 0,
+      "start": 0.04,
+      "temperature": 0.0,
+      "text": " The Low World. This is a test on the subtitle generation system. The quick brown fox dumps",
+      "tokens": [],
+      "words": [
+        {
+          "end": 0.14,
+          "probability": 0.21138422191143036,
+          "start": 0.04,
+          "tokens": null,
+          "word": " The"
+        },
+        {
+          "end": 0.32,
+          "probability": 0.6640255451202393,
+          "start": 0.14,
+          "tokens": null,
+          "word": " Low"
+        },
+        {
+          "end": 0.62,
+          "probability": 0.6842073798179626,
+          "start": 0.32,
+          "tokens": null,
+          "word": " World."
+        },
+        {
+          "end": 1.4,
+          "probability": 0.9735618233680725,
+          "start": 1.3,
+          "tokens": null,
+          "word": " This"
+        },
+        {
+          "end": 1.52,
+          "probability": 0.9909353852272034,
+          "start": 1.4,
+          "tokens": null,
+          "word": " is"
+        },
+        {
+          "end": 1.66,
+          "probability": 0.924985945224762,
+          "start": 1.52,
+          "tokens": null,
+          "word": " a"
+        },
+        {
+          "end": 1.92,
+          "probability": 0.9853213429450989,
+          "start": 1.76,
+          "tokens": null,
+          "word": " test"
+        },
+        {
+          "end": 2.1,
+          "probability": 0.6709198951721191,
+          "start": 2.0,
+          "tokens": null,
+          "word": " on"
+        },
+        {
+          "end": 2.24,
+          "probability": 0.9944076538085938,
+          "start": 2.1,
+          "tokens": null,
+          "word": " the"
+        },
+        {
+          "end": 2.44,
+          "probability": 0.6789307594299316,
+          "start": 2.24,
+          "tokens": null,
+          "word": " subtitle"
+        },
+        {
+          "end": 3.16,
+          "probability": 0.8242701292037964,
+          "start": 2.44,
+          "tokens": null,
+          "word": " generation"
+        },
+        {
+          "end": 3.86,
+          "probability": 0.9936368465423584,
+          "start": 3.16,
+          "tokens": null,
+          "word": " system."
+        },
+        {
+          "end": 4.68,
+          "probability": 0.9625715613365173,
+          "start": 4.66,
+          "tokens": null,
+          "word": " The"
+        },
+        {
+          "end": 4.92,
+          "probability": 0.4105794429779053,
+          "start": 4.82,
+          "tokens": null,
+          "word": " quick"
+        },
+        {
+          "end": 5.26,
+          "probability": 0.8982424139976501,
+          "start": 4.92,
+          "tokens": null,
+          "word": " brown"
+        },
+        {
+          "end": 5.58,
+          "probability": 0.45425131916999817,
+          "start": 5.26,
+          "tokens": null,
+          "word": " fox"
+        },
+        {
+          "end": 5.9,
+          "probability": 0.5528780817985535,
+          "start": 5.58,
+          "tokens": null,
+          "word": " dumps"
+        }
+      ]
+    },
+    {
+      "avg_logprob": -0.46307755280763674,
+      "compression_ratio": 1.2868852459016393,
+      "end": 10.36,
+      "no_speech_prob": 0.01799260638654232,
+      "seek": 0,
+      "start": 5.9,
+      "temperature": 0.0,
+      "text": " over the lazy dog. Some made transcribe for the own two subtitles.",
+      "tokens": [],
+      "words": [
+        {
+          "end": 6.5,
+          "probability": 0.9967398047447205,
+          "start": 5.9,
+          "tokens": null,
+          "word": " over"
+        },
+        {
+          "end": 6.68,
+          "probability": 0.9880425930023193,
+          "start": 6.58,
+          "tokens": null,
+          "word": " the"
+        },
+        {
+          "end": 6.94,
+          "probability": 0.8912246823310852,
+          "start": 6.68,
+          "tokens": null,
+          "word": " lazy"
+        },
+        {
+          "end": 7.28,
+          "probability": 0.9702566266059875,
+          "start": 6.94,
+          "tokens": null,
+          "word": " dog."
+        },
+        {
+          "end": 8.0,
+          "probability": 0.3974990248680115,
+          "start": 7.9,
+          "tokens": null,
+          "word": " Some"
+        },
+        {
+          "end": 8.24,
+          "probability": 0.29507333040237427,
+          "start": 8.0,
+          "tokens": null,
+          "word": " made"
+        },
+        {
+          "end": 9.04,
+          "probability": 0.9480599164962769,
+          "start": 8.24,
+          "tokens": null,
+          "word": " transcribe"
+        },
+        {
+          "end": 9.24,
+          "probability": 0.6017677783966064,
+          "start": 9.04,
+          "tokens": null,
+          "word": " for"
+        },
+        {
+          "end": 9.46,
+          "probability": 0.938645601272583,
+          "start": 9.24,
+          "tokens": null,
+          "word": " the"
+        },
+        {
+          "end": 9.6,
+          "probability": 0.06606418639421463,
+          "start": 9.46,
+          "tokens": null,
+          "word": " own"
+        },
+        {
+          "end": 9.84,
+          "probability": 0.5259387493133545,
+          "start": 9.74,
+          "tokens": null,
+          "word": " two"
+        },
+        {
+          "end": 10.36,
+          "probability": 0.8922597765922546,
+          "start": 9.84,
+          "tokens": null,
+          "word": " subtitles."
+        }
+      ]
+    }
+  ],
+  "text": " The Low World. This is a test on the subtitle generation system. The quick brown fox dumps over the lazy dog. Some made transcribe for the own two subtitles."
+}

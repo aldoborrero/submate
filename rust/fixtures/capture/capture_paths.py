@@ -20,6 +20,12 @@ BUILD_CASES = [
     ("name", dict(video_path="movie.mp4", language="eng", naming_type=LanguageNamingType.NAME)),
     ("vtt", dict(video_path="show.s01e01.mkv", language="spa", extension=".vtt")),
     ("nested_dir", dict(video_path="/media/movies/movie.mkv", language="fra")),
+    # dot-relative + root edge cases (pathlib drops "." components; camino keeps them)
+    ("dot_relative", dict(video_path="./movie.mp4", language="eng")),
+    ("dot_relative_nested", dict(video_path="./a/movie.mp4", language="eng")),
+    ("dot_dot_collapse", dict(video_path="././movie.mp4", language="eng")),
+    ("parent_relative", dict(video_path="../movie.mp4", language="eng")),
+    ("root_level", dict(video_path="/movie.mp4", language="eng")),
 ]
 
 # (label, kwargs) for map_path (Docker path translation)

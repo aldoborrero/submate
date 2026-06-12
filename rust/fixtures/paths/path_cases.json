@@ -7,6 +7,27 @@
       },
       "result": "movie.eng.srt"
     },
+    "dot_dot_collapse": {
+      "args": {
+        "language": "eng",
+        "video_path": "././movie.mp4"
+      },
+      "result": "movie.eng.srt"
+    },
+    "dot_relative": {
+      "args": {
+        "language": "eng",
+        "video_path": "./movie.mp4"
+      },
+      "result": "movie.eng.srt"
+    },
+    "dot_relative_nested": {
+      "args": {
+        "language": "eng",
+        "video_path": "./a/movie.mp4"
+      },
+      "result": "a/movie.eng.srt"
+    },
     "iso1": {
       "args": {
         "language": "eng",
@@ -29,6 +50,20 @@
         "video_path": "/media/movies/movie.mkv"
       },
       "result": "/media/movies/movie.fre.srt"
+    },
+    "parent_relative": {
+      "args": {
+        "language": "eng",
+        "video_path": "../movie.mp4"
+      },
+      "result": "../movie.eng.srt"
+    },
+    "root_level": {
+      "args": {
+        "language": "eng",
+        "video_path": "/movie.mp4"
+      },
+      "result": "/movie.eng.srt"
     },
     "subgen": {
       "args": {

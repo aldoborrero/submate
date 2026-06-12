@@ -177,9 +177,24 @@ fn assemble_subtitle_path(
 /// directory component, Python's parent is `.` and `str(Path(".") / name)` is
 /// just `name`, so no `./` prefix is added.
 fn join_parent(video_path: &str, name: &str) -> String {
-    match Utf8Path::new(video_path).parent() {
-        Some(parent) if !parent.as_str().is_empty() => format!("{parent}/{name}"),
-        _ => name.to_string(),
+    // pathlib drops "." (current-dir) and empty (double-slash) components when a
+    // PurePosixPath is constructed; camino's `parent()` keeps them, so a leading
+    // "./" leaks into the output. Normalize the parent the way pathlib does —
+    // keep "..", keep the absolute root, drop "." and empties — before joining.
+    let parent = Utf8Path::new(video_path)
+        .parent()
+        .map(Utf8Path::as_str)
+        .unwrap_or("");
+    let absolute = parent.starts_with('/');
+    let parts: Vec<&str> = parent
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect();
+    match (absolute, parts.is_empty()) {
+        (true, true) => format!("/{name}"),                       // parent is "/"
+        (true, false) => format!("/{}/{}", parts.join("/"), name),
+        (false, true) => name.to_string(),                        // parent ".", "", "./."
+        (false, false) => format!("{}/{}", parts.join("/"), name),
     }
 }
 

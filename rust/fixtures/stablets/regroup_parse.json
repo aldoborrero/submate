@@ -1,0 +1,19 @@
+[
+  {
+    "kwargs": {},
+    "method": "clamp_max"
+  },
+  {
+    "kwargs": {
+      "max_chars": 84
+    },
+    "method": "split_by_length"
+  },
+  {
+    "kwargs": {
+      "max_chars": 42,
+      "newline": 1
+    },
+    "method": "split_by_length"
+  }
+]
