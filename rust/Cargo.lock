@@ -830,7 +830,11 @@ dependencies = [
 name = "submate-queue"
 version = "0.1.0"
 dependencies = [
+ "parity",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "strum",
  "thiserror",
 ]
 
