@@ -13,14 +13,28 @@
 //! | column        | meaning                                                |
 //! |---------------|--------------------------------------------------------|
 //! | `id`          | autoincrement primary key                              |
-//! | `kind`        | job kind (e.g. `transcribe`/`translate`)               |
+//! | `kind`        | job kind (e.g. `transcribe`/`translate`) — routing key |
 //! | `payload`     | opaque blob the caller round-trips (JSON, etc.)        |
 //! | `state`       | `queued` \| `running` \| `done` \| `failed`            |
+//! | `priority`    | higher is claimed first (Bazarr ASR > library scans)   |
+//! | `requires_gpu`| `1` if the job may only run on a GPU node              |
 //! | `attempts`    | how many times this job has been claimed               |
 //! | `max_attempts`| attempts allowed before `fail` makes it terminal       |
 //! | `run_at`      | earliest unix-epoch ms the job may be claimed          |
 //! | `locked_by`   | worker/node id that holds the current lease            |
 //! | `locked_at`   | unix-epoch ms the lease was taken (for reclaim)        |
+//!
+//! ## Capability routing
+//!
+//! Nodes are heterogeneous (GPU box, CPU box, translation-only). [`claim_with`]
+//! takes the claiming node's [`NodeCapabilities`] and folds them into the claim
+//! subquery so a node is only ever handed a job it can actually run: a
+//! `requires_gpu` job is invisible to a CPU node, and a job whose `kind` is not
+//! in the node's advertised set is skipped over rather than claimed-then-released.
+//! Among the jobs a node *can* run, higher `priority` wins (then oldest
+//! `run_at`), so the synchronous Bazarr-ASR path jumps ahead of bulk library
+//! scans. Plain [`claim`] is the unrestricted form (any kind, GPU or not) used
+//! by single-class workers and tests.
 //!
 //! ## Concurrency
 //!
@@ -29,6 +43,9 @@
 //! serialises writers, so two concurrent claimers can never receive the same
 //! row: the `SELECT` subquery and the `UPDATE` happen inside one statement, and
 //! the row leaves the `queued` state before the next writer's subquery runs.
+//!
+//! [`claim_with`]: JobStore::claim_with
+//! [`claim`]: JobStore::claim
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,8 +73,8 @@ pub type JobId = i64;
 
 /// The full ordered column list, shared by every `SELECT`/`RETURNING` that
 /// hydrates a [`Job`] so the projection and [`Job::from_row`] stay in lockstep.
-const JOB_COLUMNS: &str =
-    "id, kind, payload, state, attempts, max_attempts, run_at, locked_by, locked_at";
+const JOB_COLUMNS: &str = "id, kind, payload, state, priority, requires_gpu, \
+     attempts, max_attempts, run_at, locked_by, locked_at";
 
 /// Lifecycle state of a job.
 ///
@@ -105,12 +122,17 @@ impl JobState {
 pub struct Job {
     /// Primary key.
     pub id: JobId,
-    /// Job kind (capability/routing key for later items).
+    /// Job kind — the capability/routing key matched against a node's
+    /// advertised task set in [`claim_with`](JobStore::claim_with).
     pub kind: String,
     /// Opaque caller payload.
     pub payload: String,
     /// Current lifecycle state.
     pub state: JobState,
+    /// Claim ordering weight; higher is claimed first (default `0`).
+    pub priority: i64,
+    /// Whether the job may only run on a GPU-capable node.
+    pub requires_gpu: bool,
     /// Number of times the job has been claimed.
     pub attempts: u32,
     /// Attempts permitted before `fail` becomes terminal.
@@ -131,6 +153,8 @@ impl Job {
             kind: row.get("kind")?,
             payload: row.get("payload")?,
             state: JobState::from_str(&state),
+            priority: row.get("priority")?,
+            requires_gpu: row.get("requires_gpu")?,
             attempts: row.get("attempts")?,
             max_attempts: row.get("max_attempts")?,
             run_at: row.get("run_at")?,
@@ -147,6 +171,12 @@ pub struct NewJob {
     pub kind: String,
     /// Opaque caller payload.
     pub payload: String,
+    /// Claim ordering weight; higher is claimed first. Defaults to `0`, so a
+    /// Bazarr-ASR job enqueued with a positive priority jumps ahead of bulk
+    /// library scans left at the default.
+    pub priority: i64,
+    /// Whether the job may only run on a GPU-capable node.
+    pub requires_gpu: bool,
     /// Attempts permitted before the job is failed for good.
     pub max_attempts: u32,
     /// Earliest unix-epoch ms the job may run (use `0` for "as soon as
@@ -155,11 +185,14 @@ pub struct NewJob {
 }
 
 impl NewJob {
-    /// A job runnable immediately with a single attempt.
+    /// A job runnable immediately with a single attempt, default priority, and
+    /// no GPU requirement.
     pub fn now(kind: impl Into<String>, payload: impl Into<String>) -> NewJob {
         NewJob {
             kind: kind.into(),
             payload: payload.into(),
+            priority: 0,
+            requires_gpu: false,
             max_attempts: 1,
             run_at: 0,
         }
@@ -168,6 +201,63 @@ impl NewJob {
     /// Set the attempt budget.
     pub fn with_max_attempts(mut self, max_attempts: u32) -> NewJob {
         self.max_attempts = max_attempts;
+        self
+    }
+
+    /// Set the claim priority (higher is claimed first).
+    pub fn with_priority(mut self, priority: i64) -> NewJob {
+        self.priority = priority;
+        self
+    }
+
+    /// Require the job to run on a GPU-capable node.
+    pub fn requiring_gpu(mut self) -> NewJob {
+        self.requires_gpu = true;
+        self
+    }
+}
+
+/// What a claiming node can run, folded into the [`claim_with`] query so a node
+/// is never handed work it cannot execute.
+///
+/// Capabilities are advertised by the node at registration (`{gpu, tasks}` in
+/// the node-coordination API) and surface here as the routing filter:
+///
+/// - `gpu` — the node has a GPU. A job with `requires_gpu = true` is only
+///   visible to a node with `gpu = true`.
+/// - `kinds` — the job kinds the node will accept (e.g. a translation-only node
+///   that holds LLM credentials advertises just `["translate"]`). `None` means
+///   "accept any kind"; an empty slice means "accept none".
+///
+/// [`claim_with`]: JobStore::claim_with
+#[derive(Debug, Clone, Default)]
+pub struct NodeCapabilities {
+    /// Whether the node can run GPU-only jobs.
+    pub gpu: bool,
+    /// The job kinds the node accepts, or `None` to accept any kind.
+    pub kinds: Option<Vec<String>>,
+}
+
+impl NodeCapabilities {
+    /// A node that accepts any kind and has no GPU (the common CPU node).
+    pub fn cpu() -> NodeCapabilities {
+        NodeCapabilities {
+            gpu: false,
+            kinds: None,
+        }
+    }
+
+    /// A node that accepts any kind and has a GPU.
+    pub fn gpu() -> NodeCapabilities {
+        NodeCapabilities {
+            gpu: true,
+            kinds: None,
+        }
+    }
+
+    /// Restrict the node to the given job kinds.
+    pub fn with_kinds(mut self, kinds: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.kinds = Some(kinds.into_iter().map(Into::into).collect());
         self
     }
 }
@@ -292,16 +382,19 @@ impl JobStore {
                 kind         TEXT    NOT NULL,
                 payload      TEXT    NOT NULL,
                 state        TEXT    NOT NULL DEFAULT 'queued',
+                priority     INTEGER NOT NULL DEFAULT 0,
+                requires_gpu INTEGER NOT NULL DEFAULT 0,
                 attempts     INTEGER NOT NULL DEFAULT 0,
                 max_attempts INTEGER NOT NULL DEFAULT 1,
                 run_at       INTEGER NOT NULL DEFAULT 0,
                 locked_by    TEXT,
                 locked_at    INTEGER
             );
-            -- The claim subquery filters on (state, run_at) and orders by run_at;
-            -- this composite index keeps that the hot path as the table grows.
+            -- The claim subquery filters on (state, run_at) and orders by
+            -- (priority, run_at); this composite index keeps that the hot path
+            -- as the table grows. priority is DESC because higher wins.
             CREATE INDEX IF NOT EXISTS idx_jobs_claimable
-                ON jobs (state, run_at);",
+                ON jobs (state, priority DESC, run_at, id);",
         )?;
         Ok(())
     }
@@ -309,42 +402,112 @@ impl JobStore {
     /// Insert a new `queued` job, returning its id.
     pub fn enqueue(&self, job: &NewJob) -> Result<JobId> {
         self.conn.execute(
-            "INSERT INTO jobs (kind, payload, state, attempts, max_attempts, run_at)
-             VALUES (?1, ?2, 'queued', 0, ?3, ?4)",
-            rusqlite::params![job.kind, job.payload, job.max_attempts, job.run_at],
+            "INSERT INTO jobs
+                (kind, payload, state, priority, requires_gpu, attempts, max_attempts, run_at)
+             VALUES (?1, ?2, 'queued', ?3, ?4, 0, ?5, ?6)",
+            rusqlite::params![
+                job.kind,
+                job.payload,
+                job.priority,
+                job.requires_gpu,
+                job.max_attempts,
+                job.run_at,
+            ],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Atomically claim the next eligible job for `worker`.
+    /// Atomically claim the next eligible job for `worker`, with no capability
+    /// restriction (any kind, GPU-required or not).
     ///
-    /// Selects the single oldest (`ORDER BY run_at`) `queued` row whose
-    /// `run_at <= now`, flips it to `running`, records the lease, bumps
-    /// `attempts`, and returns the resulting row — all in one statement so
-    /// concurrent callers can never claim the same job. Returns `Ok(None)` when
-    /// nothing is eligible.
+    /// This is the unrestricted form for single-class workers and tests; a
+    /// heterogeneous deployment uses [`claim_with`](JobStore::claim_with).
+    /// Selects the single highest-priority, then oldest (`ORDER BY priority
+    /// DESC, run_at`) `queued` row whose `run_at <= now`, flips it to `running`,
+    /// records the lease, bumps `attempts`, and returns the resulting row — all
+    /// in one statement so concurrent callers can never claim the same job.
+    /// Returns `Ok(None)` when nothing is eligible.
     pub fn claim(&self, worker: &str) -> Result<Option<Job>> {
+        // `cpu()` accepts any kind; the GPU filter is unrestricted here because
+        // the unrestricted claim must still be able to take GPU-required jobs
+        // (single-class GPU workers / tests rely on it).
+        self.claim_capable(worker, &NodeCapabilities::cpu(), false)
+    }
+
+    /// Atomically claim the next eligible job the node described by `caps` can
+    /// actually run.
+    ///
+    /// Extends [`claim`](JobStore::claim) with capability routing: a job with
+    /// `requires_gpu` is only claimable when `caps.gpu` is true, and a job whose
+    /// `kind` is not in `caps.kinds` is skipped (jobs are filtered inside the
+    /// claim subquery, so a non-matching job is never claimed-then-released —
+    /// it simply stays `queued` for a capable node). Among the runnable jobs the
+    /// highest `priority` is taken first (then oldest `run_at`), so a
+    /// high-priority Bazarr-ASR job is claimed ahead of bulk library scans.
+    ///
+    /// Atomicity is identical to [`claim`](JobStore::claim): the filter lives in
+    /// the `SELECT … LIMIT 1` subquery of the single claiming `UPDATE`.
+    pub fn claim_with(&self, worker: &str, caps: &NodeCapabilities) -> Result<Option<Job>> {
+        self.claim_capable(worker, caps, true)
+    }
+
+    /// Shared claim implementation. `enforce_gpu` gates whether `requires_gpu`
+    /// jobs are filtered by `caps.gpu` ([`claim`](JobStore::claim) leaves them
+    /// claimable; [`claim_with`](JobStore::claim_with) enforces the match).
+    fn claim_capable(
+        &self,
+        worker: &str,
+        caps: &NodeCapabilities,
+        enforce_gpu: bool,
+    ) -> Result<Option<Job>> {
         let now = self.clock.now_ms();
+
+        // Build the capability predicate and its bound parameters. `worker` and
+        // `now` are always ?1/?2; capability values follow as ?3.. .
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(worker.to_owned()), Box::new(now)];
+        let mut predicate = String::new();
+
+        if enforce_gpu && !caps.gpu {
+            // A non-GPU node can never take a GPU-required job.
+            predicate.push_str(" AND requires_gpu = 0");
+        }
+
+        if let Some(kinds) = &caps.kinds {
+            if kinds.is_empty() {
+                // A node that accepts no kinds can claim nothing.
+                return Ok(None);
+            }
+            let start = params.len() + 1;
+            let placeholders: Vec<String> = (start..start + kinds.len())
+                .map(|i| format!("?{i}"))
+                .collect();
+            predicate.push_str(&format!(" AND kind IN ({})", placeholders.join(", ")));
+            for kind in kinds {
+                params.push(Box::new(kind.clone()));
+            }
+        }
+
+        let sql = format!(
+            "UPDATE jobs
+                SET state = 'running',
+                    locked_by = ?1,
+                    locked_at = ?2,
+                    attempts = attempts + 1
+              WHERE id = (
+                  SELECT id FROM jobs
+                   WHERE state = 'queued' AND run_at <= ?2{predicate}
+                   ORDER BY priority DESC, run_at, id
+                   LIMIT 1
+              )
+              RETURNING {JOB_COLUMNS}"
+        );
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let job = self
             .conn
-            .query_row(
-                &format!(
-                    "UPDATE jobs
-                        SET state = 'running',
-                            locked_by = ?1,
-                            locked_at = ?2,
-                            attempts = attempts + 1
-                      WHERE id = (
-                          SELECT id FROM jobs
-                           WHERE state = 'queued' AND run_at <= ?2
-                           ORDER BY run_at, id
-                           LIMIT 1
-                      )
-                      RETURNING {JOB_COLUMNS}"
-                ),
-                rusqlite::params![worker, now],
-                Job::from_row,
-            )
+            .query_row(&sql, param_refs.as_slice(), Job::from_row)
             .optional()?;
         Ok(job)
     }
@@ -716,6 +879,8 @@ mod tests {
             .enqueue(&NewJob {
                 kind: "delayed".into(),
                 payload: "{}".into(),
+                priority: 0,
+                requires_gpu: false,
                 max_attempts: 1,
                 run_at: 5_000,
             })
@@ -734,5 +899,109 @@ mod tests {
             Err(QueueError::NotFound(999))
         ));
         assert!(matches!(store.fail(999), Err(QueueError::NotFound(999))));
+    }
+
+    /// Falsifier (`claim_routing`): a GPU-only job is never handed to a CPU
+    /// node, but a GPU node may take it.
+    #[test]
+    fn claim_routing_gpu_job_skips_cpu_node() {
+        let store = JobStore::open_in_memory().unwrap();
+        let gpu_id = store
+            .enqueue(&NewJob::now("transcribe", "{}").requiring_gpu())
+            .unwrap();
+
+        // The CPU node sees no work: the GPU-only job is filtered out, not
+        // claimed-then-released, so it stays queued.
+        assert!(store.claim_with("cpu", &NodeCapabilities::cpu()).unwrap().is_none());
+        assert_eq!(store.get(gpu_id).unwrap().unwrap().state, JobState::Queued);
+        assert_eq!(store.count(JobState::Queued).unwrap(), 1);
+
+        // A GPU node claims it.
+        let job = store
+            .claim_with("gpu", &NodeCapabilities::gpu())
+            .unwrap()
+            .expect("gpu node claims the gpu job");
+        assert_eq!(job.id, gpu_id);
+        assert!(job.requires_gpu);
+        assert_eq!(job.locked_by.as_deref(), Some("gpu"));
+    }
+
+    /// Falsifier (`claim_routing`): given two eligible jobs, the higher-priority
+    /// one is claimed first regardless of enqueue order.
+    #[test]
+    fn claim_routing_higher_priority_first() {
+        let store = JobStore::open_in_memory().unwrap();
+        // Enqueue the low-priority scan first so plain FIFO would pick it.
+        let scan = store
+            .enqueue(&NewJob::now("transcribe", "scan").with_priority(0))
+            .unwrap();
+        let asr = store
+            .enqueue(&NewJob::now("transcribe", "asr").with_priority(10))
+            .unwrap();
+
+        let first = store.claim("w").unwrap().expect("a job to claim");
+        assert_eq!(first.id, asr, "the higher-priority job is claimed first");
+
+        let second = store.claim("w").unwrap().expect("the remaining job");
+        assert_eq!(second.id, scan);
+    }
+
+    /// A node restricted to specific kinds only claims those kinds; a
+    /// non-matching job is left queued for a capable node.
+    #[test]
+    fn claim_routing_kind_filter() {
+        let store = JobStore::open_in_memory().unwrap();
+        let transcribe = store.enqueue(&NewJob::now("transcribe", "{}")).unwrap();
+        let translate = store.enqueue(&NewJob::now("translate", "{}")).unwrap();
+
+        // A translation-only node (holds LLM creds) skips the transcribe job.
+        let caps = NodeCapabilities::cpu().with_kinds(["translate"]);
+        let job = store.claim_with("llm", &caps).unwrap().unwrap();
+        assert_eq!(job.id, translate);
+
+        // Nothing else matches for this node; the transcribe job is still queued.
+        assert!(store.claim_with("llm", &caps).unwrap().is_none());
+        assert_eq!(
+            store.get(transcribe).unwrap().unwrap().state,
+            JobState::Queued
+        );
+
+        // An unrestricted node takes the leftover transcribe job.
+        let job = store.claim("any").unwrap().unwrap();
+        assert_eq!(job.id, transcribe);
+    }
+
+    /// A node that advertises no kinds claims nothing.
+    #[test]
+    fn claim_routing_empty_kinds_claims_nothing() {
+        let store = JobStore::open_in_memory().unwrap();
+        store.enqueue(&NewJob::now("transcribe", "{}")).unwrap();
+        let caps = NodeCapabilities::cpu().with_kinds(Vec::<String>::new());
+        assert!(store.claim_with("none", &caps).unwrap().is_none());
+        assert_eq!(store.count(JobState::Queued).unwrap(), 1);
+    }
+
+    /// Priority and capability compose: a CPU node, faced with a high-priority
+    /// GPU job and a lower-priority CPU job, takes the CPU job it can actually
+    /// run rather than stalling on the higher-priority one it cannot.
+    #[test]
+    fn claim_routing_priority_respects_capability() {
+        let store = JobStore::open_in_memory().unwrap();
+        let _gpu = store
+            .enqueue(
+                &NewJob::now("transcribe", "gpu")
+                    .with_priority(100)
+                    .requiring_gpu(),
+            )
+            .unwrap();
+        let cpu = store
+            .enqueue(&NewJob::now("transcribe", "cpu").with_priority(1))
+            .unwrap();
+
+        let job = store
+            .claim_with("cpu", &NodeCapabilities::cpu())
+            .unwrap()
+            .expect("cpu node takes the runnable job");
+        assert_eq!(job.id, cpu);
     }
 }
