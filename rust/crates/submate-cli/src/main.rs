@@ -585,9 +585,10 @@ async fn transcribe_files(
                     // sync coordinator already returns so `transcribe --sync`
                     // produces a file today.)
                     let out_path = file.with_extension("srt");
+                    let cue_count = submate_subtitle::cue::parse_srt(&output).len();
                     std::fs::write(&out_path, output)
                         .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out_path.display()))?;
-                    println!("  Processed: {} -> {}", file.display(), out_path.display());
+                    println!("{}", result_summary(file, &out_path, cue_count));
                 }
                 other => {
                     failed += 1;
@@ -610,6 +611,28 @@ async fn transcribe_files(
         anyhow::bail!("{failed} file(s) failed to process");
     }
     Ok(())
+}
+
+/// Format the one-line success summary for a transcribed file, e.g.
+/// `✓ movie.mkv → movie.srt (42 cues)`.
+///
+/// Only the file names (not full paths) are shown so the line stays readable
+/// when transcribing inside a deeply nested directory; the cue count is derived
+/// by the caller from the written SRT. A path with no final component (e.g. `/`)
+/// falls back to its `display()` form so the summary is never empty.
+fn result_summary(input: &Path, output: &Path, cue_count: usize) -> String {
+    let name = |p: &Path| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| p.display().to_string())
+    };
+    let noun = if cue_count == 1 { "cue" } else { "cues" };
+    format!(
+        "✓ {} → {} ({cue_count} {noun})",
+        name(input),
+        name(output)
+    )
 }
 
 /// Bind an ephemeral loopback port and serve the coordinator's router on it,
@@ -857,6 +880,28 @@ mod cli {
             err.contains("ggml-base.en.bin")
                 && err.contains("huggingface.co/ggerganov/whisper.cpp"),
             "error must include the download hint: {err}"
+        );
+    }
+
+    /// The success summary formatter renders just the file names plus the cue
+    /// count, pluralizing `cue`/`cues`, regardless of how deep the input path is.
+    #[test]
+    fn result_summary_format() {
+        assert_eq!(
+            result_summary(
+                Path::new("/media/movies/movie.mkv"),
+                Path::new("/media/movies/movie.srt"),
+                42,
+            ),
+            "✓ movie.mkv → movie.srt (42 cues)",
+        );
+        assert_eq!(
+            result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 1),
+            "✓ clip.mp4 → clip.srt (1 cue)",
+        );
+        assert_eq!(
+            result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 0),
+            "✓ clip.mp4 → clip.srt (0 cues)",
         );
     }
 }
