@@ -7,6 +7,11 @@
 //!   [`Config::from_env`] equals `config/nested.resolved.json`, pinning the
 //!   `SUBMATE__` prefix, the `__` nesting delimiter, and env-coercion of scalar
 //!   field types (port, enums).
+//! * `parity::validators` — `config/validators.env` resolved through
+//!   [`Config::from_env`] equals `config/validators.resolved.json`, pinning the
+//!   `mode="before"` field coercions: pipe-separated lists split on `'|'`, a
+//!   JSON-string `transcribe_kwargs` parsed into a map, and the `custom_regroup`
+//!   string passthrough (a non-disabling pattern stays a string).
 //!
 //! Object key ordering is irrelevant: both sides are compared as
 //! `serde_json::Value` (BTreeMap-backed).
@@ -58,6 +63,22 @@ fn env_nesting() {
         let cfg = Config::from_env(None).expect("env resolves into Config");
         let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
         let expected = golden("config/nested.resolved.json");
+        assert_json_eq(&actual, &expected);
+        Ok(())
+    });
+}
+
+#[test]
+fn validators() {
+    figment::Jail::expect_with(|jail| {
+        jail.clear_env();
+        for (key, value) in parse_env("config/validators.env") {
+            jail.set_env(key, value);
+        }
+
+        let cfg = Config::from_env(None).expect("env resolves into Config");
+        let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
+        let expected = golden("config/validators.resolved.json");
         assert_json_eq(&actual, &expected);
         Ok(())
     });
