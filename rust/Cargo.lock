@@ -1756,6 +1756,7 @@ dependencies = [
  "submate-config",
  "submate-jellyfin",
  "submate-media",
+ "submate-node",
  "submate-proto",
  "submate-queue",
  "submate-types",

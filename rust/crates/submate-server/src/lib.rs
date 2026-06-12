@@ -30,12 +30,14 @@ use serde::Serialize;
 use serde_json::json;
 use submate_config::ServerSettings;
 use submate_media::{prepare_audio_for_transcription, PreparedAudio};
+use submate_node::{Agent, AgentError, Dispatcher, JobProcessor};
 use submate_proto::{
     JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, Progress, WorkResponse,
 };
 use submate_queue::{JobId, JobState, JobStore, NewJob, QueueError};
 use submate_types::TranscriptionTask;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 /// Server version reported by the ops routes.
 ///
@@ -519,6 +521,94 @@ impl StatsSource for NodeCoordinator {
 fn parse_job_id(raw: &str) -> Result<JobId, ServerError> {
     raw.parse::<JobId>()
         .map_err(|_| ServerError::BadRequest(format!("invalid job id {raw:?}")))
+}
+
+/// Configuration for the in-process ("embedded") node that `submate server` runs
+/// by default — FileFlows' "Internal Node": a single box processes its own
+/// queue with no separate worker process.
+///
+/// The embedded node is an ordinary [`submate_node::Agent`] pointed at the
+/// server's own loopback address, so it travels the exact same pull-based path
+/// (`register` → `request-work` → fetch audio → `result`) as a remote node; it
+/// just shares the process. Set [`enabled`](EmbeddedNodeSettings::enabled) to
+/// `false` for a brain-only deployment that coordinates remote nodes and does no
+/// local compute.
+///
+/// `node_id` distinguishes this node in the registry (and in `GET /queue`'s
+/// `nodes` count); `runners` is the local concurrency cap; `gpu`/`tasks` are the
+/// advertised capabilities used for job routing.
+#[derive(Debug, Clone)]
+pub struct EmbeddedNodeSettings {
+    /// Run an in-process node alongside the server. `false` ⇒ brain-only.
+    pub enabled: bool,
+    /// Registry id for the embedded node (its row in `GET /queue`'s `nodes`).
+    pub node_id: String,
+    /// Whether the embedded node advertises a usable GPU.
+    pub gpu: bool,
+    /// Local concurrency cap (the dispatcher's runner count). At least 1.
+    pub runners: u32,
+    /// Job kinds the embedded node will accept.
+    pub tasks: Vec<TranscriptionTask>,
+}
+
+impl EmbeddedNodeSettings {
+    /// Derive the embedded-node defaults from [`ServerSettings`]: enabled, with
+    /// the runner count taken from `concurrent_transcriptions` and both job
+    /// kinds advertised. A box configured for `concurrent_transcriptions = 0`
+    /// still gets a single runner so it can make progress.
+    pub fn from_server(server: &ServerSettings) -> EmbeddedNodeSettings {
+        EmbeddedNodeSettings {
+            enabled: true,
+            node_id: "embedded".to_string(),
+            gpu: false,
+            runners: server.concurrent_transcriptions.max(1),
+            tasks: vec![TranscriptionTask::Transcribe, TranscriptionTask::Translate],
+        }
+    }
+}
+
+impl Default for EmbeddedNodeSettings {
+    fn default() -> EmbeddedNodeSettings {
+        EmbeddedNodeSettings::from_server(&ServerSettings::default())
+    }
+}
+
+/// Spawn the in-process node and return its run-loop handle, or `None` when the
+/// embedded node is disabled (brain-only deployment).
+///
+/// `base_url` is the server's own reachable address (e.g.
+/// `http://127.0.0.1:9000`); the agent talks to it over loopback exactly as a
+/// remote node would, so there is no special in-process bypass to keep in sync
+/// with the real coordination path. `processor` is the local compute seam — in
+/// production this is [`submate_node::whisper_processor`] (behind the node's
+/// `model` feature); the falsifier injects a mock that returns a canned subtitle.
+///
+/// The returned [`JoinHandle`] runs the agent's pull-loop for the lifetime of
+/// the server; dropping it (or shutting the runtime down) stops the node. The
+/// agent reconnects with backoff if the server is briefly unreachable, so a
+/// short race between binding the listener and starting the node is harmless.
+pub fn spawn_embedded_node<P>(
+    base_url: impl Into<String>,
+    settings: &EmbeddedNodeSettings,
+    processor: P,
+) -> Option<JoinHandle<Result<(), AgentError>>>
+where
+    P: JobProcessor + 'static,
+{
+    if !settings.enabled {
+        return None;
+    }
+    let register = NodeRegister {
+        id: settings.node_id.clone(),
+        gpu: settings.gpu,
+        runners: settings.runners,
+        tasks: settings.tasks.clone(),
+    };
+    let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
+    let agent = Agent::new(base_url, register, dispatcher, processor);
+    Some(tokio::spawn(
+        async move { agent.run().await },
+    ))
 }
 
 /// Build the full server [`Router`], mounting the always-on ops routes plus any
@@ -1478,5 +1568,113 @@ mod tests {
         assert_eq!(coord.stats().done, 0);
         let store = coord.store();
         assert_eq!(store.count(JobState::Failed).unwrap(), 1);
+    }
+
+    // ---- embedded in-process node ------------------------------------------
+
+    /// Falsifier `embedded_node_drains`: a server with the embedded node enabled
+    /// processes an enqueued job end-to-end and marks it done — no separate
+    /// worker process.
+    ///
+    /// We bind the real router on an ephemeral loopback port, spawn the
+    /// in-process node ([`spawn_embedded_node`]) pointed at that address with a
+    /// mock transcription processor, enqueue a transcribe job (with relayed PCM
+    /// so the node's audio fetch succeeds), then park on the coordinator's
+    /// [`wait_for_result`](NodeCoordinator::wait_for_result). The node travels
+    /// the full pull path over loopback — register → request-work → GET audio →
+    /// POST result — and the result wakes the waiter with the mock's subtitle.
+    /// Finally the job is `done` in the store.
+    #[tokio::test]
+    async fn embedded_node_drains() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+
+        // Enqueue a job whose audio the node can fetch (relayed PCM — no ffmpeg).
+        let pcm = vec![7u8, 8, 9, 10];
+        let job_id = coord
+            .enqueue_with_audio(
+                TranscriptionTask::Transcribe,
+                &transcribe_opts(),
+                AudioSource::Pcm(Arc::new(pcm.clone())),
+            )
+            .unwrap();
+
+        // Serve the real router on an ephemeral loopback port.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().unwrap();
+        let server_app = app(AppState::with_coordinator(coord.clone()));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, server_app).await.unwrap();
+        });
+
+        // Mock transcription: assert the node fetched the enqueued PCM, then
+        // return a canned subtitle. No model loaded.
+        let seen_pcm = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let processor = {
+            let seen_pcm = Arc::clone(&seen_pcm);
+            move |_opts: &JobOpts, got: Vec<u8>| {
+                let seen_pcm = Arc::clone(&seen_pcm);
+                async move {
+                    *seen_pcm.lock().unwrap() = got;
+                    Ok::<_, String>("1\n00:00:00,000 --> 00:00:01,000\nhello\n".to_string())
+                }
+            }
+        };
+
+        let settings = EmbeddedNodeSettings {
+            enabled: true,
+            node_id: "embedded".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe],
+        };
+        let base_url = format!("http://{addr}");
+        let node = spawn_embedded_node(&base_url, &settings, processor)
+            .expect("embedded node enabled");
+
+        // Park on the result; the embedded node drains the queue and posts it.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            coord.wait_for_result(job_id),
+        )
+        .await
+        .expect("embedded node did not drain the job in time");
+
+        assert!(
+            matches!(outcome, Some(JobOutcome::Ok { ref output }) if output.contains("hello")),
+            "embedded node posted unexpected outcome: {outcome:?}",
+        );
+        // The node fetched exactly the enqueued PCM over loopback.
+        assert_eq!(*seen_pcm.lock().unwrap(), pcm);
+        // The job is durably done in the store.
+        assert_eq!(coord.stats().done, 1);
+
+        node.abort();
+        server.abort();
+    }
+
+    /// A brain-only deployment (embedded node disabled) spawns no node, so an
+    /// enqueued job stays `pending` with no local compute draining it.
+    #[tokio::test]
+    async fn embedded_node_disabled_is_brain_only() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+
+        let settings = EmbeddedNodeSettings {
+            enabled: false,
+            ..EmbeddedNodeSettings::default()
+        };
+        let processor = |_opts: &JobOpts, _pcm: Vec<u8>| async { Ok::<_, String>(String::new()) };
+        let handle = spawn_embedded_node("http://127.0.0.1:1", &settings, processor);
+        assert!(handle.is_none(), "brain-only server must not spawn a node");
+
+        // Nothing drains the job: it stays queued, with no registered nodes.
+        assert_eq!(coord.stats().pending, 1);
+        assert_eq!(coord.stats().nodes, 0);
     }
 }
