@@ -10,17 +10,39 @@ repository.workspace = true
 name = "submate"
 path = "src/main.rs"
 
+[features]
+# `model` forwards the embedded/remote node's processor to submate-node's real
+# whisper.cpp inference (`whisper_processor`, itself gated on `submate-node/model`).
+# Off by default so the CLI builds and tests without a model — the node then runs
+# a processor that reports "model support not built in" for any job.
+default = []
+model = ["submate-node/model"]
+
 [dependencies]
 submate-lang = { path = "../submate-lang" }
-serde_json = { workspace = true }
+submate-config = { path = "../submate-config" }
+submate-types = { path = "../submate-types" }
+submate-proto = { path = "../submate-proto" }
+submate-queue = { path = "../submate-queue" }
+submate-server = { path = "../submate-server" }
+submate-node = { path = "../submate-node" }
+submate-paths = { path = "../submate-paths" }
+submate-subtitle = { path = "../submate-subtitle" }
+submate-translate = { path = "../submate-translate" }
+axum = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+# `preserve_order` keeps serde_json object keys in struct field-declaration
+# order; the `config show` table rows (and the `config_show_rows` parity test)
+# require the serialized `Config` to mirror Pydantic field order, not the
+# default BTreeMap key sorting.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
 parity = { path = "../parity" }
-submate-config = { path = "../submate-config" }
-# `preserve_order` keeps serde_json object keys in struct field-declaration
-# order; `config_show_rows` row ordering is the golden contract, so the
-# serialized `Config` must mirror Pydantic field order, not BTreeMap key sorting.
-serde_json = { workspace = true, features = ["preserve_order"] }
 # `test` adds `figment::Jail` to set the override env vars in a serialized,
 # isolated scope (no `SUBMATE__*` leak, no cross-test race).
 figment = { workspace = true, features = ["test"] }
