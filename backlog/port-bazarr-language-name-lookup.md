@@ -82,3 +82,18 @@ codes (the 29 in-set + the out-of-set/absent/bogus cases above), the
 and the `or "und"` rule — driving the real attribute/lookup so the table stays
 Python-sourced. Land the golden in a deliberate capture commit before dispatch;
 falsifier blocked until it lands. Do NOT re-park to `needs-human/`.
+
+---
+
+**META capture pre-pass (round 3, 2026-06-12):** golden landed —
+`rust/fixtures/queue/bazarr_language_names.json`, captured by
+`rust/fixtures/capture/capture_bazarr_lang.py` driving the live
+`BazarrService.LANGUAGE_NAMES` table + the `or "und"` / `.get(...,"Unknown")`
+logic in the nix devshell. The item is now a pure port with its oracle present;
+no fixture work left for the porter.
+
+Spec correction surfaced by the capture: the table has **30** entries, not 29 —
+the prose "29-entry" miscounts the very list it enumerates (all 30 codes
+en..uk are present in `submate/queue/services/bazarr.py`). Port against the
+golden (the authoritative shape), which carries the full `language_names` map
+plus 36 `cases` (30 in-set + ca/fa/be/xx out-of-set + None/"" absent).

@@ -70,3 +70,16 @@ pre-pass runs the capture, item lives in `backlog/`; only external-runtime
 captures stay in `needs-human/`), this belongs in `backlog/`. Next round's
 capture pre-pass should author `rust/fixtures/capture/capture_queue.py` and land the golden in a deliberate
 capture commit before dispatch — do NOT re-park to `needs-human/`.
+
+---
+
+**META capture pre-pass (round 3, 2026-06-12):** golden landed —
+`rust/fixtures/queue/task_envelopes.json`, captured by
+`rust/fixtures/capture/capture_queue.py`. The task bodies need whisper/config
+(external runtime) so they are not called; the envelopes are built from the
+real `TaskResult` / `TranscriptionResult` / `TranscriptionSkippedError` /
+`SkipReason` model classes, so field names and `reason.value`
+(`target_subtitle_exists`) stay Python-sourced. The six envelope variants
+(transcribe success-as-subtitle, success-as-result, skip, failure; detect
+success, failure) are present; the porter can now build the parity falsifier
+against the golden without any capture work.

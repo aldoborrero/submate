@@ -1,0 +1,41 @@
+{
+  "detect_failure": {
+    "data": {
+      "detected_language": "Unknown",
+      "language_code": "und"
+    },
+    "error": "boom",
+    "success": false
+  },
+  "detect_success": {
+    "data": {
+      "detected_language": "English",
+      "language_code": "en"
+    },
+    "success": true
+  },
+  "transcribe_failure": {
+    "data": null,
+    "error": "boom",
+    "success": false
+  },
+  "transcribe_skip": {
+    "data": null,
+    "reason": "target_subtitle_exists",
+    "skipped": true,
+    "success": true
+  },
+  "transcribe_success_result": {
+    "data": {
+      "language": "en",
+      "segments": 42,
+      "subtitle_path": "/data/movie.en.srt",
+      "text": "Hello, world."
+    },
+    "success": true
+  },
+  "transcribe_success_subtitle": {
+    "data": "1\n00:00:00,000 --> 00:00:01,000\nHello, world.\n",
+    "success": true
+  }
+}
