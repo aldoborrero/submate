@@ -159,9 +159,9 @@ pub fn config_show_rows(config_json: &Value) -> Vec<(String, String)> {
 }
 
 #[cfg(test)]
-mod tests {
+mod parity {
     use super::*;
-    use parity::{assert_json_eq, golden};
+    use ::parity::{assert_json_eq, golden};
     use submate_config::Config;
 
     /// `[[setting, value], ...]` JSON, matching the goldens' shape.
