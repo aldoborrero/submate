@@ -6,7 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["bazarr", "jellyfin"]
+# Feature-flagged integration routers. Ops routes are always present.
+bazarr = []
+jellyfin = []
+
 [dependencies]
+axum = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+http-body-util = "0.1"
 
 [lints]
 workspace = true
