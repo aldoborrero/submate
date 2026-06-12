@@ -67,3 +67,16 @@ requires fixture: `rust/fixtures/cli/config_show.overridden.rows.json`
 plain string/number. Reuse the env from `rust/fixtures/config/validators.env`
 if it already exercises these branches; otherwise capture a new `.env`
 alongside.
+
+---
+
+**META note (round 2 unpark, 2026-06-12):** re-verified the gate is *phantom*,
+not a human/credential gate. This was routed to `needs-human/` as a denylist
+"capture-blocked" item, but its capture is **pure-data with no external
+runtime** — `submate.cli.commands.config` imports cleanly in the nix devshell
+(`nix develop --command python3 -c 'import submate.cli.commands.config'` succeeds). Per the documented
+triage rule in `backlog/meta-contention.md` (pure-data captures → capture
+pre-pass runs the capture, item lives in `backlog/`; only external-runtime
+captures stay in `needs-human/`), this belongs in `backlog/`. Next round's
+capture pre-pass should author `rust/fixtures/capture/capture_cli_config.py` and land the golden in a deliberate
+capture commit before dispatch — do NOT re-park to `needs-human/`.

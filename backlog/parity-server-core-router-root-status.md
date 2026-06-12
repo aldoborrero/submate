@@ -68,3 +68,16 @@ golden-backed falsifier that fails if the Rust root/status response ever drifts
 from the Python `core/router.py` SPEC. Out of scope: the `GET /queue`
 node-topology stats shape (deliberate re-architecture) and the jellyfin webhook
 response body (already filed in `align-jellyfin-webhook-response-shape.md`).
+
+---
+
+**META note (round 2 unpark, 2026-06-12):** re-verified the gate is *phantom*,
+not a human/credential gate. This was routed to `needs-human/` as a denylist
+"capture-blocked" item, but its capture is **pure-data with no external
+runtime** — `submate.server.handlers.core.router` imports cleanly in the nix devshell
+(`nix develop --command python3 -c 'import submate.server.handlers.core.router'` succeeds). Per the documented
+triage rule in `backlog/meta-contention.md` (pure-data captures → capture
+pre-pass runs the capture, item lives in `backlog/`; only external-runtime
+captures stay in `needs-human/`), this belongs in `backlog/`. Next round's
+capture pre-pass should author `rust/fixtures/capture/capture_core_router.py` and land the golden in a deliberate
+capture commit before dispatch — do NOT re-park to `needs-human/`.
