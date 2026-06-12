@@ -358,7 +358,7 @@ fn result_has_words(result: &WhisperResult) -> bool {
 /// Port of `WhisperResult.clamp_max` (median-based per-segment duration clamp).
 ///
 /// Clamps word durations above `medium_factor * median_word_duration` per
-/// segment (only when the segment has >2 words), falling back to / additionally
+/// segment (only when the segment has >1 word), falling back to / additionally
 /// bounding by `max_dur`. With `clip_start = None` only the first word's start
 /// and the last word's end are clamped; otherwise every word is clamped on the
 /// side `clip_start` selects.
@@ -378,11 +378,12 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
 
         let mut curr_max_dur: Option<f64> = None;
         if let Some(factor) = mf {
-            if words.len() > 2 {
+            if words.len() > 1 {
                 let mut durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
                 durations.sort_by(|a, b| a.partial_cmp(b).expect("finite durations"));
-                // Python `durations[len//2 + 1]` after an ascending sort.
-                curr_max_dur = Some(factor * durations[durations.len() / 2 + 1]);
+                // Python `durations[len//2]` (raw index, not an averaged median)
+                // after an ascending sort.
+                curr_max_dur = Some(factor * durations[durations.len() / 2]);
             }
         }
         if let Some(md) = max_dur {
@@ -770,6 +771,58 @@ mod tests {
         assert_eq!(py_float(2.5), "2.5");
         assert_eq!(py_float(3.0), "3.0");
         assert_eq!(py_float(0.3), "0.3");
+    }
+
+    /// Helper: a segment carrying only the word timings clamp_max touches.
+    fn seg_with_words(words: Vec<(f64, f64)>) -> Value {
+        let words: Vec<Value> = words
+            .into_iter()
+            .map(|(start, end)| json!({"word": "x", "start": start, "end": end, "probability": 0.5}))
+            .collect();
+        json!({"words": words})
+    }
+
+    /// Falsifier for the two `clamp_max` parity defects against stable-ts
+    /// 2.19.1 (`result.py` `clamp_max`): the median index is `len//2` (not
+    /// `len//2 + 1`) and the per-segment gate is `len(words) > 1` (not `> 2`).
+    ///
+    /// The driving case is a 3-word segment whose word durations are
+    /// `[0.2, 0.2, 0.9]`. Sorted ascending that is `[0.2, 0.2, 0.9]`; the
+    /// 2.19.1 cap is `2.5 * durations[3//2]` = `2.5 * 0.2` = `0.5`, so under
+    /// `clip_start=None` the last word's end clamps to `start + 0.5`
+    /// (`0.4 + 0.5 = 0.9`). The pre-fix Rust used `durations[3//2 + 1]`
+    /// = `0.9`, giving cap `2.25`, which never clamps the `0.9`-second word —
+    /// so this assertion FAILS before the index fix and PASSES after it.
+    ///
+    /// The 2-word segment exercises the corrected `> 1` gate: 2.19.1 runs the
+    /// median branch for it (the pre-fix `> 2` gate skipped it). Its timings
+    /// cannot diverge — for any 2-word segment the cap is `2.5 * max(d0, d1)`,
+    /// which both words sit below — so it is included to confirm the now-active
+    /// branch handles a 2-word segment without panicking or altering it.
+    #[test]
+    fn clamp_max_median_index_and_word_gate() {
+        let raw = json!({
+            "segments": [
+                seg_with_words(vec![(0.0, 0.2), (0.2, 0.4), (0.4, 1.3)]),
+                seg_with_words(vec![(2.0, 2.1), (2.1, 3.0)]),
+            ]
+        });
+        let mut result = WhisperResult::from_value(&raw);
+
+        // medium_factor=2.5, max_dur=None, clip_start=None — the `cm` defaults.
+        clamp_max(&mut result, Some(2.5), None, None);
+
+        let three = result.segments[0].words.as_ref().unwrap();
+        // Last word end clamped to start + (2.5 * median 0.2) = 0.4 + 0.5.
+        assert_eq!(three[2].end(), 0.9, "3-word last-word end must clamp under the n//2 cap");
+        // First word's duration (0.2) is below the cap, so its start is unchanged.
+        assert_eq!(three[0].start(), 0.0);
+
+        // 2-word segment: gate `> 1` now runs its median branch, but the cap
+        // (2.5 * 0.9 = 2.25) exceeds both word durations, so nothing changes.
+        let two = result.segments[1].words.as_ref().unwrap();
+        assert_eq!(two[0].start(), 2.0);
+        assert_eq!(two[1].end(), 3.0);
     }
 
     #[test]
