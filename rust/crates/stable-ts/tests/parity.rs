@@ -9,7 +9,7 @@
 //! (`01_regroup_*`), and populated-`nonspeech_sections` (`02_suppress`) shapes.
 
 use parity::{assert_f32_close, assert_json_eq, golden, load_f32};
-use stable_ts::WhisperResult;
+use stable_ts::{ops_to_value, parse_regroup_algo, WhisperResult};
 
 #[test]
 fn model_roundtrip() {
@@ -70,4 +70,12 @@ fn wav2mask() {
     let mask = stable_ts::wav2mask(&audio).expect("clipA has both silence and audible audio");
     let actual: Vec<f32> = mask.iter().map(|&b| if b { 1.0 } else { 0.0 }).collect();
     assert_f32_close(&actual, &golden, 1e-6);
+}
+
+/// `parse_regroup_algo` produces (`stablets/regroup_parse.json`).
+#[test]
+fn regroup_parse() {
+    let golden_ops = golden("stablets/regroup_parse.json");
+    let ops = parse_regroup_algo("cm_sl=84_sl=42++++++1").expect("known methods");
+    assert_json_eq(&ops_to_value(&ops), &golden_ops);
 }
