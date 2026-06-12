@@ -1,0 +1,4 @@
+{
+  "audio": "aac, alac, ape, flac, m4a, mp3, ogg, opus, wav, wma",
+  "video": "3gp, avi, flv, m4v, mkv, mov, mp4, mpeg, mpg, ogv, webm, wmv"
+}

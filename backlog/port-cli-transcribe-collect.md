@@ -102,22 +102,24 @@ still be run by the documented falsifier command) that:
   (`{ "video": "...", "audio": "..." }`) so the dot-strip + sort + join is
   pinned against the real extension sets.
 
-**requires fixtures: `rust/fixtures/cli/transcribe_collect_cases.json` and
-`rust/fixtures/cli/transcribe_supported_extensions.json` (capture first).**
-Neither exists yet and the porter cannot create them (`rust/fixtures/` is
-denylisted). Capture via a new
+**fixtures already captured** (no longer a blocker):
+`rust/fixtures/cli/transcribe_collect_cases.json` and
+`rust/fixtures/cli/transcribe_supported_extensions.json` now exist, produced by
 `rust/fixtures/capture/capture_cli_transcribe.py` (sibling of
-`capture_cli_translate.py`, registered in `run_deterministic.sh`) that:
-- imports `format_supported_extensions` from
-  `submate.cli.commands.transcribe` and `VIDEO_EXTENSIONS` / `AUDIO_EXTENSIONS`
-  from `submate.paths`, and emits the `{ "video", "audio" }` golden;
-- replays the `is_dir()` classifier body over a fixed list of synthetic
-  basenames covering: a clear video (`movie.mkv`), audio (`song.flac`), a
-  dotfile (`.hidden.mkv`), each of the 6 ignore extensions
-  (`note.txt`, `cover.jpg`, `poster.png`, `movie.nfo`, `subs.srt`, `cap.vtt`),
-  a mixed-case ignore ext (`subs.SRT`), an unknown ext that becomes *skipped*
-  (`archive.zip`), and a dotfile whose ext would otherwise be skipped
-  (`.archive.zip`) — to pin every branch of the dotfile / lowercased-ext /
-  media-wins-first precedence. Build the listing in a deterministic order and
-  record the resulting `files_to_process` / `skipped_files` exactly as the
-  Python branch produces them.
+`capture_cli_translate.py`; like that sibling it is committed but intentionally
+*not* registered in `run_deterministic.sh`, which is the no-media deterministic
+set only). The capture replays the `is_dir()` classifier body over a fixed
+listing covering every branch: a clear video (`movie.mkv`), audio
+(`song.flac`), a dotfile media file (`.hidden.mkv`), each of the 6 ignore
+extensions, a mixed-case ignore ext (`subs.SRT`), an unknown ext that becomes
+*skipped* (`archive.zip`), a dotfile whose ext would otherwise skip
+(`.archive.zip`), plus an empty listing and an interleaved-order case.
+
+**Spec correction the golden surfaced:** `.hidden.mkv` lands in
+`files_to_process`, NOT ignored — the `is_video_file(...)` test runs *first* and
+only looks at the extension, so the media-wins-first precedence (above) beats
+the dotfile guard. Match the captured golden, which is the real Python
+behaviour; the earlier "dotfile rule" annotation for `.hidden.mkv` was wrong.
+
+The porter now only needs to write the Rust module + in-crate tests against the
+existing goldens; no fixture work remains.

@@ -127,3 +127,29 @@ and landed in a deliberate capture commit, then the items returned to `backlog/`
 The structural action remains: until the pre-pass is an enforced pre-dispatch
 stage, every new `requires fixture:` item will bounce 2-3 rounds before a META
 cleanup runs the capture by hand. That is the cost being paid here a fourth time.
+
+## META cleanup (round, 2026-06-12): transcribe-collect captured by hand (5th)
+
+`port-cli-transcribe-collect` (scout-filed `a9469ab`, rerouted to `needs-human/`
+`4534c81`) hit the same phantom denylist gate: pure-data classifier, imports
+cleanly, but the two goldens `rust/fixtures/cli/transcribe_collect_cases.json`
+and `transcribe_supported_extensions.json` did not exist and the implementer
+could not author the denylisted `rust/fixtures/capture/capture_cli_transcribe.py`.
+META authored that capture script (sibling of `capture_cli_translate.py`,
+committed but intentionally unregistered in `run_deterministic.sh` to match the
+sibling), ran it in the Python env (PYTHONPATH=`<repo>:<repo>/rust/fixtures/capture`),
+committed both goldens, and returned the item to `backlog/`.
+
+`needs-human/` now holds one item, `align-queue-stats-response-shape` — and
+unlike the fixture-gated items above, that one is a **genuine design gate**
+(compat view vs. sanctioned contract delta), not a phantom denylist gate, so it
+correctly stays parked for a human. It was annotated this round to say so, to
+stop a future META from auto-unparking it like a capturable item.
+
+The capture also **surfaced a spec bug**: the item's case-annotation claimed
+`.hidden.mkv` is ignored "via the dotfile rule", but the live Python golden puts
+it in `files_to_process` — `is_video_file` runs first and only checks the
+extension, so media-wins-first beats the dotfile guard. Corrected in the item
+body. This is the value of capturing from Python rather than hand-writing the
+golden, and the fifth consecutive round the missing pre-pass forced a manual
+capture.

@@ -1,0 +1,47 @@
+[
+  {
+    "files_to_process": [
+      "movie.mkv",
+      "song.flac",
+      ".hidden.mkv"
+    ],
+    "names": [
+      "movie.mkv",
+      "song.flac",
+      ".hidden.mkv",
+      "note.txt",
+      "cover.jpg",
+      "poster.png",
+      "movie.nfo",
+      "subs.srt",
+      "cap.vtt",
+      "subs.SRT",
+      "archive.zip",
+      ".archive.zip"
+    ],
+    "skipped_files": [
+      "archive.zip"
+    ]
+  },
+  {
+    "files_to_process": [],
+    "names": [],
+    "skipped_files": []
+  },
+  {
+    "files_to_process": [
+      "a.mp4",
+      "c.wav"
+    ],
+    "names": [
+      "a.mp4",
+      "b.zip",
+      "c.wav",
+      "d.iso"
+    ],
+    "skipped_files": [
+      "b.zip",
+      "d.iso"
+    ]
+  }
+]

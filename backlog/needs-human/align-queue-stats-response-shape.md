@@ -1,5 +1,15 @@
 # align: GET /queue response shape is {pending, running, done, nodes}, Python emits {pending, scheduled}
 
+> **META note (needs-human re-triage): genuine design gate, NOT a phantom denylist
+> gate.** The abandon (`fb6bb0d`) was triggered by a grind attempt rewriting the
+> committed denylisted golden `rust/fixtures/server/core_router.json` — but that
+> golden already exists and is correct; the real blocker is the "Decision needed"
+> section below. A human must pick option 1 (Python-compat view) or option 2
+> (sanctioned contract delta) before this is dispatchable. Re-running the grind
+> only reproduces the abandon. Do NOT auto-unpark this the way fixture-gated items
+> get unparked; it needs the decision first. Once decided, rewrite the body into a
+> concrete port task and move it back to `backlog/`.
+
 ## Contract
 
 ROUTE SIGNATURES — request/response JSON shapes must match Python
