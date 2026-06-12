@@ -52,7 +52,7 @@ submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 //
 // stable-ts is DONE — now focused on the runnable path toward a working
 // `submate transcribe`: whisper pipeline -> node dispatcher/agent -> cli.
-const FOCUS = ['port-whisper-pipeline', 'port-node-', 'port-cli-']
+const FOCUS = ['port-subtitle-', 'port-translate-', 'port-cli-']
 
 const CONFIG = {
   name: 'submate-rs',
