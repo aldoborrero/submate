@@ -24,6 +24,7 @@ submate-proto = { path = "../submate-proto" }
 submate-queue = { path = "../submate-queue" }
 submate-types = { path = "../submate-types" }
 submate-jellyfin = { path = "../submate-jellyfin", optional = true }
+submate-config = { path = "../submate-config" }
 
 [dev-dependencies]
 http-body-util = "0.1"
