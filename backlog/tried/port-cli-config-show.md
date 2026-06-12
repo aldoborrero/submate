@@ -1,30 +1,32 @@
 # tried: port-cli-config-show
 
-**Outcome:** Abandoned — scope violation (denylist hit).
+## outcome
+Abandoned — scope violation (denylist hit).
 
-## What happened
+## what happened
+The grind branch `grind/port-cli-config-show` modified a file outside the
+item's allowed scope:
 
-The grind attempt modified a file outside the allowed scope for this item:
+- `rust/fixtures/capture/capture_cli_config.py`
 
-- `rust/fixtures/cli/config_show.defaults.rows.json`
+This path is on the denylist. Capture scripts under `rust/fixtures/capture/`
+produce the Python goldens the Rust ports are diffed against, so an automated
+porter editing them would let the implementation define its own oracle. Because
+the porter touched the denylisted capture file, the branch could not be
+auto-applied and was rejected.
 
-This path is on the denylist, so the change could not be auto-applied and the
-branch/worktree were discarded. Fixtures under `rust/fixtures/` are golden
-parity data: they are the oracle the Rust port is diffed against, so an
-automated porter editing them would let the implementation define its own
-expected output.
+## actions taken
+- Removed worktree `port-cli-config-show` and deleted branch
+  `grind/port-cli-config-show`.
+- Restored `backlog/port-cli-config-show.md` from `origin/main` and rerouted it
+  to `backlog/needs-human/port-cli-config-show.md`. Triage skips `backlog/`
+  subdirectories, so the item will not be auto-picked again.
 
-## Disposition
-
-- Worktree `port-cli-config-show` removed.
-- Branch `grind/port-cli-config-show` deleted.
-- Item rerouted to `backlog/needs-human/port-cli-config-show.md`.
-
-Triage skips `backlog/` subdirectories, so the item will not be re-picked
-automatically. A human reviews it and either:
-
-1. applies the denylisted change (`rust/fixtures/cli/config_show.defaults.rows.json`)
-   directly, then re-runs the item,
-2. re-scopes the item so it avoids the denylisted fixture and moves it back to
-   `backlog/` for automated pickup, or
-3. deletes it if it is no longer wanted.
+## next steps (human)
+A human reviews `backlog/needs-human/port-cli-config-show.md` and either:
+1. applies the denylisted change directly (author/run the
+   `rust/fixtures/capture/capture_cli_config.py` change and re-run capture to
+   regenerate the affected `rust/fixtures/cli/` goldens), then re-runs the item, or
+2. re-scopes the item to exclude the denylisted capture file and moves it back
+   to `backlog/` for automated pickup, or
+3. deletes the item if it is no longer wanted.
