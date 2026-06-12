@@ -1650,6 +1650,9 @@ version = "0.1.0"
 [[package]]
 name = "submate-cli"
 version = "0.1.0"
+dependencies = [
+ "submate-lang",
+]
 
 [[package]]
 name = "submate-config"
