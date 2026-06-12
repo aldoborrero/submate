@@ -1,6 +1,13 @@
 # stable-ts (C1): suppress_silence DSP (audio2loudness + wav2mask)
 
-**blocked-by:** capture: emit `loudness.f32`/`mask.f32` goldens from Python nonvad (see below), then port-stablets-model-A
+**status:** needs-design-decision — chronic deferral (cycled ≥2 rounds:
+rerouted to needs-human, reverted in 7d3abd2 for goldens without Python
+provenance, re-scoped). Parked in tried/ until the capture precondition is
+satisfied by a dedicated commit.
+
+**blocked-by:** `backlog/capture-stablets-nonvad-dsp-goldens.md` (lands the
+Python-provenance `loudness.f32`/`mask.f32` goldens), then port-stablets-model-A.
+Move this item back to `backlog/` once those goldens exist.
 
 ## what
 Port the non-VAD silence DSP: `audio2loudness` (abs → 0.1% threshold → normalize → linear interpolate to token count) and `wav2mask` (avg-pool k=5, quantize q_levels=20, invert). No ML model (vad=False default).
