@@ -31,6 +31,7 @@ submate-subtitle = { path = "../submate-subtitle" }
 submate-translate = { path = "../submate-translate" }
 axum = { workspace = true }
 clap = { workspace = true }
+indicatif = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

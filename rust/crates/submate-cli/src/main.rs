@@ -18,6 +18,7 @@
 //! modules ([`config_show`], [`translate_paths`], [`transcribe_collect`]); this
 //! file is the clap wiring and the IO around them.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -588,7 +589,35 @@ async fn transcribe_files(
             .map_err(|e| anyhow::anyhow!("failed to enqueue {}: {e}", file.display()))?;
 
         if args.sync {
-            match coord.wait_for_result(job_id).await {
+            // Subscribe to the job's progress stream before awaiting its result,
+            // then render live updates (spinner+% on a TTY, plain lines when
+            // piped) until the terminal outcome arrives.
+            let mut progress_rx = coord.subscribe_progress(job_id);
+            let is_tty = std::io::stderr().is_terminal();
+            let mut renderer = ProgressRenderer::for_stderr(file, is_tty);
+
+            let result_fut = coord.wait_for_result(job_id);
+            tokio::pin!(result_fut);
+            let outcome = loop {
+                tokio::select! {
+                    // Bias toward draining progress so the final 100% paints
+                    // before the result line, but the result still wins once the
+                    // stream closes.
+                    biased;
+                    update = progress_rx.recv() => {
+                        match update {
+                            Some(p) => renderer.update(p.pct),
+                            // Stream closed: the result is imminent; fall through
+                            // to await it.
+                            None => break (&mut result_fut).await,
+                        }
+                    }
+                    outcome = &mut result_fut => break outcome,
+                }
+            };
+            renderer.finish();
+
+            match outcome {
                 Some(submate_proto::JobOutcome::Ok { output }) => {
                     // Persist the produced subtitle next to the input. (The full
                     // skip-condition + language-suffixed naming lives in
@@ -644,6 +673,101 @@ fn result_summary(input: &Path, output: &Path, cue_count: usize) -> String {
         name(input),
         name(output)
     )
+}
+
+/// Live progress display for a single `transcribe --sync` job.
+///
+/// Two render modes, picked from whether stderr is a terminal:
+///
+/// * **TTY** — an [`indicatif`] spinner + percentage on a single redrawn line.
+/// * **plain** — periodic `"<name>: NN%"` lines to a writer, emitted only when
+///   the rounded percentage advances so a piped log is not flooded. This is the
+///   shape the `progress_non_tty_plain` test pins: no ANSI/control codes.
+///
+/// The plain branch is generic over the writer so tests can drive it with an
+/// in-memory buffer; production wires it to a stderr lock.
+enum ProgressRenderer<W: std::io::Write> {
+    Tty {
+        bar: indicatif::ProgressBar,
+    },
+    Plain {
+        out: W,
+        name: String,
+        /// Last whole percentage emitted, so a line is written only on change.
+        last_pct: Option<u8>,
+    },
+}
+
+impl ProgressRenderer<std::io::Stderr> {
+    /// Build a renderer for `file`, choosing TTY vs. plain from whether stderr is
+    /// a terminal. `is_tty` is taken explicitly (rather than probed inside) so
+    /// the decision is testable and overridable.
+    fn for_stderr(file: &Path, is_tty: bool) -> ProgressRenderer<std::io::Stderr> {
+        let name = display_name(file);
+        if is_tty {
+            // `draw_target` on stderr; the template renders e.g.
+            // `⠹ movie.mkv  42%`. Indicatif owns the redraw/control codes here.
+            let bar = indicatif::ProgressBar::new(100);
+            bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
+            bar.set_style(
+                indicatif::ProgressStyle::with_template("{spinner} {prefix} {pos:>3}%")
+                    .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
+            );
+            bar.set_prefix(name);
+            ProgressRenderer::Tty { bar }
+        } else {
+            ProgressRenderer::Plain {
+                out: std::io::stderr(),
+                name,
+                last_pct: None,
+            }
+        }
+    }
+}
+
+impl<W: std::io::Write> ProgressRenderer<W> {
+    /// Render a fractional-progress update (`pct` in `[0.0, 1.0]`). In plain mode
+    /// a line is emitted only when the whole-percent value changes.
+    fn update(&mut self, pct: f32) {
+        let whole = (pct.clamp(0.0, 1.0) * 100.0).round() as u8;
+        match self {
+            ProgressRenderer::Tty { bar } => {
+                bar.set_position(whole as u64);
+            }
+            ProgressRenderer::Plain {
+                out,
+                name,
+                last_pct,
+            } => {
+                if *last_pct != Some(whole) {
+                    *last_pct = Some(whole);
+                    // Plain text only — the non-TTY contract is no control codes.
+                    let _ = writeln!(out, "{name}: {whole}%");
+                }
+            }
+        }
+    }
+
+    /// Tear down the display once the job is terminal. The TTY bar is cleared so
+    /// the caller's result line is not split by a leftover spinner; the plain
+    /// writer is flushed.
+    fn finish(self) {
+        match self {
+            ProgressRenderer::Tty { bar } => bar.finish_and_clear(),
+            ProgressRenderer::Plain { mut out, .. } => {
+                let _ = out.flush();
+            }
+        }
+    }
+}
+
+/// Short, human display name for a path (final component, falling back to the
+/// full `display()` form for paths with no final component).
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// Bind an ephemeral loopback port and serve the coordinator's router on it,
@@ -913,6 +1037,47 @@ mod cli {
         assert_eq!(
             result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 0),
             "✓ clip.mp4 → clip.srt (0 cues)",
+        );
+    }
+
+    /// In non-TTY mode the renderer emits plain `"<name>: NN%"` lines with no
+    /// ANSI/control codes, one per distinct whole-percent value (so a 0 -> 100
+    /// sweep is a readable log, not a flood and not a redrawn spinner line).
+    #[test]
+    fn progress_non_tty_plain() {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut renderer = ProgressRenderer::Plain {
+            out: &mut buf,
+            name: "movie.mkv".to_string(),
+            last_pct: None,
+        };
+
+        // Drive a 0 -> 100 sweep; duplicate fractions for the same whole percent
+        // must collapse to a single line.
+        for pct in [0.0f32, 0.0, 0.25, 0.252, 0.5, 0.75, 1.0] {
+            renderer.update(pct);
+        }
+        renderer.finish();
+
+        let out = String::from_utf8(buf).expect("plain output is UTF-8");
+
+        // No terminal control codes: no ESC (`\x1b`) and no carriage returns.
+        assert!(
+            !out.contains('\x1b') && !out.contains('\r'),
+            "non-TTY output must be plain, got: {out:?}"
+        );
+
+        // One line per distinct rounded percentage, in order.
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "movie.mkv: 0%",
+                "movie.mkv: 25%",
+                "movie.mkv: 50%",
+                "movie.mkv: 75%",
+                "movie.mkv: 100%",
+            ],
         );
     }
 }

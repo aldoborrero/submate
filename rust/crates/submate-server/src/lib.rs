@@ -36,7 +36,7 @@ use submate_proto::{
 };
 use submate_queue::{JobId, JobState, JobStore, NewJob, QueueError};
 use submate_types::TranscriptionTask;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 /// Server version reported by the ops routes.
@@ -255,6 +255,13 @@ pub struct NodeCoordinator {
     store: Mutex<JobStore>,
     nodes: Mutex<HashMap<String, NodeInfo>>,
     waiters: Mutex<HashMap<JobId, oneshot::Sender<JobOutcome>>>,
+    /// Per-job progress subscribers, parallel to `waiters`. A synchronous caller
+    /// (e.g. `transcribe --sync`) registers an unbounded channel via
+    /// [`subscribe_progress`](NodeCoordinator::subscribe_progress) and
+    /// [`progress`](NodeCoordinator::progress) fans each in-flight update out to
+    /// it in arrival order. Unbounded so a node's `progress` POST never blocks on
+    /// a slow renderer; a dropped receiver simply discards later updates.
+    progress_subs: Mutex<HashMap<JobId, mpsc::UnboundedSender<Progress>>>,
     /// Per-job audio source, populated at enqueue time, that
     /// `GET /jobs/{id}/audio` materialises into PCM. Jobs enqueued without a
     /// source (e.g. via the legacy [`enqueue`](NodeCoordinator::enqueue)) have
@@ -272,6 +279,7 @@ impl NodeCoordinator {
             store: Mutex::new(store),
             nodes: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
+            progress_subs: Mutex::new(HashMap::new()),
             audio: Mutex::new(HashMap::new()),
             audio_base: "/jobs".to_string(),
         }
@@ -438,7 +446,20 @@ impl NodeCoordinator {
             .get(id)?
             .ok_or_else(|| ServerError::NotFound(format!("job {id} not found")))?;
         tracing::debug!(job = id, pct = update.pct, state = ?job.state, "progress");
+        self.fan_out_progress(id, update.clone());
         Ok(())
+    }
+
+    /// Deliver a progress update to the job's registered subscriber, if any.
+    /// A send failure (the receiver was dropped — the caller gave up) drops the
+    /// subscription so later updates short-circuit instead of re-locking.
+    fn fan_out_progress(&self, id: JobId, update: Progress) {
+        let mut subs = self.progress_subs.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tx) = subs.get(&id) {
+            if tx.send(update).is_err() {
+                subs.remove(&id);
+            }
+        }
     }
 
     /// Mark a job terminal from the node's [`JobResult`] and wake any synchronous
@@ -490,7 +511,32 @@ impl NodeCoordinator {
         rx.await.ok()
     }
 
+    /// Subscribe to a job's in-flight [`Progress`] stream, returning a receiver
+    /// that yields each update [`progress`](NodeCoordinator::progress) records,
+    /// in arrival order. Used by synchronous callers (e.g. `transcribe --sync`)
+    /// to render live progress while parked on
+    /// [`wait_for_result`](NodeCoordinator::wait_for_result).
+    ///
+    /// The channel closes when the job reaches a terminal result (the sender is
+    /// dropped in [`result`](NodeCoordinator::result)) or when the coordinator is
+    /// dropped, so a consumer can `recv().await` until `None`. A second
+    /// subscription for the same job replaces the first.
+    pub fn subscribe_progress(&self, id: JobId) -> mpsc::UnboundedReceiver<Progress> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.progress_subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
+        rx
+    }
+
     fn wake_waiter(&self, id: JobId, outcome: JobOutcome) {
+        // Close the progress stream first so a subscriber sees the channel end
+        // right as (or before) the terminal outcome arrives.
+        self.progress_subs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
         if let Some(tx) = self
             .waiters
             .lock()
@@ -1295,6 +1341,56 @@ mod tests {
             coord.request_work("live").unwrap(),
             Some(WorkResponse::Work { .. })
         ));
+    }
+
+    /// A subscriber registered via `subscribe_progress` receives every
+    /// in-flight `Progress` update, in order, and the stream closes when the job
+    /// reaches a terminal result.
+    #[tokio::test]
+    async fn coordinator_progress_subscription() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        let job_id = coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+        // Claim the job so it is `running` (progress requires the job to exist).
+        coord.register(NodeRegister {
+            id: "node".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe],
+        });
+        assert!(coord.request_work("node").unwrap().is_some());
+
+        let mut rx = coord.subscribe_progress(job_id);
+
+        // Post a 0 -> 100 sequence; each must arrive at the subscriber in order.
+        let pcts = [0.0f32, 0.25, 0.5, 0.75, 1.0];
+        for pct in pcts {
+            coord
+                .progress(&Progress {
+                    job_id: job_id.to_string(),
+                    pct,
+                })
+                .unwrap();
+        }
+
+        for expected in pcts {
+            let got = rx.recv().await.expect("update delivered");
+            assert_eq!(got.pct, expected);
+            assert_eq!(got.job_id, job_id.to_string());
+        }
+
+        // Terminal result closes the stream: the receiver drains to `None`.
+        coord
+            .result(JobResult {
+                job_id: job_id.to_string(),
+                outcome: JobOutcome::Ok {
+                    output: "subs".into(),
+                },
+            })
+            .unwrap();
+        assert!(rx.recv().await.is_none());
     }
 
     /// A node whose advertised tasks do not cover the claimed job releases it
