@@ -214,7 +214,7 @@ Server runs on port 9000 by default with these endpoints:
 | `/queue` | GET | Queue statistics |
 | `/bazarr/asr` | POST | Bazarr ASR transcription |
 | `/bazarr/detect-language` | POST | Bazarr language detection |
-| `/jellyfin/webhook` | POST | Jellyfin event webhook |
+| `/webhooks/jellyfin` | POST | Jellyfin event webhook |
 
 ### Bazarr Integration
 
@@ -229,7 +229,7 @@ Submate acts as a Whisper ASR provider for Bazarr:
 Webhook-based integration for automatic transcription:
 
 1. Install Jellyfin Webhook plugin
-1. Add webhook URL: `http://submate:9000/jellyfin/webhook`
+1. Add webhook URL: `http://submate:9000/webhooks/jellyfin`
 1. Enable ItemAdded events
 
 ______________________________________________________________________
