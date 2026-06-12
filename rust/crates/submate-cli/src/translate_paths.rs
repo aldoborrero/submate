@@ -116,69 +116,44 @@ pub fn output_path(file: &Path, target_lang: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    // Golden rows mirror the case set mandated by the backlog item. Once the
-    // capture pre-pass lands `rust/fixtures/cli/translate_filename_cases.json`,
-    // a fixture-driven `assert_json_eq` parity test should replace these
-    // hardcoded expectations; until then these assert the Python contract
-    // directly from spec.
+    use parity::{assert_json_eq, golden};
+    use serde_json::{json, Value};
 
+    /// Fixture-driven parity falsifier.
+    ///
+    /// `rust/fixtures/cli/translate_filename_cases.json` is a list of
+    /// `{file, source_lang, target_lang, is_subtitle, detected_source,
+    /// output_path}` rows captured by running the three Python helpers in
+    /// `submate/cli/commands/translate.py` over the mandated case set. For each
+    /// row we drive [`is_subtitle_file`], [`detect_source_language`], and
+    /// [`output_path`] over the captured inputs, rebuild the full row from the
+    /// Rust outputs, and assert it equals the golden row exactly. A drift in
+    /// suffix case-folding, non-language-token rejection, or trailing-segment
+    /// replacement fails here.
     #[test]
-    fn is_subtitle_file_matches_python_suffix_rules() {
-        assert!(is_subtitle_file(Path::new("movie.srt")));
-        assert!(is_subtitle_file(Path::new("movie.SRT")), "case-folded");
-        assert!(is_subtitle_file(Path::new("movie.vtt")));
-        assert!(is_subtitle_file(Path::new("movie.ass")));
-        assert!(is_subtitle_file(Path::new("movie.ssa")));
-        assert!(!is_subtitle_file(Path::new("movie.tar.gz")), "only last suffix");
-        assert!(!is_subtitle_file(Path::new("movie.txt")));
-        assert!(!is_subtitle_file(Path::new(".srt")), "suffixless dotfile");
-        assert!(!is_subtitle_file(Path::new("movie")));
-    }
+    fn translate_filename_cases() {
+        let cases = golden("cli/translate_filename_cases.json");
+        let rows = cases.as_array().expect("golden is a JSON array of rows");
 
-    #[test]
-    fn detect_source_language_auto_accepts_valid_tag() {
-        assert_eq!(detect_source_language(Path::new("movie.fr.srt"), "auto"), "fr");
-    }
+        for row in rows {
+            let file_str = row["file"].as_str().expect("`file` is a string");
+            let source_lang = row["source_lang"].as_str().expect("`source_lang` is a string");
+            let target_lang = row["target_lang"].as_str().expect("`target_lang` is a string");
+            let file = Path::new(file_str);
 
-    #[test]
-    fn detect_source_language_auto_rejects_non_language_token() {
-        assert_eq!(detect_source_language(Path::new("movie.v2.srt"), "auto"), "en");
-        assert_eq!(detect_source_language(Path::new("episode.01.srt"), "auto"), "en");
-    }
+            let output = output_path(file, target_lang);
+            let output_str = output.to_str().expect("output path is valid UTF-8");
 
-    #[test]
-    fn detect_source_language_no_dotted_stem_falls_back() {
-        assert_eq!(detect_source_language(Path::new("movie.srt"), "auto"), "en");
-    }
+            let actual: Value = json!({
+                "file": file_str,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "is_subtitle": is_subtitle_file(file),
+                "detected_source": detect_source_language(file, source_lang),
+                "output_path": output_str,
+            });
 
-    #[test]
-    fn detect_source_language_explicit_wins() {
-        assert_eq!(detect_source_language(Path::new("movie.fr.srt"), "es"), "es");
-        // Explicit value is returned unchanged even if not a language tag.
-        assert_eq!(detect_source_language(Path::new("movie.srt"), "xx"), "xx");
-    }
-
-    #[test]
-    fn output_path_appends_when_no_existing_segment() {
-        assert_eq!(output_path(Path::new("movie.srt"), "es"), PathBuf::from("movie.es.srt"));
-    }
-
-    #[test]
-    fn output_path_replaces_existing_language_segment() {
-        assert_eq!(output_path(Path::new("movie.en.srt"), "es"), PathBuf::from("movie.es.srt"));
-    }
-
-    #[test]
-    fn output_path_replaces_any_trailing_segment() {
-        // Non-language trailing segments are stripped too, matching Python.
-        assert_eq!(output_path(Path::new("movie.v2.srt"), "es"), PathBuf::from("movie.es.srt"));
-    }
-
-    #[test]
-    fn output_path_preserves_parent_and_extension_case() {
-        assert_eq!(
-            output_path(Path::new("subs/movie.SRT"), "es"),
-            PathBuf::from("subs/movie.es.SRT"),
-        );
+            assert_json_eq(&actual, row);
+        }
     }
 }

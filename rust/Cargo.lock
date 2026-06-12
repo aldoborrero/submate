@@ -1651,6 +1651,8 @@ version = "0.1.0"
 name = "submate-cli"
 version = "0.1.0"
 dependencies = [
+ "parity",
+ "serde_json",
  "submate-lang",
 ]
 
