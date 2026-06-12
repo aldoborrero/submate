@@ -10,7 +10,7 @@ repository.workspace = true
 default = ["bazarr", "jellyfin"]
 # Feature-flagged integration routers. Ops routes are always present.
 bazarr = []
-jellyfin = []
+jellyfin = ["dep:submate-jellyfin"]
 
 [dependencies]
 axum = { workspace = true }
@@ -19,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+submate-jellyfin = { path = "../submate-jellyfin", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

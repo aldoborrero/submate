@@ -35,6 +35,47 @@ pub enum JellyfinError {
 /// Result alias for Jellyfin operations.
 pub type Result<T> = std::result::Result<T, JellyfinError>;
 
+/// Webhook notification payload sent by the Jellyfin Webhook plugin.
+///
+/// Ports `submate/server/handlers/jellyfin/models.py::JellyfinWebhookPayload`.
+/// Jellyfin sends PascalCase keys over the wire (`NotificationType`, `ItemId`,
+/// …), so those are the canonical `serde` field names. The Python model sets
+/// `populate_by_name=True`, which means it also accepts the snake_case form; the
+/// matching `serde(alias = …)` keeps the Rust struct bug-for-bug compatible.
+///
+/// `notification_type` and `item_id` are required (no Python default); the
+/// remaining fields are optional and default to `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct JellyfinWebhookPayload {
+    /// Event kind, e.g. `"ItemAdded"` or `"PlaybackStart"`.
+    #[serde(rename = "NotificationType", alias = "notification_type")]
+    pub notification_type: String,
+    /// Jellyfin item identifier the event refers to.
+    #[serde(rename = "ItemId", alias = "item_id")]
+    pub item_id: String,
+    /// Item type (e.g. `"Movie"`, `"Episode"`), if provided.
+    #[serde(rename = "ItemType", alias = "item_type", default)]
+    pub item_type: Option<String>,
+    /// Human-readable item name, if provided.
+    #[serde(rename = "Name", alias = "name", default)]
+    pub name: Option<String>,
+    /// Originating Jellyfin server identifier, if provided.
+    #[serde(rename = "ServerId", alias = "server_id", default)]
+    pub server_id: Option<String>,
+}
+
+impl JellyfinWebhookPayload {
+    /// Whether this is an `ItemAdded` event.
+    pub fn is_item_added(&self) -> bool {
+        self.notification_type == "ItemAdded"
+    }
+
+    /// Whether this is a `PlaybackStart` event.
+    pub fn is_playback_start(&self) -> bool {
+        self.notification_type == "PlaybackStart"
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct UserPolicy {
     #[serde(rename = "IsAdministrator", default)]
@@ -278,5 +319,35 @@ mod tests {
         assert!(JellyfinClient::new("http://h", "k", vec![]).is_configured());
         assert!(!JellyfinClient::new("", "k", vec![]).is_configured());
         assert!(!JellyfinClient::new("http://h", "", vec![]).is_configured());
+    }
+
+    #[test]
+    fn webhook_payload_pascalcase() {
+        // Jellyfin sends PascalCase keys; optional fields may be absent.
+        let payload: JellyfinWebhookPayload = serde_json::from_str(
+            r#"{"NotificationType":"ItemAdded","ItemId":"abc","ItemType":"Movie"}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.notification_type, "ItemAdded");
+        assert_eq!(payload.item_id, "abc");
+        assert_eq!(payload.item_type.as_deref(), Some("Movie"));
+        assert_eq!(payload.name, None);
+        assert_eq!(payload.server_id, None);
+        assert!(payload.is_item_added());
+        assert!(!payload.is_playback_start());
+
+        // populate_by_name=True parity: snake_case keys also deserialize.
+        let snake: JellyfinWebhookPayload =
+            serde_json::from_str(r#"{"notification_type":"PlaybackStart","item_id":"xyz"}"#)
+                .unwrap();
+        assert_eq!(snake.notification_type, "PlaybackStart");
+        assert_eq!(snake.item_id, "xyz");
+        assert!(snake.is_playback_start());
+
+        // ItemId is required (no Python default): a payload missing it must fail.
+        let missing = serde_json::from_str::<JellyfinWebhookPayload>(
+            r#"{"NotificationType":"ItemAdded","ItemType":"Movie"}"#,
+        );
+        assert!(missing.is_err());
     }
 }

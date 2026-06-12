@@ -20,7 +20,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::Serialize;
@@ -190,10 +190,43 @@ fn bazarr_router() -> Router<AppState> {
     Router::new()
 }
 
-/// Placeholder jellyfin router; routes are added by the jellyfin port item.
+/// Jellyfin webhook router.
+///
+/// Mounts `POST /webhooks/jellyfin`, mirroring
+/// `submate/server/handlers/jellyfin/router.py` (router prefix `/webhooks`,
+/// path `/jellyfin`). This establishes the contract-correct route path and
+/// payload shape; the enqueue/skip pipeline behind it is filled in by
+/// `backlog/port-server-jellyfin-webhook.md`.
 #[cfg(feature = "jellyfin")]
 fn jellyfin_router() -> Router<AppState> {
-    Router::new()
+    Router::new().route("/webhooks/jellyfin", post(jellyfin_webhook))
+}
+
+/// `POST /webhooks/jellyfin` — accept a Jellyfin webhook notification.
+///
+/// Validates the `User-Agent` (must come from a Jellyfin server) and parses the
+/// PascalCase [`JellyfinWebhookPayload`]. The full event handling (ItemAdded
+/// filtering, file-path resolution, skip decision, and job enqueue) is added by
+/// `backlog/port-server-jellyfin-webhook.md`.
+#[cfg(feature = "jellyfin")]
+async fn jellyfin_webhook(
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<submate_jellyfin::JellyfinWebhookPayload>,
+) -> std::result::Result<Json<serde_json::Value>, ServerError> {
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    if !user_agent.is_some_and(|ua| ua.contains("Jellyfin-Server")) {
+        return Err(ServerError::BadRequest(
+            "Invalid request - not from Jellyfin server".to_string(),
+        ));
+    }
+
+    Ok(Json(json!({
+        "status": "accepted",
+        "notification_type": payload.notification_type,
+        "item_id": payload.item_id,
+    })))
 }
 
 #[cfg(test)]
@@ -281,6 +314,72 @@ mod tests {
                 Request::builder()
                     .uri("/does-not-exist")
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[cfg(feature = "jellyfin")]
+    #[tokio::test]
+    async fn jellyfin_webhook_route_mounted_at_webhooks_jellyfin() {
+        let body = serde_json::to_vec(&json!({
+            "NotificationType": "ItemAdded",
+            "ItemId": "abc",
+            "ItemType": "Movie",
+        }))
+        .unwrap();
+        let res = app(AppState::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/jellyfin")
+                    .header("content-type", "application/json")
+                    .header("user-agent", "Jellyfin-Server/10.9.0")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[cfg(feature = "jellyfin")]
+    #[tokio::test]
+    async fn jellyfin_webhook_rejects_non_jellyfin_user_agent() {
+        let body = serde_json::to_vec(&json!({
+            "NotificationType": "ItemAdded",
+            "ItemId": "abc",
+        }))
+        .unwrap();
+        let res = app(AppState::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/jellyfin")
+                    .header("content-type", "application/json")
+                    .header("user-agent", "curl/8.0")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "jellyfin")]
+    #[tokio::test]
+    async fn legacy_webhook_path_is_not_mounted() {
+        // The pre-correction path (`/jellyfin` + `/webhook`) must not resolve.
+        let legacy = format!("/{}/{}", "jellyfin", "webhook");
+        let res = app(AppState::default())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&legacy)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
