@@ -83,6 +83,11 @@ struct TranscribeArgs {
     /// File or directory to transcribe.
     path: PathBuf,
 
+    /// Path to the Whisper model file (e.g. `ggml-base.en.bin`). Overrides the
+    /// configured `whisper.model` and the `SUBMATE__WHISPER__MODEL` env var.
+    #[arg(short = 'm', long, value_name = "PATH")]
+    model: Option<PathBuf>,
+
     /// Select the audio track by language code (e.g. `ja` for a Japanese dub).
     #[arg(short = 'a', long)]
     audio_language: Option<String>,
@@ -455,6 +460,41 @@ fn collect_media_files(path: &Path, recursive: bool) -> anyhow::Result<Vec<PathB
     Ok(out)
 }
 
+/// Resolve the Whisper model file path used to transcribe.
+///
+/// Resolution order, highest priority first:
+/// 1. the `--model <PATH>` flag,
+/// 2. the configured `whisper.model`, *only when it names an existing path*
+///    (the config value is otherwise a free-form size string like `medium`),
+/// 3. the `SUBMATE__WHISPER__MODEL` environment variable.
+///
+/// When nothing resolves to a usable path, this returns a non-panicking
+/// `Result::Err` naming the flag, the env var, and a download hint, so the CLI
+/// fails with an actionable message instead of an obscure model-load panic.
+fn resolve_model(flag: Option<&Path>, config_model: &str) -> anyhow::Result<PathBuf> {
+    if let Some(path) = flag {
+        return Ok(path.to_path_buf());
+    }
+
+    let config_path = Path::new(config_model);
+    if config_path.exists() {
+        return Ok(config_path.to_path_buf());
+    }
+
+    if let Some(env_model) = std::env::var_os("SUBMATE__WHISPER__MODEL") {
+        if !env_model.is_empty() {
+            return Ok(PathBuf::from(env_model));
+        }
+    }
+
+    anyhow::bail!(
+        "no Whisper model configured: pass --model <PATH>, set the whisper.model \
+         config to a model file path, or export SUBMATE__WHISPER__MODEL. Download \
+         one with e.g. ggml-base.en.bin from \
+         https://huggingface.co/ggerganov/whisper.cpp"
+    )
+}
+
 /// Async core of `transcribe`: enqueue every file, and in `--sync` mode run a
 /// local coordinator + embedded node and wait for each job to complete.
 async fn transcribe_files(
@@ -507,9 +547,12 @@ async fn transcribe_files(
         };
         // A coordinator served over loopback is what the embedded node pulls
         // from; reuse the server crate's spawn helper with a real Whisper
-        // processor sized to the same dispatcher.
+        // processor sized to the same dispatcher. The model path is resolved
+        // from `--model` > config > env, surfacing an actionable error rather
+        // than a model-load panic when nothing is configured.
+        let model_path = resolve_model(args.model.as_deref(), &config.whisper.model)?;
         let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
-        let processor = make_processor(dispatcher, &config.whisper.model);
+        let processor = make_processor(dispatcher, &model_path.to_string_lossy());
         let addr = serve_loopback(coord.clone()).await?;
         spawn_embedded_node(format!("http://{addr}"), &settings, processor)
     } else {
@@ -762,6 +805,58 @@ mod cli {
                 .get_arguments()
                 .any(|a| a.get_long() == Some("target-lang")),
             "`translate` must expose --target-lang"
+        );
+    }
+
+    /// `transcribe --model <PATH>` parses, and `resolve_model` returns the
+    /// documented `Result::Err` (naming the flag, the env var, and the download
+    /// hint) instead of panicking when nothing is configured.
+    #[test]
+    fn transcribe_model_resolution() {
+        // The flag parses and reaches `TranscribeArgs.model`.
+        let cli = Cli::try_parse_from([
+            "submate",
+            "transcribe",
+            "--model",
+            "/models/ggml-base.en.bin",
+            "movie.mkv",
+        ])
+        .expect("--model should parse");
+        let Command::Transcribe(args) = cli.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        assert_eq!(
+            args.model.as_deref(),
+            Some(Path::new("/models/ggml-base.en.bin"))
+        );
+
+        // The flag is the highest-priority source and is returned verbatim,
+        // without touching the filesystem or the environment.
+        let resolved = resolve_model(args.model.as_deref(), "medium")
+            .expect("--model should resolve");
+        assert_eq!(resolved, PathBuf::from("/models/ggml-base.en.bin"));
+
+        // With no flag, a non-path config value, and no env var, the resolver
+        // returns an actionable error (not a panic) naming both knobs and the
+        // download hint.
+        let prev = std::env::var_os("SUBMATE__WHISPER__MODEL");
+        std::env::remove_var("SUBMATE__WHISPER__MODEL");
+        let err = resolve_model(None, "medium")
+            .expect_err("missing model must be an Err, not a panic")
+            .to_string();
+        if let Some(prev) = prev {
+            std::env::set_var("SUBMATE__WHISPER__MODEL", prev);
+        }
+
+        assert!(err.contains("--model"), "error must name the flag: {err}");
+        assert!(
+            err.contains("SUBMATE__WHISPER__MODEL"),
+            "error must name the env var: {err}"
+        );
+        assert!(
+            err.contains("ggml-base.en.bin")
+                && err.contains("huggingface.co/ggerganov/whisper.cpp"),
+            "error must include the download hint: {err}"
         );
     }
 }
