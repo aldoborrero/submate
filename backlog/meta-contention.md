@@ -56,3 +56,32 @@ for f in backlog/*.md; do
   done
 done
 ```
+
+## second pattern (observed round 1 META, 2026-06-12): stranded merge + crate-root contention
+
+The B1 regroup port (`port-stablets-regroup-parse-B1`) completed and merged
+into `rust-port-scaffold` (436e5aa) but **never reached origin/main**: main
+advanced 7 commits past that branch (including `suppress-dsp-C1`), leaving
+both the `regroup.rs` work and its backlog item stranded. META salvaged it
+this round onto `meta/salvage-b1-regroup`, but the merge hit conflicts.
+
+The conflict locus was **not** a fixture — it was the stable-ts crate root.
+Every stable-ts sub-port (model-A, suppress-C1, regroup-B1, splits-B2) edits
+the same two lines-of-contention:
+
+- `rust/crates/stable-ts/src/lib.rs` — the `pub mod` / `pub use` list.
+- `rust/crates/stable-ts/tests/parity.rs` — the shared `use` import line and
+  the appended `#[test]` block.
+
+These are purely additive edits, so they conflict on every concurrent pair
+even though the changes are independent. `lib.rs` has been touched in 9
+commits across branches.
+
+### proposed triage rule
+
+Serialize stable-ts sub-ports through the merge queue (do not dispatch two
+stable-ts items in the same wave), OR refactor the crate root so each
+sub-module self-registers without editing a shared list — e.g. move the
+`pub mod`/`pub use` lines into per-submodule files and have `parity.rs`
+pull tests via `include!`-per-module rather than one append-only file. The
+former is cheaper; the latter removes the contention permanently.
