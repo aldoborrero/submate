@@ -1,6 +1,6 @@
 # Server-side transcription decision + result handling (9 skip conditions)
 
-**blocked-by:** port-queue-store, port-subtitle-detect, port-whisper-pipeline
+**blocked-by:** port-subtitle-detect, port-whisper-pipeline
 
 ## what
 Port `TranscriptionService`: the 9 skip conditions and audio-track selection that decide whether to ENQUEUE a file job (now server-side at ingestion), plus the post-result subtitle write (atomic temp + rename) when a node returns the SRT. The transcription itself runs on a node, not here.

@@ -1,6 +1,6 @@
 # Node-coordination API (register / request-work / progress / result / heartbeat)
 
-**blocked-by:** port-queue-store, port-proto-types, port-server-app-ops
+**blocked-by:** port-server-app-ops
 
 ## what
 axum routes: `POST /nodes/register`, `POST /nodes/{id}/request-work` (long-poll → atomic claim or 204), `POST /jobs/{id}/progress`, `POST /jobs/{id}/result` (marks done, wakes any synchronous waiter), `POST /nodes/{id}/heartbeat` (extends lease). See rust/docs/architecture.md.

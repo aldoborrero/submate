@@ -1,6 +1,6 @@
 # Bazarr ingestion: enqueue high-priority + await result
 
-**blocked-by:** port-queue-store, port-whisper-pipeline
+**blocked-by:** port-whisper-pipeline
 
 ## what
 Port `BazarrService` to the topology: detect-language / ASR become high-priority jobs the server enqueues and awaits (a node processes, posts the result, the server returns it to Bazarr). Output formatting (SRT/VTT/TXT/JSON) + translate-if-needed stay faithful.

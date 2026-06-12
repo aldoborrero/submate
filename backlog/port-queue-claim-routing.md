@@ -1,6 +1,6 @@
 # Claim routing: capability match + priority
 
-**blocked-by:** port-queue-store
+**blocked-by:** none (submate-queue store is implemented and merged)
 
 ## what
 Extend the claim query so a node only receives jobs it can run (GPU jobs → GPU nodes; translation jobs → nodes with LLM creds) and higher-priority jobs (Bazarr ASR) are claimed before library scans.

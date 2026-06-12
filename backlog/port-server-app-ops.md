@@ -1,6 +1,6 @@
 # axum app + ops routes
 
-**blocked-by:** port-queue-store
+**blocked-by:** none (submate-queue store is implemented and merged)
 
 ## what
 Build the axum app (feature-flagged routers, global error handler, lifespan)
