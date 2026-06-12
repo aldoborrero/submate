@@ -1,0 +1,20 @@
+{
+  "OutputFormat": {
+    "JSON": "json",
+    "SRT": "srt",
+    "TXT": "txt",
+    "VTT": "vtt"
+  },
+  "SkipReason": {
+    "AUDIO_LANGUAGE_IN_SKIP_LIST": "audio_language_in_skip_list",
+    "EXTERNAL_SUBTITLE_EXISTS": "external_subtitle_exists",
+    "INTERNAL_SUBTITLE_LANGUAGE_EXISTS": "internal_subtitle_language_exists",
+    "LANGUAGE_NOT_SET_BUT_SUBTITLES_EXIST": "language_not_set_but_subtitles_exist",
+    "LRC_FILE_EXISTS": "lrc_file_exists",
+    "NOT_SKIPPED": "not_skipped",
+    "NO_PREFERRED_AUDIO_LANGUAGE": "no_preferred_audio_language",
+    "SUBTITLE_LANGUAGE_IN_SKIP_LIST": "subtitle_language_in_skip_list",
+    "TARGET_SUBTITLE_EXISTS": "target_subtitle_exists",
+    "UNKNOWN_LANGUAGE": "unknown_language"
+  }
+}

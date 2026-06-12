@@ -1,0 +1,58 @@
+# meta-contention: fixture-missing items churn through denylist abandonment
+
+## pattern (observed round 3, 2026-06-12)
+
+All 7 items in `backlog/tried/` were abandoned for the **same** reason:
+`scope violation (denylist hit)` where the denylisted path is a
+`rust/fixtures/**` golden the porter authored itself. This round, 3/3
+dispatched items abandoned this way (0/3 merged).
+
+The mechanism is structural, not per-item:
+
+1. A port item's falsifier asserts against a golden fixture
+   (`enum_values.json`, `path_cases.json`, `ops.json`, `stablets/*`).
+2. That golden does not exist yet (or lacks the item's case).
+3. The porter, needing a green test, authors the missing fixture.
+4. `rust/fixtures/**` is merge-denylisted (goldens must be human/capture
+   authored, never by the item they falsify — self-authored goldens defeat
+   the parity check). The branch is rejected and the item parked.
+
+`port-stablets-model-A` has cycled this 4 times — a chronic deferral driven
+entirely by this pattern.
+
+## proposed triage rule
+
+Before dispatching a port item to an implementer, check whether its falsifier
+fixture exists and covers the item's case:
+
+- If the fixture exists and covers the case -> dispatch normally.
+- If the fixture is **missing or under-covers** the case AND can be produced
+  from the Python spec with no external runtime (pure-data captures:
+  `capture_enums.py`, `capture_paths.py`, `capture_config.py`,
+  `capture_lang.py`, `capture_translate.py`) -> **META/capture pre-pass runs
+  the capture and commits the golden first**, then the item is dispatchable.
+  (Done this round for `port-queue-models-enums`: META extended
+  `capture_enums.py` + regenerated `enum_values.json`, moved item back to
+  `backlog/`.)
+- If the fixture requires an **external runtime** (Whisper model, audio clip,
+  live server) -> route to `backlog/needs-human/` with the exact capture
+  command, NOT to an implementer. These are genuine gates
+  (`port-stablets-model-A/B1/C1`, `port-server-app-ops`).
+
+## why this beats per-item annotation
+
+Annotating each item "do not touch fixtures" does not help — the porter has no
+green path without the golden. The fixture must materialize *before* dispatch,
+either by capture pre-pass (cheap, pure-data) or by a human (runtime-gated).
+The triage gate, not the porter, owns fixture existence.
+
+## quick audit command
+
+```sh
+# items whose falsifier names a fixture that is absent from the tree
+for f in backlog/*.md; do
+  rg -o 'rust/fixtures/[^ `)]+' "$f" | while read -r fx; do
+    [ -e "$fx" ] || echo "$f -> MISSING $fx"
+  done
+done
+```

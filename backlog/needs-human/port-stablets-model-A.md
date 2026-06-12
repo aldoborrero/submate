@@ -12,15 +12,19 @@ Foundation of the stable-ts slice; B/C/D all operate on this model. Highest-risk
 ## falsifies
 `cargo test -p stable-ts parity::model_roundtrip` parses `rust/fixtures/stablets/*/00_raw.json` and re-serializes byte-identically.
 
-## why blocked (needs-human, verified 2026-06-12)
+## why blocked (needs-human, re-verified 2026-06-12 META)
 The falsifier depends on fixtures under `rust/fixtures/stablets/*/00_raw.json`,
-which do not exist yet and can only be produced by capture tooling
-(`rust/fixtures/capture/capture_stablets_model.py`, also absent). Both
-`rust/fixtures/` and the capture tooling are on the merge denylist, so an
-automated port item cannot author them — the prior attempt
-(`grind/port-stablets-model-A`) was rejected for exactly this (see
-`backlog/tried/port-stablets-model-A.md`). Confirmed: neither the fixtures, the
-capture script, nor a prior `model.rs` exist in `origin/main` (HEAD c9ac92f).
+which do not exist yet. The capture script DOES exist
+(`rust/fixtures/capture/capture_stablets.py`, not the `_model.py` name this
+item's earlier note assumed) — but it is a real external-runtime boundary:
+`python capture_stablets.py /path/to/clip.wav` loads a Whisper model via
+`stable_whisper.load_faster_whisper` and downloads weights on first run, so it
+needs a human/CI with an audio clip + model runtime. That gate is real, not a
+false credential gate. `rust/fixtures/stablets/` is absent and `model.rs` does
+not exist. Prior attempt `grind/port-stablets-model-A` was rejected for the
+same fixture-absence (see `backlog/tried/port-stablets-model-A.md`). Touched 4
+times across rounds — a chronic deferral; prefer re-scope option 2 below over
+re-parking unchanged.
 
 ## human action (pick one)
 1. Author `rust/fixtures/capture/capture_stablets_model.py` and run it against a

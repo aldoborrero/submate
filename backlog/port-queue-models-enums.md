@@ -50,13 +50,22 @@ before the queue store and services.
 ## falsifies
 `cargo test -p submate-queue parity::queue_enum_values` asserts **exact**
 (`parity::assert_json_eq`) equality between a serialized `{VARIANT -> value}`
-map for `OutputFormat` and `SkipReason` and the golden, PLUS a unit test
+map for `OutputFormat` and `SkipReason` and the golden
+**`rust/fixtures/queue/enum_values.json`**, PLUS a unit test
 `from_value_coercion` reproducing the four `test_output_format_from_value_normalizes`
 cases and `.extension == ".srt"` for SRT.
 
-**requires fixture: `rust/fixtures/types/enum_values.json` must be extended
-to include `OutputFormat` and `SkipReason` (capture first).** The golden is
-merge-denylisted for the porter — a human/capture run must add these two
-enums to `rust/fixtures/capture/capture_enums.py`'s `ENUMS` list (import
-`OutputFormat`/`SkipReason` from `submate.queue.models`) and re-run capture.
-Until then this falsifier cannot pass; flag for capture.
+**fixture captured (2026-06-12, META):** the golden is committed at
+`rust/fixtures/queue/enum_values.json`, produced by the new
+`rust/fixtures/capture/capture_queue_enums.py` (imports `OutputFormat`/
+`SkipReason` from `submate.queue.models`). `OutputFormat`: 4 members;
+`SkipReason`: 10 members — the spec source has 10, the earlier "11" in this
+item's prose was a miscount. The enums import with no credential, hardware, or
+runtime gate — the needs-human block was a false gate.
+
+**Use a SEPARATE golden file, not `types/enum_values.json`.** The submate-types
+parity guard `no_uncovered_enums_in_golden` asserts that golden contains
+*exactly* the six types.py enums (`obj.len() == COVERED_ENUMS.len()`), so
+adding queue enums there breaks the already-merged types test. Queue enums get
+their own golden + their own coverage guard in the submate-queue parity test.
+The golden is in place; this is now a plain pure-data port for an implementer.
