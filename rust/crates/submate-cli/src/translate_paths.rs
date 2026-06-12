@@ -113,10 +113,10 @@ pub fn output_path(file: &Path, target_lang: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod parity {
     use super::*;
 
-    use parity::{assert_json_eq, golden};
+    use ::parity::{assert_json_eq, golden};
     use serde_json::{json, Value};
 
     /// Fixture-driven parity falsifier.
