@@ -1459,6 +1459,11 @@ dependencies = [
 [[package]]
 name = "stable-ts"
 version = "0.1.0"
+dependencies = [
+ "parity",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "stable_deref_trait"
