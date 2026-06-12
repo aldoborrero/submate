@@ -35,6 +35,7 @@ perSystem.devshell.mkShell {
     [
       pythonEnv
       ffmpeg
+      yt-dlp # fetch test videos from YouTube etc. (uses ffmpeg for muxing)
       ruff
       uv
       just
