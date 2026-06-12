@@ -14,5 +14,8 @@ pub mod regroup;
 pub mod suppress_silence;
 
 pub use model::{round_timestamp, Segment, WhisperResult, WordTiming};
-pub use regroup::{ops_to_value, parse_regroup_algo, str_to_valid_type, RegroupOp, UnknownMethod};
+pub use regroup::{
+    apply_regroup, apply_regroup_op, ops_to_value, parse_regroup_algo, str_to_valid_type, RegroupOp,
+    UnknownMethod, UnsupportedMethod,
+};
 pub use suppress_silence::{audio2loudness, wav2mask};

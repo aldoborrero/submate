@@ -9,7 +9,10 @@
 //! (`01_regroup_*`), and populated-`nonspeech_sections` (`02_suppress`) shapes.
 
 use parity::{assert_f32_close, assert_json_eq, golden, load_f32};
-use stable_ts::{ops_to_value, parse_regroup_algo, WhisperResult};
+use stable_ts::{apply_regroup_op, ops_to_value, parse_regroup_algo, WhisperResult};
+
+/// The submate config regroup string (see `fixtures/capture/capture_stablets.py`).
+const REGROUP: &str = "cm_sl=84_sl=42++++++1";
 
 #[test]
 fn model_roundtrip() {
@@ -78,4 +81,27 @@ fn regroup_parse() {
     let golden_ops = golden("stablets/regroup_parse.json");
     let ops = parse_regroup_algo("cm_sl=84_sl=42++++++1").expect("known methods");
     assert_json_eq(&ops_to_value(&ops), &golden_ops);
+}
+
+/// B2 apply falsifier: each staged regroup op, applied *in isolation* to a fresh
+/// `WhisperResult` parsed from `00_raw.json`, must reproduce its golden exactly.
+///
+/// This mirrors `capture_stablets.py`, which rebuilds a fresh result from
+/// `raw_dict` per op (so stages don't compound) and dumps `to_dict()`. The op
+/// list comes from the same `REGROUP` string `parse_regroup_algo` parses, and
+/// the golden filename per op is `01_regroup_<i>_<method>.json`.
+#[test]
+fn regroup_apply() {
+    let raw = golden("stablets/clipA/00_raw.json");
+    let ops = parse_regroup_algo(REGROUP).expect("known methods");
+
+    for (i, op) in ops.iter().enumerate() {
+        let golden_name = format!("stablets/clipA/01_regroup_{i}_{}.json", op.method);
+        let expected = golden(&golden_name);
+
+        let mut result = WhisperResult::from_value(&raw);
+        apply_regroup_op(&mut result, op).expect("staged op is applicable in B2");
+
+        assert_json_eq(&result.to_dict(), &expected);
+    }
 }
