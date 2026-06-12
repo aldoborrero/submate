@@ -81,3 +81,13 @@ pre-pass runs the capture, item lives in `backlog/`; only external-runtime
 captures stay in `needs-human/`), this belongs in `backlog/`. Next round's
 capture pre-pass should author `rust/fixtures/capture/capture_core_router.py` and land the golden in a deliberate
 capture commit before dispatch — do NOT re-park to `needs-human/`.
+
+**META re-unpark (round 2 cleanup, same date):** despite the note above, the
+round *again* abandoned this as a denylist "scope violation" (porter touched
+`rust/fixtures/capture/README.md`) and re-parked it to `needs-human/`. Import
+gate re-verified phantom this round — `python3 -c 'import
+submate.server.handlers.core.router'` → `import OK`. This is now a **chronic
+re-park**: the reroute keeps firing on the capture-authoring step the pre-pass
+owns. Returned to `backlog/` once more. If a third reroute occurs without the
+capture pre-pass running first, escalate the denylist/capture-prepass ordering
+as a harness bug rather than re-parking the item.

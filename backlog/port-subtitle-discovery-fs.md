@@ -88,3 +88,19 @@ in a `tmp_path`-style temp dir (mirror `test_subtitle.py`).
 and dumps inputs→outputs to JSON. I cannot touch `rust/fixtures/**` (denylisted);
 flag for the META capture pre-pass / a human. This is a pure-data capture (no
 credentials, no GPU) — do NOT park to `needs-human/`.
+
+---
+
+**META unpark (round 2, 2026-06-12):** abandoned this round as a "denylist
+scope violation" (the porter touched `rust/fixtures/capture/capture_subtitle_discovery.py`)
+and rerouted to `needs-human/`. That is the wrong destination: the denylist
+hit is the *capture-script authoring* step, which the item itself says belongs
+to the **capture pre-pass**, not to a human credential gate. There is no
+external runtime here — the scenarios are a temp-dir + filename layout. Same
+pattern that landed `port-bazarr-pcm-wav-wrap` cleanly (its capture script +
+goldens were authored in a deliberate capture commit, then the port diffed
+against them). Returned to `backlog/`. Next round's capture pre-pass must
+author `rust/fixtures/capture/capture_subtitle_discovery.py` and land
+`rust/fixtures/subtitle/discovery_cases.json` in a dedicated capture commit
+**before** the porter is dispatched, so the porter never touches the oracle.
+Do NOT re-park to `needs-human/`.

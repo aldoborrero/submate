@@ -133,3 +133,39 @@ wave dispatches 2+ items that each add dependencies, have the merge queue
 `git checkout --theirs rust/Cargo.lock && cargo build` as the standard
 conflict-resolution path for that one file rather than treating it as a real
 conflict. Noted here so the trend is in git.
+
+## fifth pattern (META round 2, 2026-06-12): capture-prepass / denylist ordering loop
+
+Three items this round (`port-bazarr-pcm-wav-wrap`, `port-subtitle-discovery-fs`,
+`parity-server-core-router-root-status`) were abandoned as "denylist scope
+violations" because the porter touched `rust/fixtures/capture/**` (a capture
+script or its README). All three then got rerouted to `needs-human/`. But the
+capture-script authoring those items require is the **capture pre-pass's job**,
+not a human/credential gate — the items' own bodies say so. `port-bazarr-pcm-wav-wrap`
+proves the happy path exists: its capture script + goldens were authored in a
+deliberate capture commit and the port diffed against them, landing cleanly
+(merged this round, parity tests 4/4). The other two have no external runtime
+(`port-subtitle-discovery-fs` is a temp-dir/filename layout; the core-router
+module imports cleanly: `import OK`), yet they keep cycling
+`backlog → tried/needs-human → backlog` — a chronic re-park.
+
+### root cause
+
+The denylist correctly stops a *porter* from editing its own oracle, but no
+**capture pre-pass runs before dispatch** to author the golden first. So the
+porter hits the capture file, trips the denylist, and the item is abandoned
+instead of being handed to the pre-pass. The reroute target (`needs-human/`) is
+also wrong: it implies a human/credential gate that does not exist.
+
+### proposed triage rule
+
+Before dispatching any item whose `falsifies` block says "requires fixture …
+(capture first)" and whose capture lives under `rust/fixtures/capture/`, the
+merge/dispatch step must run a **capture pre-pass**: author the
+`capture/*.py`, land the golden under `rust/fixtures/**` in a dedicated capture
+commit, THEN dispatch the porter against the now-present oracle (porter scope
+excludes `rust/fixtures/**`, which is fine — the golden already exists). A
+capture-blocked item belongs in `backlog/`, never `needs-human/`, unless its
+capture genuinely needs an external runtime (GPU/credential/network). If an
+item is re-parked a 3rd time without the pre-pass running, treat it as a
+harness ordering bug, not an item defect.
