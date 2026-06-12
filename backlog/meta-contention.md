@@ -85,3 +85,28 @@ sub-module self-registers without editing a shared list — e.g. move the
 `pub mod`/`pub use` lines into per-submodule files and have `parity.rs`
 pull tests via `include!`-per-module rather than one append-only file. The
 former is cheaper; the latter removes the contention permanently.
+
+## third pattern (observed round 1 META, 2026-06-12): monolithic submate-server/lib.rs
+
+`rust/crates/submate-server/src/lib.rs` is a single 1680-line file holding the
+entire server crate (routes, handlers, state, error mapping). It is the hottest
+file in the recent merge window — touched in 3 of the last 5 first-parent
+merges (`188e023` embedded-node, `ecf3549` http-error-body-detail-key,
+`4fa64bb` audio-transfer). All three merged cleanly **this** round, so this is a
+leading indicator, not yet a realized conflict.
+
+The risk mirrors the stable-ts crate root: as more server sub-ports land
+(bazarr handler, jellyfin webhook, queue-status routes), concurrent waves will
+increasingly append routes/handlers to the same file and the same router-builder
+function, producing additive conflicts that are independent in intent.
+
+### proposed triage rule
+
+Before the next wave that dispatches 2+ server-handler items, split
+`submate-server/src/lib.rs` into per-area modules
+(`handlers/bazarr.rs`, `handlers/jellyfin.rs`, `handlers/core.rs`, `state.rs`,
+`error.rs`) mirroring the Python `submate/server/handlers/` layout, with `lib.rs`
+reduced to module declarations + router assembly. This pre-empts the same
+append-only contention before it forces serialization. Tracked separately as a
+port-refactor item if/when a server wave is queued; noted here so the trend is
+in git.
