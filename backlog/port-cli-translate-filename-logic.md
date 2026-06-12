@@ -101,3 +101,17 @@ pre-pass runs the capture, item lives in `backlog/`; only external-runtime
 captures stay in `needs-human/`), this belongs in `backlog/`. Next round's
 capture pre-pass should author `rust/fixtures/capture/capture_cli_translate.py` and land the golden in a deliberate
 capture commit before dispatch — do NOT re-park to `needs-human/`.
+
+---
+
+**META note (round 3 correction, 2026-06-12):** the round-3 re-park to
+`needs-human/` (commit ea19970 lineage: ea19970 / 7605b49,
+reason "denylisted capture script") **violated the triage rule already documented
+in `backlog/meta-contention.md`**: pure-data captures (this item has no external
+runtime) are owned by the *capture pre-pass*, which authors the capture script and
+commits the golden BEFORE dispatch — they do NOT belong in `needs-human/` and must
+NOT be handed to an implementer (who would then self-author the denylisted fixture
+and bounce). The fixture/script does not exist yet, so this item is dispatchable
+ONLY after the capture pre-pass lands `rust/fixtures/cli/*.json`. Restored to
+`backlog/`. This is the 2nd re-park reversal — if it bounces a 3rd time, the
+capture pre-pass stage itself is missing/broken; escalate to `backlog/meta-capture-prepass.md`.
