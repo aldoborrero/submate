@@ -15,11 +15,13 @@
 //! Python's top-level *route names and response keys* are matched exactly.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    body::Body,
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -27,6 +29,7 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 use submate_config::ServerSettings;
+use submate_media::{prepare_audio_for_transcription, PreparedAudio};
 use submate_proto::{
     JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, Progress, WorkResponse,
 };
@@ -188,6 +191,30 @@ impl IntoResponse for ServerError {
     }
 }
 
+/// Where a job's audio comes from, so `GET /jobs/{id}/audio` can serve it.
+///
+/// The server is the only place audio is produced (nodes have no media access),
+/// so each enqueued job records how to materialise its s16le/mono/16k PCM:
+///
+/// - [`AudioSource::File`] — a media file the server extracts on demand (the
+///   Jellyfin / local-scan path). The optional language hint picks the audio
+///   track when a file has several, matching the transcription pipeline.
+/// - [`AudioSource::Pcm`] — already-decoded PCM the server only relays (the
+///   Bazarr path, where the caller uploaded the audio). Held behind an `Arc` so
+///   the bytes are shared, not copied, on each fetch.
+#[derive(Debug, Clone)]
+pub enum AudioSource {
+    /// A media file on the server; its audio is extracted when first fetched.
+    File {
+        /// Path to the media file the server can read.
+        path: PathBuf,
+        /// Language hint used to choose the audio track on multi-track files.
+        language: Option<String>,
+    },
+    /// Already-decoded s16le/mono/16k PCM the server relays verbatim.
+    Pcm(Arc<Vec<u8>>),
+}
+
 /// What this server knows about a registered processing node.
 ///
 /// The token authorises the node's subsequent coordination calls; `runners` and
@@ -226,6 +253,11 @@ pub struct NodeCoordinator {
     store: Mutex<JobStore>,
     nodes: Mutex<HashMap<String, NodeInfo>>,
     waiters: Mutex<HashMap<JobId, oneshot::Sender<JobOutcome>>>,
+    /// Per-job audio source, populated at enqueue time, that
+    /// `GET /jobs/{id}/audio` materialises into PCM. Jobs enqueued without a
+    /// source (e.g. via the legacy [`enqueue`](NodeCoordinator::enqueue)) have
+    /// no entry here and their audio route reports `404`.
+    audio: Mutex<HashMap<JobId, AudioSource>>,
     /// Base URL path nodes use to fetch a job's extracted audio (the
     /// `audio_url` in a [`WorkResponse::Work`] is `{audio_base}/{job_id}/audio`).
     audio_base: String,
@@ -238,6 +270,7 @@ impl NodeCoordinator {
             store: Mutex::new(store),
             nodes: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
+            audio: Mutex::new(HashMap::new()),
             audio_base: "/jobs".to_string(),
         }
     }
@@ -259,6 +292,63 @@ impl NodeCoordinator {
             .store()
             .enqueue(&NewJob::now(kind.to_string(), payload))?;
         Ok(id)
+    }
+
+    /// Enqueue a job and record its [`AudioSource`] so the node can later
+    /// `GET /jobs/{id}/audio` to pull the PCM. This is the path the integration
+    /// routes (Bazarr, Jellyfin) use: Bazarr relays uploaded PCM
+    /// ([`AudioSource::Pcm`]), Jellyfin/local-scan points at a media file the
+    /// server extracts on demand ([`AudioSource::File`]).
+    pub fn enqueue_with_audio(
+        &self,
+        kind: TranscriptionTask,
+        opts: &JobOpts,
+        source: AudioSource,
+    ) -> Result<JobId, ServerError> {
+        let id = self.enqueue(kind, opts)?;
+        self.audio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, source);
+        Ok(id)
+    }
+
+    /// Materialise a job's audio as raw s16le/mono/16k PCM for the node to fetch.
+    ///
+    /// A [`AudioSource::Pcm`] source is relayed verbatim; a
+    /// [`AudioSource::File`] source is extracted with submate-media (the same
+    /// `prepare_audio_for_transcription` the transcription pipeline uses, so the
+    /// bytes a node fetches are byte-identical to a local extraction). A job with
+    /// no recorded source — or an unknown id — yields `404`.
+    ///
+    /// The audio lock is only held to clone the (cheap) source descriptor; the
+    /// extraction itself, which spawns `ffmpeg`, runs without any lock held.
+    async fn audio_for(&self, id: JobId) -> Result<Vec<u8>, ServerError> {
+        let source = self
+            .audio
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| ServerError::NotFound(format!("no audio for job {id}")))?;
+
+        match source {
+            AudioSource::Pcm(bytes) => Ok((*bytes).clone()),
+            AudioSource::File { path, language } => {
+                match prepare_audio_for_transcription(&path, language.as_deref()).await {
+                    PreparedAudio::Pcm(pcm) => Ok(pcm),
+                    // A single-track (or unprobeable) file degrades to the path;
+                    // the node still wants raw PCM, so extract track 0 directly.
+                    PreparedAudio::Path(path) => {
+                        submate_media::extract_audio_track_to_memory(&path, 0)
+                            .await
+                            .map_err(|e| {
+                                ServerError::Internal(format!("extract audio for job {id}: {e}"))
+                            })
+                    }
+                }
+            }
+        }
     }
 
     /// Register a node, returning the bearer token for its subsequent calls.
@@ -462,6 +552,7 @@ fn node_router() -> Router<AppState> {
         .route("/nodes/register", post(nodes_register))
         .route("/nodes/:id/request-work", post(nodes_request_work))
         .route("/nodes/:id/heartbeat", post(nodes_heartbeat))
+        .route("/jobs/:id/audio", get(jobs_audio))
         .route("/jobs/:id/progress", post(jobs_progress))
         .route("/jobs/:id/result", post(jobs_result))
 }
@@ -494,6 +585,26 @@ async fn nodes_heartbeat(
 ) -> std::result::Result<Json<serde_json::Value>, ServerError> {
     let refreshed = state.coordinator()?.heartbeat(&id)?;
     Ok(Json(json!({ "leases": refreshed })))
+}
+
+/// `GET /jobs/{id}/audio` — stream the job's extracted PCM to the node.
+///
+/// This is the audio-transfer half of the pull topology: the `request-work`
+/// response advertises `audio_url = {audio_base}/{id}/audio`, and the node
+/// `GET`s here to pull the s16le/mono/16k PCM rather than receiving it inlined
+/// in JSON. The body is served as `application/octet-stream`; an unknown job (or
+/// one with no recorded audio source) returns `404`.
+async fn jobs_audio(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> std::result::Result<Response, ServerError> {
+    let job_id = parse_job_id(&id)?;
+    let pcm = state.coordinator()?.audio_for(job_id).await?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        Body::from(pcm),
+    )
+        .into_response())
 }
 
 /// `POST /jobs/{id}/progress` — record an in-flight progress update.
@@ -1141,6 +1252,166 @@ mod tests {
             .unwrap(),
         )
         .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ---- audio transfer -----------------------------------------------------
+
+    /// GET `uri`, returning the status and the raw response body bytes.
+    async fn get_bytes(app: Router, uri: &str) -> (StatusCode, Vec<u8>) {
+        let res = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes.to_vec())
+    }
+
+    /// Falsifier `audio_transfer` (relay): a job enqueued with already-decoded
+    /// PCM (the Bazarr path) is served verbatim by `GET /jobs/{id}/audio`, and
+    /// the fetched bytes' sha256 matches the source PCM. No ffmpeg needed.
+    #[tokio::test]
+    async fn audio_transfer_relays_uploaded_pcm() {
+        use sha2::{Digest, Sha256};
+
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+
+        // 320 bytes of deterministic "PCM" (16-bit samples) standing in for the
+        // Bazarr-uploaded audio; the route relays bytes opaquely.
+        let pcm: Vec<u8> = (0..320u16).flat_map(|n| n.to_le_bytes()).collect();
+        let expected = hex::encode(Sha256::digest(&pcm));
+
+        let job_id = coord
+            .enqueue_with_audio(
+                TranscriptionTask::Transcribe,
+                &transcribe_opts(),
+                AudioSource::Pcm(Arc::new(pcm.clone())),
+            )
+            .unwrap();
+
+        let (status, bytes) = get_bytes(
+            app(AppState::with_coordinator(coord.clone())),
+            &format!("/jobs/{job_id}/audio"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, pcm, "relayed PCM must be byte-identical");
+        assert_eq!(
+            hex::encode(Sha256::digest(&bytes)),
+            expected,
+            "fetched audio sha256 must match the source PCM",
+        );
+    }
+
+    /// Falsifier `audio_transfer` (extraction): a job whose audio source is a
+    /// media file on the server is extracted on demand, and the bytes the node
+    /// fetches over `GET /jobs/{id}/audio` are byte-identical (sha256) to a
+    /// direct submate-media extraction of the same track. Skipped as a no-op
+    /// when `ffmpeg`/`ffprobe` are not on `PATH`.
+    #[tokio::test]
+    async fn audio_transfer_extracts_file_matching_source() {
+        use sha2::{Digest, Sha256};
+
+        fn binary_on_path(name: &str) -> bool {
+            std::process::Command::new(name)
+                .arg("-version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+        if !binary_on_path("ffmpeg") || !binary_on_path("ffprobe") {
+            eprintln!("skipping audio_transfer extraction: ffmpeg/ffprobe not on PATH");
+            return;
+        }
+
+        // Synthesize a single-track media file (1s silence, 16k mono). Written
+        // to a temp path, not a fixture.
+        let path = std::env::temp_dir().join(format!(
+            "submate-server-audio-{}.mka",
+            std::process::id()
+        ));
+        let gen = std::process::Command::new("ffmpeg")
+            .args([
+                "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "aac",
+            ])
+            .arg(&path)
+            .output()
+            .expect("ffmpeg runs");
+        assert!(
+            gen.status.success(),
+            "ffmpeg failed: {}",
+            String::from_utf8_lossy(&gen.stderr)
+        );
+
+        // Golden: a direct extraction of the file's only audio track.
+        let golden = submate_media::extract_audio_track_to_memory(&path, 0)
+            .await
+            .expect("direct extraction succeeds");
+        let expected = hex::encode(Sha256::digest(&golden));
+
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        let job_id = coord
+            .enqueue_with_audio(
+                TranscriptionTask::Transcribe,
+                &transcribe_opts(),
+                AudioSource::File {
+                    path: path.clone(),
+                    language: None,
+                },
+            )
+            .unwrap();
+
+        let (status, bytes) = get_bytes(
+            app(AppState::with_coordinator(coord.clone())),
+            &format!("/jobs/{job_id}/audio"),
+        )
+        .await;
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(!bytes.is_empty(), "extracted PCM must be non-empty");
+        assert_eq!(
+            hex::encode(Sha256::digest(&bytes)),
+            expected,
+            "fetched audio sha256 must match the source extraction",
+        );
+    }
+
+    /// A job with no recorded audio source, and a wholly unknown job id, both
+    /// return `404` from the audio route.
+    #[tokio::test]
+    async fn audio_transfer_missing_source_is_not_found() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+
+        // Enqueued via the plain path: no audio source recorded.
+        let job_id = coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+        let (status, _) = get_bytes(
+            app(AppState::with_coordinator(coord.clone())),
+            &format!("/jobs/{job_id}/audio"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // A job id that was never enqueued.
+        let (status, _) = get_bytes(
+            app(AppState::with_coordinator(coord.clone())),
+            "/jobs/999999/audio",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Without a coordinator wired in, the audio route reports `503`, like the
+    /// other node routes.
+    #[tokio::test]
+    async fn audio_route_unavailable_without_coordinator() {
+        let (status, _) = get_bytes(app(AppState::default()), "/jobs/1/audio").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
