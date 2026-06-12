@@ -15,10 +15,13 @@
 //!   then split the model reply back into stripped blocks, falling back to the
 //!   originals when the returned block count does not match the input count.
 //!
-//! Actual backend HTTP calls (Ollama/Claude/OpenAI/Gemini) are out of scope and
-//! ported by the per-backend grind items.
+//! Ollama is the default local backend, ported here as [`OllamaBackend`]. The
+//! remaining backend HTTP calls (Claude/OpenAI/Gemini) are out of scope and
+//! ported by the other per-backend grind items.
 
 use std::ops::Range;
+
+use serde::Serialize;
 
 /// Default chunked-translation prompt template (ports `TRANSLATION_PROMPT`).
 ///
@@ -101,6 +104,113 @@ impl std::fmt::Display for BackendError {
 }
 
 impl std::error::Error for BackendError {}
+
+/// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
+pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
+
+/// Default Ollama host (ports `base_url="http://localhost:11434"`).
+pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// One chat message in the Ollama request body.
+///
+/// The Python backend sends a single `{"role": "user", "content": prompt}`
+/// message; the `ollama` client's pydantic `Message` model serialises only
+/// these two fields when the rest are unset (`model_dump(exclude_none=True)`).
+#[derive(Serialize)]
+struct OllamaMessage<'a> {
+    role: &'a str,
+    content: &'a str,
+}
+
+/// Body of `POST /api/chat`, matching the `ollama` Python client's wire shape.
+///
+/// The Python `client.chat(model=..., messages=[...])` call builds a
+/// `ChatRequest` and serialises it with `model_dump(exclude_none=True)`. With
+/// only `model` and `messages` supplied, the resulting body carries exactly
+/// `model`, `messages`, `stream` (defaulting to `false`) and `tools` (an empty
+/// list, since `tools` defaults to `[]` rather than `None` and so survives the
+/// `exclude_none` filter). Every other field is `None` and is dropped.
+#[derive(Serialize)]
+struct OllamaChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<OllamaMessage<'a>>,
+    stream: bool,
+    tools: Vec<serde_json::Value>,
+}
+
+/// Subset of the `POST /api/chat` response we read back.
+///
+/// The Python backend extracts `response["message"]["content"]`; the rest of
+/// the `ChatResponse` is ignored.
+#[derive(serde::Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaResponseMessage,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaResponseMessage {
+    content: String,
+}
+
+/// Ollama-based translation backend (ports `OllamaBackend`).
+///
+/// The default local, free, private backend. [`complete`](Backend::complete)
+/// POSTs the prompt as a single user message to `{base_url}/api/chat` over raw
+/// [`reqwest`], then returns the stripped `message.content` from the reply,
+/// mirroring the Python backend's `client.chat(...)["message"]["content"].strip()`.
+pub struct OllamaBackend {
+    model: String,
+    base_url: String,
+    http: reqwest::blocking::Client,
+}
+
+impl OllamaBackend {
+    /// Construct a backend for `model` against the Ollama server at `base_url`.
+    ///
+    /// Ports `OllamaBackend(model, base_url)`. Pass [`DEFAULT_OLLAMA_MODEL`] /
+    /// [`DEFAULT_OLLAMA_URL`] to reproduce the Python defaults.
+    pub fn new(model: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            base_url: base_url.into(),
+            http: reqwest::blocking::Client::new(),
+        }
+    }
+}
+
+impl Default for OllamaBackend {
+    fn default() -> Self {
+        Self::new(DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL)
+    }
+}
+
+impl Backend for OllamaBackend {
+    fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let body = OllamaChatRequest {
+            model: &self.model,
+            messages: vec![OllamaMessage {
+                role: "user",
+                content: prompt,
+            }],
+            stream: false,
+            tools: Vec::new(),
+        };
+
+        let response = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .map_err(|e| BackendError::Request(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| BackendError::Request(e.to_string()))?
+            .json::<OllamaChatResponse>()
+            .map_err(|e| BackendError::Request(e.to_string()))?;
+
+        Ok(response.message.content.trim().to_string())
+    }
+}
 
 /// The half-open index ranges for each batch when splitting `len` items into
 /// chunks of `chunk_size` (ports the `total_chunks` / `start_idx`..`end_idx`
@@ -203,5 +313,71 @@ mod tests {
         let p = format_prompt(TRANSLATION_PROMPT, "en", "es", "Hello.");
         assert!(p.starts_with("Translate the following subtitle text from en to es."));
         assert!(p.ends_with("Text to translate:\nHello."));
+    }
+
+    /// Golden body captured from the `ollama` Python client:
+    ///
+    /// ```text
+    /// ChatRequest(model="llama3.2", messages=[{"role": "user", "content": "Hello"}])
+    ///     .model_dump(exclude_none=True)
+    /// # -> {"model": "llama3.2", "stream": false,
+    /// #     "messages": [{"role": "user", "content": "Hello"}], "tools": []}
+    /// ```
+    ///
+    /// Compared as parsed JSON (key order is irrelevant on the wire).
+    fn ollama_payload_golden(model: &str, prompt: &str) -> serde_json::Value {
+        serde_json::json!({
+            "model": model,
+            "stream": false,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [],
+        })
+    }
+
+    #[test]
+    fn ollama_request_shape() {
+        use std::sync::mpsc;
+
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let server = MockServer::start().await;
+
+            // Capture the request body the blocking client actually sends.
+            let (tx, rx) = mpsc::channel::<serde_json::Value>();
+            Mock::given(method("POST"))
+                .and(path("/api/chat"))
+                .respond_with(move |req: &Request| {
+                    tx.send(req.body_json::<serde_json::Value>().unwrap()).unwrap();
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "message": {"role": "assistant", "content": "  hola  "},
+                    }))
+                })
+                .mount(&server)
+                .await;
+
+            let base_url = server.uri();
+            // The blocking reqwest call cannot run on the async runtime thread;
+            // drive it on a dedicated thread and await its result.
+            let reply = tokio::task::spawn_blocking(move || {
+                let backend = OllamaBackend::new(DEFAULT_OLLAMA_MODEL, base_url);
+                backend.complete("Hello")
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+            // message.content is returned stripped, matching `.strip()`.
+            assert_eq!(reply, "hola");
+
+            let sent = rx.recv().unwrap();
+            assert_eq!(sent, ollama_payload_golden(DEFAULT_OLLAMA_MODEL, "Hello"));
+        });
     }
 }
