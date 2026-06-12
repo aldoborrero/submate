@@ -54,19 +54,21 @@ umbrella `port-cli-commands` is blocked behind.
 (and an env-overridden Config) as serde-JSON to `config_show_rows` and asserts
 the ordered `(setting, value)` rows equal a golden via `assert_json_eq`.
 
-requires fixture: `rust/fixtures/cli/config_show.defaults.rows.json` (capture
-first) — the row list from `submate config show` with no env set; capture by
-running the Python command over `Config()` and dumping
-`_flatten_settings(cfg.model_dump(mode="json"))` after the title-case map, as
-an ordered list of `[setting, value]` pairs.
+fixture (ALREADY LANDED on main, commit a73fffb — do NOT re-capture, do NOT
+touch `rust/fixtures/`): `rust/fixtures/cli/config_show.defaults.rows.json` —
+the row list from `submate config show` with no env set, an ordered list of
+`[setting, value]` pairs.
 
-requires fixture: `rust/fixtures/cli/config_show.overridden.rows.json`
-(capture first) — same dump but with a representative env set exercising every
-`_format_value` branch: a bool (e.g. a `Yes`/`No` flag), an empty list
-(`(none)`), a populated list (joined), an unset key (`(not set)`), and a
-plain string/number. Reuse the env from `rust/fixtures/config/validators.env`
-if it already exercises these branches; otherwise capture a new `.env`
-alongside.
+fixture (ALREADY LANDED on main, commit a73fffb): `rust/fixtures/cli/config_show.overridden.rows.json`
+— same dump with a representative env set exercising every `_format_value`
+branch (bool `Yes`/`No`, empty list `(none)`, populated list joined, unset key
+`(not set)`, plain string/number). The capture script
+`rust/fixtures/capture/capture_cli_config.py` is also already committed.
+
+The falsifier is therefore a PURE Rust port: read the existing goldens via the
+`parity` harness, assert `config_show_rows` output equals them. No
+`rust/fixtures/` write is needed, so there is no denylist bounce — this item is
+directly dispatchable to an implementer.
 
 ---
 
@@ -90,7 +92,15 @@ in `backlog/meta-contention.md`**: pure-data captures (this item has no external
 runtime) are owned by the *capture pre-pass*, which authors the capture script and
 commits the golden BEFORE dispatch — they do NOT belong in `needs-human/` and must
 NOT be handed to an implementer (who would then self-author the denylisted fixture
-and bounce). The fixture/script does not exist yet, so this item is dispatchable
-ONLY after the capture pre-pass lands `rust/fixtures/cli/*.json`. Restored to
-`backlog/`. This is the 2nd re-park reversal — if it bounces a 3rd time, the
-capture pre-pass stage itself is missing/broken; escalate to `backlog/meta-capture-prepass.md`.
+and bounce). Restored to `backlog/`.
+
+**META note (post-merge round, 2026-06-12) — GATE RESOLVED, unparked:** the
+capture pre-pass blocker is gone. Commit `a73fffb` ("fixtures(cli): salvage
+stranded config-show + translate-filename goldens") landed BOTH goldens
+(`config_show.defaults.rows.json`, `config_show.overridden.rows.json`, non-empty,
+3.1 KB each) AND the capture script `capture_cli_config.py` on `main`. The sibling
+`port-cli-translate-filename-logic` already merged this round on the same basis.
+Verified this round: fixtures present and populated (cover `(none)`/`No`/title-case
+branches), `rust/crates/submate-cli/src/config_show.rs` not yet ported. The item is
+now a pure port reading existing goldens — no `rust/fixtures/` write, no denylist
+bounce. Moved back to `backlog/` and dispatchable as normal.

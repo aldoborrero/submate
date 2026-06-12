@@ -77,3 +77,23 @@ Net: the *code* is no longer blocked on the pre-pass; only the
 strictly to (a) wire the pre-pass stage, and (b) author
 `capture_cli_translate.py` so the golden exists — at which point the swap above
 is a ~10-line dev-dep + test change.
+
+## RESOLVED (post-merge round, 2026-06-12): goldens + capture scripts landed
+
+Commit `a73fffb` ("fixtures(cli): salvage stranded config-show + translate-filename
+goldens") materialized the missing artifacts on `main`:
+`rust/fixtures/cli/config_show.{defaults,overridden}.rows.json` (non-empty) and
+`rust/fixtures/capture/capture_cli_config.py`. The ping-pong root cause (golden
+absent, implementer forced to author a denylisted fixture) no longer applies to
+either CLI item:
+
+- `port-cli-translate-filename-logic`: MERGED this round (cd9eb5f). The remaining
+  swap (inline tests -> `parity::assert_json_eq` over the now-present golden) is
+  ordinary follow-up work, not a gate.
+- `port-cli-config-show`: unparked from `needs-human/` back to `backlog/` this
+  round; the goldens it needs exist, so it is a pure port and dispatchable.
+
+The structural action item — make the capture pre-pass an *enforced* stage so a
+future `requires fixture:` item does not bounce again — stays open. But no item is
+currently blocked on it; this file is informational until the next golden-absent
+item appears.
