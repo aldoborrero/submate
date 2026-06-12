@@ -5,7 +5,5 @@
 //! (see `backlog/`).
 
 pub mod model;
-pub mod suppress_silence;
 
 pub use model::{round_timestamp, Segment, WhisperResult, WordTiming};
-pub use suppress_silence::{audio2loudness, wav2mask, wav2mask_with};
