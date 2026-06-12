@@ -1,10 +1,13 @@
-//! On-disk subtitle discovery and filename-language parsing.
+//! On-disk subtitle discovery, filename-language parsing, and the
+//! internal-track language probe.
 //!
-//! Pure-data port of the filesystem half of `submate/subtitle.py`: directory
-//! scanning, the dot-boundary stem match, the reversed filename-language scan,
-//! and the LRC path helpers. Depends only on `std` plus the already-ported
-//! [`submate_lang::LanguageCode`] table — no media demux and no subtitle-format
-//! parsing (the PyAV internal probe is a separate slice).
+//! Ports the discovery half of `submate/subtitle.py`: directory scanning, the
+//! dot-boundary stem match, the reversed filename-language scan, the LRC path
+//! helpers, plus the embedded-subtitle-stream language probe and the
+//! internal-OR-external combinator. The filesystem helpers depend only on
+//! `std` plus the already-ported [`submate_lang::LanguageCode`] table; the
+//! internal probe shells out to `ffprobe` (the convention `submate-media`'s
+//! audio-track probe already uses) instead of PyAV.
 //!
 //! Filename component semantics (`stem`/`suffix`/`with_suffix`) mirror Python
 //! `pathlib.PurePath` exactly, so they agree with the conventions the rest of
@@ -13,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use submate_lang::LanguageCode;
 
 /// Subtitle file extensions used for on-disk discovery (lowercased, dot
@@ -188,6 +192,121 @@ pub fn has_any_external_subtitle(video_path: &Path) -> bool {
     !get_external_subtitle_paths(video_path).is_empty()
 }
 
+/// Top-level shape of `ffprobe -show_streams -of json`: only the `streams`
+/// array is consumed; every other key is ignored.
+#[derive(Debug, Deserialize)]
+struct ProbeOutput {
+    #[serde(default)]
+    streams: Vec<RawStream>,
+}
+
+/// One ffprobe stream entry. Only the codec type (to keep subtitle streams)
+/// and the `tags.language` tag are read; everything else is ignored.
+#[derive(Debug, Deserialize)]
+struct RawStream {
+    codec_type: Option<String>,
+    #[serde(default)]
+    tags: StreamTags,
+}
+
+/// The `tags` object of a stream. An absent `tags` object deserializes to the
+/// default (no language), matching Python's `stream.metadata.get(...)` on an
+/// empty mapping.
+#[derive(Debug, Default, Deserialize)]
+struct StreamTags {
+    language: Option<String>,
+}
+
+/// Parse the JSON payload of `ffprobe -show_streams -of json` into the language
+/// of each subtitle stream, in stream order.
+///
+/// Split out from [`get_internal_subtitle_languages`] so the stream-filtering
+/// and language-mapping logic is testable without invoking `ffprobe`. Returns
+/// `None` when the JSON cannot be parsed, so the caller can fold that into the
+/// swallow-all-errors empty fallback.
+///
+/// Each subtitle stream's `tags.language` is mapped through
+/// [`LanguageCode::from_iso_639_2`], which already yields [`LanguageCode::None`]
+/// for an absent, empty, or unmappable tag — mirroring the Python
+/// `from_iso_639_2(lang_code) or LanguageCode.NONE`.
+fn parse_internal_subtitle_languages(json: &str) -> Option<Vec<LanguageCode>> {
+    let probe: ProbeOutput = serde_json::from_str(json).ok()?;
+    Some(
+        probe
+            .streams
+            .into_iter()
+            .filter(|stream| stream.codec_type.as_deref() == Some("subtitle"))
+            .map(|stream| LanguageCode::from_iso_639_2(stream.tags.language.as_deref()))
+            .collect(),
+    )
+}
+
+/// Run `ffprobe -show_streams -of json <path>` and capture its stdout.
+///
+/// Returns `None` on any failure (binary missing, spawn error, non-zero exit,
+/// non-UTF-8 output) so the public probe can fold every error into the empty
+/// fallback. Uses a synchronous `std::process::Command` to keep the subtitle
+/// crate off an async runtime — the Python helper is synchronous and the
+/// downstream queue skip-decision calls it as a plain predicate.
+fn run_ffprobe_streams(file_path: &Path) -> Option<String> {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-show_streams", "-of", "json"])
+        .arg(file_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// Language of every embedded (internal) subtitle stream, in stream order.
+///
+/// Ports `get_internal_subtitle_languages` in `submate/subtitle.py`. Python
+/// opens the file with PyAV and reads each `stream.metadata["language"]` for
+/// `stream.type == "subtitle"`; the port shells out to `ffprobe` instead,
+/// filtering `codec_type == "subtitle"` and mapping `tags.language` the same
+/// way. Stream order is contractual — one [`LanguageCode`] per subtitle stream.
+///
+/// Every error (missing file, missing `ffprobe`, demux/parse failure) is
+/// swallowed and yields `[]`, mirroring the Python blanket
+/// `except Exception: return []`.
+pub fn get_internal_subtitle_languages(file_path: &Path) -> Vec<LanguageCode> {
+    run_ffprobe_streams(file_path)
+        .and_then(|json| parse_internal_subtitle_languages(&json))
+        .unwrap_or_default()
+}
+
+/// Whether the video has an internal subtitle stream in `language`.
+///
+/// Ports `has_internal_subtitle_language` — `language in
+/// get_internal_subtitle_languages(video_path)`.
+pub fn has_internal_subtitle_language(video_path: &Path, language: LanguageCode) -> bool {
+    get_internal_subtitle_languages(video_path).contains(&language)
+}
+
+/// Whether the video has any internal (embedded) subtitle stream.
+///
+/// Ports `has_any_internal_subtitle` —
+/// `len(get_internal_subtitle_languages(video_path)) > 0`.
+pub fn has_any_internal_subtitle(video_path: &Path) -> bool {
+    !get_internal_subtitle_languages(video_path).is_empty()
+}
+
+/// Whether the video has a subtitle in `language`, internal OR external.
+///
+/// Ports `has_subtitle_language` in `submate/subtitle.py`: the predicate the
+/// queue skip decision calls. Internal streams are checked first, but **only
+/// when** `!only_subgen` (internal tracks can never be "subgen"); then the
+/// external half ([`has_external_subtitle_language`]) is consulted with the
+/// same `only_subgen` flag.
+pub fn has_subtitle_language(video_path: &Path, language: LanguageCode, only_subgen: bool) -> bool {
+    if !only_subgen && has_internal_subtitle_language(video_path, language) {
+        return true;
+    }
+    has_external_subtitle_language(video_path, language, only_subgen)
+}
+
 /// The LRC path for an audio file: `audio_path` with its last suffix replaced
 /// by `.lrc` (appended when there is none). The file need not exist.
 pub fn get_lrc_path(audio_path: &Path) -> PathBuf {
@@ -261,5 +380,80 @@ mod tests {
             parse_subtitle_language(Path::new("Episode 10.en.srt"), "Episode 1"),
             LanguageCode::None
         );
+    }
+
+    /// Representative `ffprobe -show_streams -of json` output: two tagged
+    /// subtitle streams (`eng`, `spa`), one untagged subtitle stream, plus a
+    /// video and an audio stream that must be filtered out. Exercises the
+    /// parser without invoking `ffprobe`; the non-read keys ffprobe emits per
+    /// stream are trimmed to what the parser consumes.
+    const SAMPLE_STREAMS_JSON: &str = r#"{
+        "streams": [
+            { "index": 0, "codec_type": "video", "codec_name": "h264" },
+            { "index": 1, "codec_type": "audio", "tags": { "language": "eng" } },
+            { "index": 2, "codec_type": "subtitle", "tags": { "language": "eng" } },
+            { "index": 3, "codec_type": "subtitle", "tags": { "language": "spa" } },
+            { "index": 4, "codec_type": "subtitle" }
+        ]
+    }"#;
+
+    #[test]
+    fn internal_probe_keeps_subtitle_streams_in_order() {
+        assert_eq!(
+            parse_internal_subtitle_languages(SAMPLE_STREAMS_JSON),
+            Some(vec![
+                LanguageCode::ENGLISH,
+                LanguageCode::SPANISH,
+                LanguageCode::None,
+            ]),
+        );
+    }
+
+    #[test]
+    fn internal_probe_maps_unmappable_and_missing_tag_to_none() {
+        // Empty tag, garbage tag, and absent `tags` all collapse to None,
+        // matching `from_iso_639_2(...) or LanguageCode.NONE`.
+        let json = r#"{
+            "streams": [
+                { "codec_type": "subtitle", "tags": { "language": "" } },
+                { "codec_type": "subtitle", "tags": { "language": "zzz" } },
+                { "codec_type": "subtitle" }
+            ]
+        }"#;
+        assert_eq!(
+            parse_internal_subtitle_languages(json),
+            Some(vec![LanguageCode::None, LanguageCode::None, LanguageCode::None]),
+        );
+    }
+
+    #[test]
+    fn internal_probe_handles_no_subtitle_streams() {
+        let json = r#"{ "streams": [ { "codec_type": "audio" } ] }"#;
+        assert_eq!(parse_internal_subtitle_languages(json), Some(Vec::new()));
+        assert_eq!(parse_internal_subtitle_languages("{}"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn internal_probe_rejects_invalid_json() {
+        assert_eq!(parse_internal_subtitle_languages("not json"), None);
+    }
+
+    #[test]
+    fn get_internal_subtitle_languages_swallows_missing_file() {
+        // No ffprobe stdout for a nonexistent path -> empty list, never panics.
+        let missing = Path::new("/nonexistent/submate-subtitle/does-not-exist.mkv");
+        assert!(get_internal_subtitle_languages(missing).is_empty());
+        assert!(!has_any_internal_subtitle(missing));
+        assert!(!has_internal_subtitle_language(missing, LanguageCode::ENGLISH));
+    }
+
+    #[test]
+    fn combinator_skips_internal_when_only_subgen() {
+        // With no real media, internal probing yields []; the combinator must
+        // not panic and must defer entirely to the external half. A missing
+        // video also has no external subs, so both branches are false.
+        let missing = Path::new("/nonexistent/submate-subtitle/clip.mkv");
+        assert!(!has_subtitle_language(missing, LanguageCode::ENGLISH, false));
+        assert!(!has_subtitle_language(missing, LanguageCode::ENGLISH, true));
     }
 }
