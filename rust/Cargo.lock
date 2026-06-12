@@ -1699,6 +1699,10 @@ dependencies = [
 [[package]]
 name = "submate-node"
 version = "0.1.0"
+dependencies = [
+ "submate-whisper",
+ "tokio",
+]
 
 [[package]]
 name = "submate-paths"
