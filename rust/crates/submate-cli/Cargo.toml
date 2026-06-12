@@ -11,6 +11,7 @@ name = "submate"
 path = "src/main.rs"
 
 [dependencies]
+submate-lang = { path = "../submate-lang" }
 
 [lints]
 workspace = true

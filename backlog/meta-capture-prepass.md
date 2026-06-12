@@ -53,3 +53,27 @@ existing `capture_config.py` / `capture_translate.py` cover the already-ported
 `nix develop --command python3 -c 'import submate.cli.commands.translate'` -> OK
 
 Phantom gate reconfirmed; items belong in `backlog/`, blocked on the pre-pass.
+
+## update (round 4, 2026-06-12): pre-pass STILL did not run; port landed anyway
+
+`port-cli-translate-filename-logic` was dispatched a 4th time with a plan that
+asserted "capture pre-pass landed `rust/fixtures/cli/translate_filename_cases.json`
+(non-empty) this round". It did NOT: there is still no `rust/fixtures/cli/` dir,
+no `translate_filename_cases.json`, and no `capture_cli_translate.py`. This is
+the 3rd consecutive round the prescribed pre-pass failed to materialize the
+golden — confirming the stage is missing/broken, not merely skipped once.
+
+To stop the ping-pong, the implementer this round landed the **pure port without
+the fixture**: `rust/crates/submate-cli/src/translate_paths.rs` (the three
+byte-for-byte helpers) is committed and covered by 9 inline unit tests asserting
+every mandated golden row directly from the Python spec (no `rust/fixtures/`
+touched, so no denylist bounce). Full `cargo test --workspace` + `clippy
+--all-targets -D warnings` green. The item is left in `backlog/` with a
+remaining-work note: once the pre-pass lands the golden, swap the inline tests
+for a `parity::assert_json_eq` loop over `rust/fixtures/cli/translate_filename_cases.json`.
+
+Net: the *code* is no longer blocked on the pre-pass; only the
+*fixture-driven falsifier* is. The human/META action item in this file is now
+strictly to (a) wire the pre-pass stage, and (b) author
+`capture_cli_translate.py` so the golden exists — at which point the swap above
+is a ~10-line dev-dep + test change.

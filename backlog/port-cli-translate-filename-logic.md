@@ -115,3 +115,33 @@ and bounce). The fixture/script does not exist yet, so this item is dispatchable
 ONLY after the capture pre-pass lands `rust/fixtures/cli/*.json`. Restored to
 `backlog/`. This is the 2nd re-park reversal — if it bounces a 3rd time, the
 capture pre-pass stage itself is missing/broken; escalate to `backlog/meta-capture-prepass.md`.
+
+---
+
+**IMPLEMENTATION note (round 4, 2026-06-12):** the pure port LANDED on branch
+`grind/port-cli-translate-filename-logic`:
+`rust/crates/submate-cli/src/translate_paths.rs` ports `is_subtitle_file`,
+`detect_source_language`, and `output_path` byte-for-byte from
+`submate/cli/commands/translate.py` (replicating `pathlib` `suffix`/`stem`/
+`parent` semantics explicitly), reusing `submate_lang::LanguageCode::from_string`,
+and wired behind `#[allow(dead_code)] mod translate_paths;` in `main.rs` (clap
+wiring deferred to `port-cli-commands`). It is covered by 9 inline unit tests
+asserting every mandated golden row (`movie.fr.srt`/auto→`fr`,
+`movie.v2.srt`/auto→`en`, `episode.01.srt`/auto→`en`, `movie.fr.srt`/`es`→`es`,
+`movie.SRT` subtitle→true, `movie.tar.gz`→false, `movie.srt`+`es`→`movie.es.srt`,
+`movie.en.srt`+`es`→`movie.es.srt`, `movie.v2.srt`+`es`→`movie.es.srt`). Full
+`cargo test --workspace` and `clippy --all-targets -D warnings` are green.
+
+The item is NOT closed: the mandated falsifier is a FIXTURE-driven
+`assert_json_eq` parity test against
+`rust/fixtures/cli/translate_filename_cases.json`, and that fixture is **STILL
+ABSENT** — the capture pre-pass did NOT land it this round (no `cli/` dir under
+`rust/fixtures/`, no `capture_cli_translate.py`). The fixture tree is
+merge-denylisted, so an implementer cannot author it without bouncing (exactly
+the round-1 failure recorded in `backlog/tried/`). Per the round-3 note above,
+this is the 3rd round the capture pre-pass has failed to materialize the golden:
+the capture pre-pass stage is missing/broken. **ESCALATING to
+`backlog/meta-capture-prepass.md`** as instructed. Remaining work once the
+fixture lands: replace the inline spec-derived unit tests in `translate_paths.rs`
+with a fixture-driven `parity::assert_json_eq` loop over the golden rows (add
+`parity` + `serde_json` dev-deps to `submate-cli/Cargo.toml`).
