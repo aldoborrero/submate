@@ -1,0 +1,82 @@
+[
+  {
+    "detected_source": "fr",
+    "file": "movie.fr.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.v2.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "episode.01.srt",
+    "is_subtitle": true,
+    "output_path": "episode.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "de",
+    "file": "movie.fr.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "de",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.SRT",
+    "is_subtitle": true,
+    "output_path": "movie.es.SRT",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.tar.gz",
+    "is_subtitle": false,
+    "output_path": "movie.es.gz",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.en.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "en",
+    "file": "movie.v2.srt",
+    "is_subtitle": true,
+    "output_path": "movie.es.srt",
+    "source_lang": "auto",
+    "target_lang": "es"
+  },
+  {
+    "detected_source": "fr",
+    "file": "/media/movies/show.s01e01.fr.vtt",
+    "is_subtitle": true,
+    "output_path": "/media/movies/show.s01e01.en.vtt",
+    "source_lang": "auto",
+    "target_lang": "en"
+  }
+]
