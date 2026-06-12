@@ -9,7 +9,10 @@
 //! (`01_regroup_*`), and populated-`nonspeech_sections` (`02_suppress`) shapes.
 
 use parity::{assert_f32_close, assert_json_eq, golden, load_f32};
-use stable_ts::{apply_regroup_op, ops_to_value, parse_regroup_algo, WhisperResult};
+use stable_ts::{
+    apply_regroup_op, audio2timings, ops_to_value, parse_regroup_algo, set_current_as_orig,
+    suppress_silence, update_nonspeech_sections, WhisperResult, DEFAULT_MIN_WORD_DUR,
+};
 
 /// The submate config regroup string (see `fixtures/capture/capture_stablets.py`).
 const REGROUP: &str = "cm_sl=84_sl=42++++++1";
@@ -104,4 +107,34 @@ fn regroup_apply() {
 
         assert_json_eq(&result.to_dict(), &expected);
     }
+}
+
+/// C2 apply falsifier: the full non-VAD suppress-silence stage.
+///
+/// `capture_stablets.py` produces `02_suppress.json` by re-running the engine
+/// with `regroup=False, suppress_silence=True` — i.e. it applies suppression to
+/// the *unregrouped* result (`00_raw`), not to a regroup stage. So this rebuilds
+/// `00_raw`, derives the silence ranges from `audio.f32` via
+/// [`audio2timings`] (= `mask2timing(wav2mask(..))`), applies the per-word
+/// [`suppress_silence`] and [`update_nonspeech_sections`] with the same defaults
+/// `transcribe_stable` uses (`min_word_dur=0.1`, `nonspeech_error=0.1`,
+/// `word_level=True`, `use_word_position=True`), and checks the result against
+/// the golden — pinning both the clipped word timings and the populated
+/// `nonspeech_sections`.
+#[test]
+fn suppress() {
+    let raw = golden("stablets/clipA/00_raw.json");
+    let expected = golden("stablets/clipA/02_suppress.json");
+    let audio = load_f32("stablets/clipA/audio.f32");
+
+    let (starts, ends) = audio2timings(&audio).expect("clipA has suppressible silence");
+
+    let mut result = WhisperResult::from_value(&raw);
+    suppress_silence(&mut result, &starts, &ends, DEFAULT_MIN_WORD_DUR, 0.1);
+    update_nonspeech_sections(&mut result, &starts, &ends);
+    // transcribe_stable snapshots the suppressed state into `ori_dict` right
+    // after the stage, so the golden's `ori_dict` is itself suppressed.
+    set_current_as_orig(&mut result);
+
+    assert_json_eq(&result.to_dict(), &expected);
 }

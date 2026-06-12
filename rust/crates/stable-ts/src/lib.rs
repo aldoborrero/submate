@@ -18,4 +18,7 @@ pub use regroup::{
     apply_regroup, apply_regroup_op, ops_to_value, parse_regroup_algo, str_to_valid_type, RegroupOp,
     UnknownMethod, UnsupportedMethod,
 };
-pub use suppress_silence::{audio2loudness, wav2mask};
+pub use suppress_silence::{
+    audio2loudness, audio2timings, mask2timing, set_current_as_orig, suppress_silence,
+    update_nonspeech_sections, wav2mask, DEFAULT_MIN_WORD_DUR,
+};

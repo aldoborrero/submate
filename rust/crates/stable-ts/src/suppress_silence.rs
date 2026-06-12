@@ -224,6 +224,271 @@ fn mask_runs(mask: &[bool]) -> Vec<(usize, usize)> {
     runs
 }
 
+/// `stable_whisper.stabilization.utils.mask2timing`: convert a per-token silence
+/// mask into the `(silent_starts, silent_ends)` pair of *seconds*.
+///
+/// Each contiguous `true` run becomes one half-open `[start, end)` range whose
+/// token indices are divided by [`TOKENS_PER_SECOND`] (upstream `silent_ends` is
+/// the index just past the run, so the division yields the half-open span in
+/// seconds). Returns `None` for an empty or all-`false` mask, mirroring the
+/// upstream `if ... not silence_mask.any() ... return` guard.
+///
+/// The division stays in `f64` to match numpy's `silent_starts / TOKENS_PER_SECOND`
+/// (the same width the per-word [`suppress`] comparisons and
+/// `update_nonspeech_sections` rounding rely on).
+#[must_use]
+pub fn mask2timing(silence_mask: &[bool]) -> Option<(Vec<f64>, Vec<f64>)> {
+    if silence_mask.is_empty() || !silence_mask.iter().any(|&b| b) {
+        return None;
+    }
+    let (starts, ends): (Vec<f64>, Vec<f64>) = mask_runs(silence_mask)
+        .into_iter()
+        .map(|(s, e)| (s as f64 / TOKENS_PER_SECOND, e as f64 / TOKENS_PER_SECOND))
+        .unzip();
+    Some((starts, ends))
+}
+
+/// `stable_whisper.stabilization.nonvad.audio2timings`: the full non-VAD silence
+/// detector, `mask2timing(wav2mask(audio))`.
+///
+/// Returns the `(silent_starts, silent_ends)` second ranges fed into per-word
+/// [`suppress`], or `None` when there is no suppressible silence (either
+/// [`wav2mask`] or [`mask2timing`] returns nothing).
+#[must_use]
+pub fn audio2timings(audio: &[f32]) -> Option<(Vec<f64>, Vec<f64>)> {
+    mask2timing(&wav2mask(audio)?)
+}
+
+/// `stable_whisper.default.DEFAULT_VALUES['min_word_dur']`.
+pub const DEFAULT_MIN_WORD_DUR: f64 = 0.1;
+
+/// `stable_whisper.default.DEFAULT_KWARGS['append_punctuations']` — the trailing
+/// punctuation that, when it ends a word, flips `keep_end` to `false` so the
+/// *end* timestamp is anchored to the punctuation instead of being pushed in.
+const APPEND_PUNCTUATIONS: &str = "\"'.。,，!！?？:：”)]}、」";
+
+/// Apply the non-VAD silence map to every word's timing, mirroring
+/// `WhisperResult.suppress_silence(..., word_level=True, use_word_position=True)`
+/// as it runs inside `transcribe_stable` (the submate default).
+///
+/// For each segment that has words, each word is clipped against the
+/// `(silent_starts, silent_ends)` ranges via [`suppress`] with `min_word_dur`
+/// and `nonspeech_error`, and `keep_end` derived from the word's position:
+/// upstream's `keep_end = not (word[-1] in append_punctuations or i == len(words))`
+/// — the last word in a segment (1-indexed `i == len`) and any word ending in
+/// append punctuation keep their *start* (`keep_end = false`); all others keep
+/// their *end*.
+///
+/// Segments without words fall through to the segment-level [`suppress`]
+/// (`keep_end = true`), matching `Segment.suppress_silence`'s `else` branch.
+/// This mutates the result in place; the caller is responsible for
+/// `update_nonspeech_sections` (the verbatim `nonspeech_sections` payload).
+pub fn suppress_silence(
+    result: &mut crate::WhisperResult,
+    silent_starts: &[f64],
+    silent_ends: &[f64],
+    min_word_dur: f64,
+    nonspeech_error: f64,
+) {
+    for segment in &mut result.segments {
+        match segment.words.as_mut() {
+            Some(words) if !words.is_empty() => {
+                let n = words.len();
+                for (i, word) in words.iter_mut().enumerate() {
+                    let ends_in_punct = word
+                        .word
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| APPEND_PUNCTUATIONS.contains(c));
+                    let keep_end = !(ends_in_punct || i + 1 == n);
+                    let mut span = WordSpan::new(word.start(), word.end());
+                    suppress(&mut span, silent_starts, silent_ends, min_word_dur, nonspeech_error, Some(keep_end));
+                    word.set_start(span.start);
+                    word.set_end(span.end);
+                }
+            }
+            _ => {
+                // Wordless segment: adjust the segment's default start/end with
+                // the upstream `keep_end=True` default.
+                let mut span = WordSpan::new(segment.start(), segment.end());
+                suppress(&mut span, silent_starts, silent_ends, min_word_dur, nonspeech_error, Some(true));
+                segment.set_default_span(span.start, span.end);
+            }
+        }
+    }
+}
+
+/// `WhisperResult.set_current_as_orig(keep_orig=False)`: overwrite `ori_dict`
+/// with the current serialized state, where that snapshot's own nested
+/// `ori_dict` is empty (`keep_orig=False`).
+///
+/// `transcribe_stable` calls this immediately after the suppress stage, so the
+/// captured `02_suppress.json` carries a *suppressed* `ori_dict` (populated
+/// `nonspeech_sections`, clipped word timings, empty inner `ori_dict`) rather
+/// than the pre-suppress raw one. Run this after [`suppress_silence`] /
+/// [`update_nonspeech_sections`] to reproduce that shape.
+pub fn set_current_as_orig(result: &mut crate::WhisperResult) {
+    // to_dict(keep_orig=False) serializes with an empty inner `ori_dict`; emptying
+    // it before the snapshot reproduces that, and the snapshot then *becomes* the
+    // new `ori_dict`.
+    result.ori_dict = serde_json::Value::Object(serde_json::Map::new());
+    result.ori_dict = result.to_dict();
+}
+
+/// `WhisperResult.update_nonspeech_sections`: store the detected silence ranges
+/// verbatim as the `nonspeech_sections` list of `{start, end}` dicts, each
+/// timestamp `round(.., 3)` (numpy `float64` rounding, half-to-even).
+///
+/// Mirrors the call `transcribe_stable` makes right after `suppress_silence`, so
+/// running [`suppress_silence`] then this reproduces the populated
+/// `02_suppress.json` shape end to end.
+pub fn update_nonspeech_sections(
+    result: &mut crate::WhisperResult,
+    silent_starts: &[f64],
+    silent_ends: &[f64],
+) {
+    let sections: Vec<serde_json::Value> = silent_starts
+        .iter()
+        .zip(silent_ends)
+        .map(|(&s, &e)| {
+            let mut m = serde_json::Map::new();
+            m.insert("start".into(), json_number(round3(s)));
+            m.insert("end".into(), json_number(round3(e)));
+            serde_json::Value::Object(m)
+        })
+        .collect();
+    result.nonspeech_sections = serde_json::Value::Array(sections);
+}
+
+/// JSON number for a finite `f64`, falling back to `Null` (only timings here,
+/// always finite).
+fn json_number(v: f64) -> serde_json::Value {
+    serde_json::Number::from_f64(v).map_or(serde_json::Value::Null, serde_json::Value::Number)
+}
+
+/// A mutable `(start, end)` pair standing in for the upstream `result_obj`
+/// (a `WordTiming` or wordless `Segment`) that [`suppress`] mutates.
+///
+/// Upstream every `result_obj.start = ...` / `.end = ...` goes through the
+/// `WordTiming`/`Segment` setter, which applies `_round_timestamp` (round-3,
+/// `if not ts` falsy guard). Because later steps in [`suppress`] *read* those
+/// fields back, the rounding has to happen on each write here too — so the
+/// setters call [`crate::round_timestamp`] and the fields are only mutated
+/// through them.
+struct WordSpan {
+    start: f64,
+    end: f64,
+}
+
+impl WordSpan {
+    fn new(start: f64, end: f64) -> Self {
+        WordSpan { start, end }
+    }
+
+    fn set_start(&mut self, val: f64) {
+        self.start = crate::round_timestamp(val);
+    }
+
+    fn set_end(&mut self, val: f64) {
+        self.end = crate::round_timestamp(val);
+    }
+}
+
+/// Port of `stable_whisper.stabilization.suppress_silence` (the per-object
+/// timestamp clip), operating on one [`WordSpan`].
+///
+/// Mirrors the upstream control flow exactly:
+/// 1. no-op when there are no silences or the span is already `<= min_word_dur`;
+/// 2. **start overlap** (`keep_end`): if a silence brackets the start
+///    (`silent_starts <= start < silent_ends <= end`), snap `start` to that
+///    silence's end (capped at `round(end - min_word_dur, 3)`);
+/// 3. **end overlap** (`!keep_end`): symmetric snap of `end` to a silence start;
+/// 4. **nonspeech tolerance**: when exactly one silence is fully contained in the
+///    span, shrink whichever side's relative error is within `nonspeech_error`.
+///
+/// `round_half_even` (Python `round`) is reproduced for the `min_word_dur` caps;
+/// the comparisons stay in `f64` to match numpy.
+fn suppress(
+    span: &mut WordSpan,
+    silent_starts: &[f64],
+    silent_ends: &[f64],
+    min_word_dur: f64,
+    nonspeech_error: f64,
+    keep_end: Option<bool>,
+) {
+    debug_assert_eq!(silent_starts.len(), silent_ends.len());
+    if silent_starts.is_empty() || (span.end - span.start) <= min_word_dur {
+        return;
+    }
+
+    // start_overlaps: (keep_end is None or keep_end) and the first silence with
+    // silent_starts <= start < silent_ends <= end.
+    if keep_end.is_none() || keep_end == Some(true) {
+        if let Some(i) = (0..silent_starts.len()).find(|&i| {
+            silent_starts[i] <= span.start && span.start < silent_ends[i] && silent_ends[i] <= span.end
+        }) {
+            let new_start = silent_ends[i];
+            span.set_start(new_start.min(round3(span.end - min_word_dur)));
+            if (span.end - span.start) <= min_word_dur {
+                return;
+            }
+        }
+    }
+
+    // end_overlaps: (not keep_end) and the first silence with
+    // start <= silent_starts < end <= silent_ends.
+    if keep_end == Some(false) {
+        if let Some(i) = (0..silent_starts.len()).find(|&i| {
+            span.start <= silent_starts[i] && silent_starts[i] < span.end && span.end <= silent_ends[i]
+        }) {
+            let new_end = silent_starts[i];
+            span.set_end(new_end.max(round3(span.start + min_word_dur)));
+            if (span.end - span.start) <= min_word_dur {
+                return;
+            }
+        }
+    }
+
+    if nonspeech_error == 0.0 {
+        return;
+    }
+
+    // matches: silences fully contained in [start, end]. Upstream requires
+    // exactly one; otherwise it returns without adjusting.
+    let matches: Vec<usize> = (0..silent_starts.len())
+        .filter(|&i| span.start <= silent_starts[i] && span.end >= silent_ends[i])
+        .collect();
+    if matches.len() != 1 {
+        return;
+    }
+    let idx = matches[0];
+    let silence_start = silent_starts[idx];
+    let silence_end = silent_ends[idx];
+    let silent_duration = silence_end - silence_start;
+    let start_error = (silence_start - span.start) / silent_duration;
+    let end_error = (span.end - silence_end) / silent_duration;
+
+    let resolved_keep_end = keep_end.unwrap_or(start_error <= end_error);
+    let start_within = start_error <= nonspeech_error;
+    let end_within = end_error <= nonspeech_error;
+    if !(start_within || end_within) {
+        return;
+    }
+    if resolved_keep_end {
+        span.set_start(silence_end.min(round3(span.end - min_word_dur)));
+    } else {
+        span.set_end(silence_start.max(round3(span.start + min_word_dur)));
+    }
+}
+
+/// Python `round(x, 3)` (round-half-to-even) for the `min_word_dur` caps inside
+/// [`suppress`]. Unlike [`crate::round_timestamp`] this does not special-case
+/// falsy values: upstream applies a bare `round(..., 3)` here.
+fn round3(x: f64) -> f64 {
+    let scaled = x * 1000.0;
+    scaled.round_ties_even() / 1000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +537,73 @@ mod tests {
     fn mask_runs_finds_contiguous_true_spans() {
         let m = [false, true, true, false, true];
         assert_eq!(mask_runs(&m), vec![(1, 3), (4, 5)]);
+    }
+
+    #[test]
+    fn mask2timing_converts_runs_to_seconds() {
+        // Runs (1,3) and (4,5) -> divided by TOKENS_PER_SECOND (50).
+        let m = [false, true, true, false, true];
+        let (s, e) = mask2timing(&m).expect("has silence");
+        assert_eq!(s, vec![1.0 / 50.0, 4.0 / 50.0]);
+        assert_eq!(e, vec![3.0 / 50.0, 5.0 / 50.0]);
+    }
+
+    #[test]
+    fn mask2timing_none_for_empty_or_silent() {
+        assert!(mask2timing(&[]).is_none());
+        assert!(mask2timing(&[false, false]).is_none());
+    }
+
+    #[test]
+    fn suppress_keep_end_snaps_start_to_silence_end() {
+        // Word [0.0, 0.5], silence [0.0, 0.2) at the start, keep_end=true:
+        // start snaps to the silence end (0.2), capped at end - min_word_dur.
+        let mut span = WordSpan::new(0.0, 0.5);
+        suppress(&mut span, &[0.0], &[0.2], 0.1, 0.1, Some(true));
+        assert_eq!(span.start, 0.2);
+        assert_eq!(span.end, 0.5);
+    }
+
+    #[test]
+    fn suppress_not_keep_end_snaps_end_to_silence_start() {
+        // Word [0.0, 0.5], silence [0.3, 0.5) at the end, keep_end=false:
+        // end snaps to the silence start (0.3), floored at start + min_word_dur.
+        let mut span = WordSpan::new(0.0, 0.5);
+        suppress(&mut span, &[0.3], &[0.5], 0.1, 0.1, Some(false));
+        assert_eq!(span.start, 0.0);
+        assert_eq!(span.end, 0.3);
+    }
+
+    #[test]
+    fn suppress_min_word_dur_caps_start_clip() {
+        // A silence that would shrink the word below min_word_dur caps the new
+        // start at round(end - min_word_dur, 3) = 0.4.
+        let mut span = WordSpan::new(0.0, 0.5);
+        suppress(&mut span, &[0.0], &[0.49], 0.1, 0.1, Some(true));
+        assert_eq!(span.start, 0.4);
+    }
+
+    #[test]
+    fn suppress_noop_when_no_silence_or_too_short() {
+        let mut span = WordSpan::new(0.0, 0.5);
+        suppress(&mut span, &[], &[], 0.1, 0.1, Some(true));
+        assert_eq!((span.start, span.end), (0.0, 0.5));
+
+        // Word already <= min_word_dur: untouched.
+        let mut short = WordSpan::new(0.0, 0.1);
+        suppress(&mut short, &[0.0], &[0.05], 0.1, 0.1, Some(true));
+        assert_eq!((short.start, short.end), (0.0, 0.1));
+    }
+
+    #[test]
+    fn suppress_nonspeech_tolerance_shrinks_contained_silence() {
+        // Silence [0.4, 0.5) fully inside word [0.0, 0.5], keep_end=true.
+        // start_extra = 0.4, end_extra = 0.0, silent_dur = 0.1.
+        // start_error = 4.0 (> 0.1), end_error = 0.0 (<= 0.1) -> adjust:
+        // keep_end -> start = min(silence_end, round(end - min_word_dur)).
+        let mut span = WordSpan::new(0.0, 0.5);
+        suppress(&mut span, &[0.4], &[0.5], 0.1, 0.1, Some(true));
+        assert_eq!(span.start, 0.4);
+        assert_eq!(span.end, 0.5);
     }
 }
