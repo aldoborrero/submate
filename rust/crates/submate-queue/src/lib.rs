@@ -248,6 +248,17 @@ impl JobStore {
         JobStore::from_conn(conn, StoreConfig::default(), Box::new(SystemClock))
     }
 
+    /// Open an in-memory store with an explicit [`StoreConfig`] and [`Clock`].
+    ///
+    /// This is the seam for deterministic time control without exposing the
+    /// underlying `rusqlite::Connection`: callers (including downstream crates'
+    /// tests) inject a controllable clock to exercise lease reclaim and backoff
+    /// without sleeping.
+    pub fn in_memory_with(config: StoreConfig, clock: Box<dyn Clock>) -> Result<JobStore> {
+        let conn = Connection::open_in_memory()?;
+        JobStore::from_conn(conn, config, clock)
+    }
+
     /// Construct a store from an existing connection with explicit config and
     /// clock. Applies pragmas and ensures the schema exists.
     pub fn from_conn(
@@ -261,7 +272,9 @@ impl JobStore {
         // in-memory databases, which is fine.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.busy_timeout(std::time::Duration::from_millis(config.busy_timeout_ms as u64))?;
+        conn.busy_timeout(std::time::Duration::from_millis(
+            config.busy_timeout_ms as u64,
+        ))?;
 
         let store = JobStore {
             conn,
@@ -350,6 +363,28 @@ impl JobStore {
         Ok(())
     }
 
+    /// Release a `running` job back to `queued` without consuming an attempt or
+    /// applying backoff — the inverse of [`claim`](JobStore::claim).
+    ///
+    /// Unlike [`fail`](JobStore::fail), this is for "claimed but cannot run
+    /// here" (e.g. a capability mismatch): the job is immediately re-claimable by
+    /// another worker and its attempt budget is untouched. Returns
+    /// [`QueueError::NotFound`] if `id` does not exist.
+    pub fn release(&self, id: JobId) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE jobs
+                SET state = 'queued', run_at = 0,
+                    locked_by = NULL, locked_at = NULL,
+                    attempts = MAX(attempts - 1, 0)
+              WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        if changed == 0 {
+            return Err(QueueError::NotFound(id));
+        }
+        Ok(())
+    }
+
     /// Report a failed attempt.
     ///
     /// If the job still has attempts left it is re-`queued` with an
@@ -379,6 +414,26 @@ impl JobStore {
         }
 
         self.get(id)?.ok_or(QueueError::NotFound(id))
+    }
+
+    /// Extend the lease on every `running` job currently held by `worker`,
+    /// re-stamping `locked_at` to *now* so a fresh lease window starts.
+    ///
+    /// This is the server side of a node heartbeat: a live node periodically
+    /// touches its leases so [`reclaim_stale_leases`] does not steal jobs that
+    /// are still being worked. Jobs held by other workers are untouched.
+    /// Returns the number of leases refreshed.
+    ///
+    /// [`reclaim_stale_leases`]: JobStore::reclaim_stale_leases
+    pub fn touch_leases(&self, worker: &str) -> Result<usize> {
+        let now = self.clock.now_ms();
+        let changed = self.conn.execute(
+            "UPDATE jobs
+                SET locked_at = ?2
+              WHERE state = 'running' AND locked_by = ?1",
+            rusqlite::params![worker, now],
+        )?;
+        Ok(changed)
     }
 
     /// Reclaim stale leases: any `running` row whose lease expired
@@ -531,7 +586,10 @@ mod tests {
             }));
         }
 
-        let mut all: Vec<JobId> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let mut all: Vec<JobId> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
         all.sort_unstable();
         let before = all.len();
         all.dedup();
@@ -671,7 +729,10 @@ mod tests {
     #[test]
     fn complete_and_fail_unknown_job_error() {
         let store = JobStore::open_in_memory().unwrap();
-        assert!(matches!(store.complete(999), Err(QueueError::NotFound(999))));
+        assert!(matches!(
+            store.complete(999),
+            Err(QueueError::NotFound(999))
+        ));
         assert!(matches!(store.fail(999), Err(QueueError::NotFound(999))));
     }
 }

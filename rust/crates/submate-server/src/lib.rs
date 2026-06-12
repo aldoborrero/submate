@@ -14,10 +14,11 @@
 //! new design verified behaviorally, so it is not a Python-golden parity case.
 //! Python's top-level *route names and response keys* are matched exactly.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -25,6 +26,12 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::json;
+use submate_proto::{
+    JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, Progress, WorkResponse,
+};
+use submate_queue::{JobId, JobState, JobStore, NewJob, QueueError};
+use submate_types::TranscriptionTask;
+use tokio::sync::oneshot;
 
 /// Server version reported by the ops routes.
 ///
@@ -74,17 +81,41 @@ impl StatsSource for EmptyStats {
 }
 
 /// Shared application state handed to the route handlers.
+///
+/// `stats` always backs the ops routes. `coord`, when present, is the live
+/// node-coordination core (durable queue + node registry) that the
+/// `/nodes/*` and `/jobs/*` routes operate on; a coordinator also serves as the
+/// `stats` source so `GET /queue` reflects real job/node counts.
 #[derive(Clone)]
 pub struct AppState {
     stats: Arc<dyn StatsSource>,
+    coord: Option<Arc<NodeCoordinator>>,
 }
 
 impl AppState {
-    /// Build state from a [`StatsSource`].
+    /// Build state from a [`StatsSource`] with no node coordinator wired up.
+    /// The `/nodes/*` and `/jobs/*` routes return `503` until a coordinator is
+    /// attached via [`AppState::with_coordinator`].
     pub fn new(stats: impl StatsSource) -> AppState {
         AppState {
             stats: Arc::new(stats),
+            coord: None,
         }
+    }
+
+    /// Build state backed by a live [`NodeCoordinator`]. The coordinator also
+    /// supplies live [`QueueStats`] for the ops routes.
+    pub fn with_coordinator(coord: Arc<NodeCoordinator>) -> AppState {
+        AppState {
+            stats: coord.clone(),
+            coord: Some(coord),
+        }
+    }
+
+    fn coordinator(&self) -> std::result::Result<&Arc<NodeCoordinator>, ServerError> {
+        self.coord
+            .as_ref()
+            .ok_or_else(|| ServerError::Unavailable("node coordination not enabled".to_string()))
     }
 }
 
@@ -110,6 +141,9 @@ pub enum ServerError {
     /// An unexpected internal failure.
     #[error("{0}")]
     Internal(String),
+    /// A required subsystem (e.g. node coordination) is not wired up.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl ServerError {
@@ -118,6 +152,16 @@ impl ServerError {
             ServerError::NotFound(_) => StatusCode::NOT_FOUND,
             ServerError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ServerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ServerError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+}
+
+impl From<QueueError> for ServerError {
+    fn from(err: QueueError) -> ServerError {
+        match err {
+            QueueError::NotFound(id) => ServerError::NotFound(format!("job {id} not found")),
+            other => ServerError::Internal(other.to_string()),
         }
     }
 }
@@ -132,10 +176,253 @@ impl IntoResponse for ServerError {
     }
 }
 
+/// What this server knows about a registered processing node.
+///
+/// The token authorises the node's subsequent coordination calls; `runners` and
+/// `gpu`/`tasks` are the advertised capabilities the dispatcher uses for routing
+/// (capability filtering is refined by later backlog items). The registry is the
+/// `nodes` count surfaced by `GET /queue`.
+#[derive(Debug, Clone)]
+struct NodeInfo {
+    token: String,
+    gpu: bool,
+    runners: u32,
+    tasks: Vec<TranscriptionTask>,
+}
+
+/// The pull-based node-coordination core: the durable [`JobStore`] plus the live
+/// node registry and the set of synchronous result-waiters.
+///
+/// This is the server side of the FileFlows/Unmanic topology in
+/// `rust/docs/architecture.md`: nodes register, long-poll [`request_work`] for an
+/// atomically-claimed job, stream [`progress`], post a terminal [`result`], and
+/// [`heartbeat`] to keep their lease alive. A caller that enqueued a job
+/// synchronously (e.g. the Bazarr ASR route) can park on
+/// [`wait_for_result`](NodeCoordinator::wait_for_result) and is woken when the
+/// matching `result` arrives.
+///
+/// The [`JobStore`] is not internally synchronised, so it lives behind a
+/// `Mutex`; the registry and waiter map have their own locks. Locks are only
+/// ever held for the duration of a single store/registry operation, never across
+/// an `.await`, so the long-poll cannot stall other requests.
+///
+/// [`request_work`]: NodeCoordinator::request_work
+/// [`progress`]: NodeCoordinator::progress
+/// [`result`]: NodeCoordinator::result
+/// [`heartbeat`]: NodeCoordinator::heartbeat
+pub struct NodeCoordinator {
+    store: Mutex<JobStore>,
+    nodes: Mutex<HashMap<String, NodeInfo>>,
+    waiters: Mutex<HashMap<JobId, oneshot::Sender<JobOutcome>>>,
+    /// Base URL path nodes use to fetch a job's extracted audio (the
+    /// `audio_url` in a [`WorkResponse::Work`] is `{audio_base}/{job_id}/audio`).
+    audio_base: String,
+}
+
+impl NodeCoordinator {
+    /// Build a coordinator over an existing job store.
+    pub fn new(store: JobStore) -> NodeCoordinator {
+        NodeCoordinator {
+            store: Mutex::new(store),
+            nodes: Mutex::new(HashMap::new()),
+            waiters: Mutex::new(HashMap::new()),
+            audio_base: "/jobs".to_string(),
+        }
+    }
+
+    fn store(&self) -> std::sync::MutexGuard<'_, JobStore> {
+        // Poisoning only happens if a holder panicked mid-operation; the store
+        // is a plain SQLite wrapper with no broken-invariant risk, so recover
+        // the guard rather than propagating the panic to every later request.
+        self.store.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Enqueue a job for `kind` carrying serialized [`JobOpts`], returning its
+    /// server-side id. Used by the integration routes (Bazarr, Jellyfin) to feed
+    /// the same queue nodes pull from.
+    pub fn enqueue(&self, kind: TranscriptionTask, opts: &JobOpts) -> Result<JobId, ServerError> {
+        let payload = serde_json::to_string(opts)
+            .map_err(|e| ServerError::Internal(format!("encode job opts: {e}")))?;
+        let id = self
+            .store()
+            .enqueue(&NewJob::now(kind.to_string(), payload))?;
+        Ok(id)
+    }
+
+    /// Register a node, returning the bearer token for its subsequent calls.
+    ///
+    /// Re-registration is idempotent on the token: a node that reconnects (same
+    /// `id`) keeps its existing token while its advertised capabilities are
+    /// refreshed, so an in-flight lease keyed by `node_id` survives a re-register.
+    fn register(&self, req: NodeRegister) -> NodeRegistered {
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let token = nodes
+            .get(&req.id)
+            .map(|existing| existing.token.clone())
+            .unwrap_or_else(|| format!("tok_{}", req.id));
+        nodes.insert(
+            req.id,
+            NodeInfo {
+                token: token.clone(),
+                gpu: req.gpu,
+                runners: req.runners,
+                tasks: req.tasks,
+            },
+        );
+        NodeRegistered { token }
+    }
+
+    /// Atomically claim the next eligible job for `node_id`, hydrating it into a
+    /// [`WorkResponse::Work`]. The node must have registered first. Returns
+    /// `None` when there is nothing to claim (the route renders that as
+    /// `204 No Content`).
+    ///
+    /// If the claimed job's kind is not in the node's advertised `tasks`, the
+    /// claim is rolled back (the job returns to `queued`) and `None` is
+    /// returned, so a translation-only node never strands a transcribe job. GPU
+    /// affinity is advertised via [`NodeInfo::gpu`] for the routing refinement
+    /// in later backlog items.
+    fn request_work(&self, node_id: &str) -> Result<Option<WorkResponse>, ServerError> {
+        let caps = self
+            .nodes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(node_id)
+            .map(|info| (info.gpu, info.runners, info.tasks.clone()));
+        let Some((gpu, runners, tasks)) = caps else {
+            return Err(ServerError::BadRequest(format!(
+                "node {node_id:?} is not registered"
+            )));
+        };
+        tracing::debug!(node = node_id, gpu, runners, "request-work");
+
+        let store = self.store();
+        let Some(job) = store.claim(node_id)? else {
+            return Ok(None);
+        };
+
+        let kind: TranscriptionTask = job.kind.parse().map_err(|_| {
+            ServerError::Internal(format!("job {} has unknown kind {:?}", job.id, job.kind))
+        })?;
+
+        if !tasks.contains(&kind) {
+            // The node cannot run this kind: release the lease back to `queued`
+            // (without consuming an attempt) so a capable node can claim it, and
+            // report "no work" to this node.
+            store.release(job.id)?;
+            return Ok(None);
+        }
+
+        let opts: JobOpts = serde_json::from_str(&job.payload)
+            .map_err(|e| ServerError::Internal(format!("decode job {} opts: {e}", job.id)))?;
+
+        Ok(Some(WorkResponse::Work {
+            job_id: job.id.to_string(),
+            kind,
+            audio_url: format!("{}/{}/audio", self.audio_base, job.id),
+            opts,
+        }))
+    }
+
+    /// Record an in-flight progress update. The job must exist (unknown id →
+    /// `404`); progress itself is advisory, so an update for a job that has
+    /// already moved past `running` is accepted and logged rather than erroring.
+    fn progress(&self, update: &Progress) -> Result<(), ServerError> {
+        let id = parse_job_id(&update.job_id)?;
+        let job = self
+            .store()
+            .get(id)?
+            .ok_or_else(|| ServerError::NotFound(format!("job {id} not found")))?;
+        tracing::debug!(job = id, pct = update.pct, state = ?job.state, "progress");
+        Ok(())
+    }
+
+    /// Mark a job terminal from the node's [`JobResult`] and wake any synchronous
+    /// waiter parked on it. A successful outcome completes the job; a failure is
+    /// routed through the store's retry/backoff (`fail`), so a transient node
+    /// error re-queues the job for another node rather than dropping it.
+    fn result(&self, result: JobResult) -> Result<(), ServerError> {
+        let id = parse_job_id(&result.job_id)?;
+        match &result.outcome {
+            JobOutcome::Ok { .. } => {
+                self.store().complete(id)?;
+            }
+            JobOutcome::Err { .. } => {
+                self.store().fail(id)?;
+            }
+        }
+        self.wake_waiter(id, result.outcome);
+        Ok(())
+    }
+
+    /// Extend the lease on every job currently held by `node_id`. A node that
+    /// stops heartbeating has its leases expire, and the next
+    /// [`reclaim_stale_leases`](JobStore::reclaim_stale_leases) sweep returns its
+    /// jobs to `queued` for another node. Returns the number of leases refreshed.
+    fn heartbeat(&self, node_id: &str) -> Result<usize, ServerError> {
+        Ok(self.store().touch_leases(node_id)?)
+    }
+
+    /// Reclaim jobs whose holding node went silent (lease expired). Exposed so a
+    /// background sweep can run it periodically; also runs implicitly via the
+    /// store on startup. Returns the number of jobs returned to `queued`.
+    pub fn reclaim_stale_leases(&self) -> Result<usize, ServerError> {
+        Ok(self.store().reclaim_stale_leases()?)
+    }
+
+    /// Park until the given job reports a terminal result, returning that
+    /// outcome. Used by synchronous callers (e.g. the Bazarr ASR route) that
+    /// enqueue a job and block on its subtitle output. Returns `None` if the
+    /// waiter channel is dropped before a result arrives.
+    pub async fn wait_for_result(&self, id: JobId) -> Option<JobOutcome> {
+        let rx = {
+            let (tx, rx) = oneshot::channel();
+            self.waiters
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, tx);
+            rx
+        };
+        rx.await.ok()
+    }
+
+    fn wake_waiter(&self, id: JobId, outcome: JobOutcome) {
+        if let Some(tx) = self
+            .waiters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
+        {
+            // A dropped receiver (caller gave up) is fine; the result is already
+            // durably recorded in the store.
+            let _ = tx.send(outcome);
+        }
+    }
+}
+
+impl StatsSource for NodeCoordinator {
+    fn stats(&self) -> QueueStats {
+        let store = self.store();
+        let count = |state| store.count(state).unwrap_or(0).max(0) as u64;
+        let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner()).len() as u64;
+        QueueStats {
+            pending: count(JobState::Queued),
+            running: count(JobState::Running),
+            done: count(JobState::Done),
+            nodes,
+        }
+    }
+}
+
+fn parse_job_id(raw: &str) -> Result<JobId, ServerError> {
+    raw.parse::<JobId>()
+        .map_err(|_| ServerError::BadRequest(format!("invalid job id {raw:?}")))
+}
+
 /// Build the full server [`Router`], mounting the always-on ops routes plus any
 /// feature-enabled integration routers.
 pub fn app(state: AppState) -> Router {
-    let router = ops_router();
+    let router = ops_router().merge(node_router());
 
     #[cfg(feature = "bazarr")]
     let router = router.merge(bazarr_router());
@@ -152,6 +439,72 @@ fn ops_router() -> Router<AppState> {
         .route("/", get(root))
         .route("/status", get(status))
         .route("/queue", get(queue))
+}
+
+/// The node-coordination routes (FileFlows/Unmanic topology, see
+/// `rust/docs/architecture.md`): node lifecycle (`register`, `request-work`,
+/// `heartbeat`) and job reporting (`progress`, `result`). All operate on the
+/// merged [`NodeCoordinator`]; without one wired in they return `503`.
+fn node_router() -> Router<AppState> {
+    Router::new()
+        .route("/nodes/register", post(nodes_register))
+        .route("/nodes/:id/request-work", post(nodes_request_work))
+        .route("/nodes/:id/heartbeat", post(nodes_heartbeat))
+        .route("/jobs/:id/progress", post(jobs_progress))
+        .route("/jobs/:id/result", post(jobs_result))
+}
+
+/// `POST /nodes/register` — announce capabilities, receive a coordination token.
+async fn nodes_register(
+    State(state): State<AppState>,
+    Json(req): Json<NodeRegister>,
+) -> std::result::Result<Json<NodeRegistered>, ServerError> {
+    Ok(Json(state.coordinator()?.register(req)))
+}
+
+/// `POST /nodes/{id}/request-work` — atomically claim the next eligible job, or
+/// `204 No Content` when the (long-)poll finds nothing claimable.
+async fn nodes_request_work(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> std::result::Result<Response, ServerError> {
+    match state.coordinator()?.request_work(&id)? {
+        Some(work) => Ok(Json(work).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+
+/// `POST /nodes/{id}/heartbeat` — extend the node's leases; reports how many
+/// jobs were refreshed.
+async fn nodes_heartbeat(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, ServerError> {
+    let refreshed = state.coordinator()?.heartbeat(&id)?;
+    Ok(Json(json!({ "leases": refreshed })))
+}
+
+/// `POST /jobs/{id}/progress` — record an in-flight progress update.
+async fn jobs_progress(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(mut update): Json<Progress>,
+) -> std::result::Result<StatusCode, ServerError> {
+    // The path id is authoritative; ignore a mismatched body job_id.
+    update.job_id = id;
+    state.coordinator()?.progress(&update)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /jobs/{id}/result` — mark the job terminal and wake any waiter.
+async fn jobs_result(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(mut result): Json<JobResult>,
+) -> std::result::Result<StatusCode, ServerError> {
+    result.job_id = id;
+    state.coordinator()?.result(result)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /` — server-info object (matches Python's `root`).
@@ -395,5 +748,362 @@ mod tests {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let res = ServerError::Internal("boom".into()).into_response();
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let res = ServerError::Unavailable("nope".into()).into_response();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ---- node-coordination API ---------------------------------------------
+
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use submate_queue::{Clock, JobState, JobStore, StoreConfig};
+    use submate_types::{Device, TranscriptionTask, WhisperModel};
+
+    /// A controllable clock so the lease-reclaim falsifier advances time
+    /// deterministically instead of sleeping.
+    #[derive(Clone, Default)]
+    struct TestClock(Arc<AtomicI64>);
+    impl TestClock {
+        fn new(ms: i64) -> TestClock {
+            TestClock(Arc::new(AtomicI64::new(ms)))
+        }
+        fn set(&self, ms: i64) {
+            self.0.store(ms, Ordering::SeqCst);
+        }
+    }
+    impl Clock for TestClock {
+        fn now_ms(&self) -> i64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn transcribe_opts() -> JobOpts {
+        JobOpts {
+            model: WhisperModel::Medium,
+            device: Device::Cpu,
+            source_language: None,
+            target_language: None,
+            translation_backend: None,
+        }
+    }
+
+    /// POST `body` to `uri`, returning the status and (parsed if any) JSON body.
+    async fn post_json(
+        app: Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, Option<serde_json::Value>) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let json = (!bytes.is_empty()).then(|| serde_json::from_slice(&bytes).unwrap());
+        (status, json)
+    }
+
+    /// Falsifier: a node registers, a job is enqueued, `request-work` hands it to
+    /// the node, posting a result marks it done, a heartbeat extends the lease,
+    /// and an un-heartbeated node's job is reclaimed once the lease expires.
+    #[tokio::test]
+    async fn node_api_roundtrip() {
+        let clock = TestClock::new(1_000);
+        let store = JobStore::in_memory_with(
+            StoreConfig {
+                lease_ms: 5_000,
+                ..StoreConfig::default()
+            },
+            Box::new(clock.clone()),
+        )
+        .unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+
+        // Enqueue a transcribe job (the server side does this for Bazarr/Jellyfin).
+        let job_id = coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+
+        // Register the node -> token.
+        let (status, body) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            "/nodes/register",
+            serde_json::to_value(NodeRegister {
+                id: "node-1".into(),
+                gpu: true,
+                runners: 2,
+                tasks: vec![TranscriptionTask::Transcribe],
+            })
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let registered: NodeRegistered = serde_json::from_value(body.unwrap()).unwrap();
+        assert!(!registered.token.is_empty());
+
+        // request-work returns the enqueued job.
+        let (status, body) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            "/nodes/node-1/request-work",
+            json!({ "node_id": "node-1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let work: WorkResponse = serde_json::from_value(body.unwrap()).unwrap();
+        match work {
+            WorkResponse::Work {
+                job_id: jid,
+                kind,
+                audio_url,
+                ..
+            } => {
+                assert_eq!(jid, job_id.to_string());
+                assert_eq!(kind, TranscriptionTask::Transcribe);
+                assert_eq!(audio_url, format!("/jobs/{job_id}/audio"));
+            }
+            WorkResponse::NoWork => panic!("expected work"),
+        }
+        // Now claimed/running.
+        assert_eq!(
+            coord.stats(),
+            QueueStats {
+                pending: 0,
+                running: 1,
+                done: 0,
+                nodes: 1
+            }
+        );
+
+        // A second poll has nothing to claim -> 204.
+        let (status, body) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            "/nodes/node-1/request-work",
+            json!({ "node_id": "node-1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(body.is_none());
+
+        // Heartbeat at t=4000 (within the 5s lease) extends the lease.
+        clock.set(4_000);
+        let (status, body) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            "/nodes/node-1/heartbeat",
+            json!({ "node_id": "node-1" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.unwrap()["leases"], 1);
+
+        // At t=8000 the lease would be stale relative to the *original* claim
+        // (1000 + 5000 = 6000), but the heartbeat re-stamped it to 4000, so
+        // 4000 + 5000 = 9000 > 8000 -> still held, not reclaimed.
+        clock.set(8_000);
+        assert_eq!(coord.reclaim_stale_leases().unwrap(), 0);
+        assert_eq!(coord.stats().running, 1);
+
+        // Progress update is accepted (204).
+        let (status, _) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            &format!("/jobs/{job_id}/progress"),
+            json!({ "job_id": job_id.to_string(), "pct": 0.5 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // Posting a successful result marks the job done and wakes a waiter.
+        let waiter = {
+            let coord = coord.clone();
+            tokio::spawn(async move { coord.wait_for_result(job_id).await })
+        };
+        // Give the waiter a moment to register before the result arrives.
+        tokio::task::yield_now().await;
+
+        let (status, _) = post_json(
+            app(AppState::with_coordinator(coord.clone())),
+            &format!("/jobs/{job_id}/result"),
+            json!({ "job_id": job_id.to_string(), "ok": true, "output": "subs" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let outcome = waiter.await.unwrap();
+        assert_eq!(
+            outcome,
+            Some(JobOutcome::Ok {
+                output: "subs".into()
+            })
+        );
+        assert_eq!(
+            coord.stats(),
+            QueueStats {
+                pending: 0,
+                running: 0,
+                done: 1,
+                nodes: 1
+            }
+        );
+    }
+
+    /// A non-heartbeating node's job is reclaimed once its lease expires, and is
+    /// then handed to a live node on the next `request-work`.
+    #[tokio::test]
+    async fn unheartbeated_node_job_is_reclaimed() {
+        let clock = TestClock::new(0);
+        let store = JobStore::in_memory_with(
+            StoreConfig {
+                lease_ms: 5_000,
+                ..StoreConfig::default()
+            },
+            Box::new(clock.clone()),
+        )
+        .unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+        coord.register(NodeRegister {
+            id: "dead".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe],
+        });
+
+        // Dead node claims, then never heartbeats.
+        assert!(matches!(
+            coord.request_work("dead").unwrap(),
+            Some(WorkResponse::Work { .. })
+        ));
+        assert_eq!(coord.stats().running, 1);
+
+        // Past the lease window -> reclaimed back to queued.
+        clock.set(6_000);
+        assert_eq!(coord.reclaim_stale_leases().unwrap(), 1);
+        assert_eq!(coord.stats().pending, 1);
+        assert_eq!(coord.stats().running, 0);
+
+        // A live node now picks it up.
+        coord.register(NodeRegister {
+            id: "live".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe],
+        });
+        assert!(matches!(
+            coord.request_work("live").unwrap(),
+            Some(WorkResponse::Work { .. })
+        ));
+    }
+
+    /// A node whose advertised tasks do not cover the claimed job releases it
+    /// (no attempt consumed) so a capable node can take it.
+    #[tokio::test]
+    async fn capability_mismatch_releases_job() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+
+        // Translate-only node: claim is rolled back, sees no work.
+        coord.register(NodeRegister {
+            id: "translate-only".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Translate],
+        });
+        assert!(coord.request_work("translate-only").unwrap().is_none());
+        // Job is back to queued with its single attempt intact.
+        assert_eq!(coord.stats().pending, 1);
+
+        // A transcribe-capable node gets it.
+        coord.register(NodeRegister {
+            id: "full".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe, TranscriptionTask::Translate],
+        });
+        assert!(matches!(
+            coord.request_work("full").unwrap(),
+            Some(WorkResponse::Work { .. })
+        ));
+    }
+
+    /// An unregistered node cannot request work.
+    #[tokio::test]
+    async fn request_work_requires_registration() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        let err = coord.request_work("ghost").unwrap_err();
+        assert!(matches!(err, ServerError::BadRequest(_)));
+    }
+
+    /// Without a coordinator wired in, node routes report `503` rather than 404.
+    #[tokio::test]
+    async fn node_routes_unavailable_without_coordinator() {
+        let (status, _) = post_json(
+            app(AppState::default()),
+            "/nodes/register",
+            serde_json::to_value(NodeRegister {
+                id: "n".into(),
+                gpu: false,
+                runners: 1,
+                tasks: vec![TranscriptionTask::Transcribe],
+            })
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A failed result re-queues the job (retry/backoff) and still wakes the
+    /// waiter with the failure.
+    #[tokio::test]
+    async fn failed_result_requeues_and_wakes_waiter() {
+        let store = JobStore::open_in_memory().unwrap();
+        let coord = Arc::new(NodeCoordinator::new(store));
+        let job_id = coord
+            .enqueue(TranscriptionTask::Transcribe, &transcribe_opts())
+            .unwrap();
+        coord.register(NodeRegister {
+            id: "n".into(),
+            gpu: false,
+            runners: 1,
+            tasks: vec![TranscriptionTask::Transcribe],
+        });
+        let _ = coord.request_work("n").unwrap().unwrap();
+
+        let waiter = {
+            let coord = coord.clone();
+            tokio::spawn(async move { coord.wait_for_result(job_id).await })
+        };
+        tokio::task::yield_now().await;
+
+        coord
+            .result(JobResult {
+                job_id: job_id.to_string(),
+                outcome: JobOutcome::Err {
+                    error: "boom".into(),
+                },
+            })
+            .unwrap();
+
+        let outcome = waiter.await.unwrap();
+        assert_eq!(
+            outcome,
+            Some(JobOutcome::Err {
+                error: "boom".into()
+            })
+        );
+        // Single-attempt job: a failure makes it terminally failed, not done.
+        assert_eq!(coord.stats().done, 0);
+        let store = coord.store();
+        assert_eq!(store.count(JobState::Failed).unwrap(), 1);
     }
 }

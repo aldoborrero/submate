@@ -14,15 +14,18 @@ jellyfin = ["dep:submate-jellyfin"]
 
 [dependencies]
 axum = { workspace = true }
+tokio = { workspace = true }
 tower = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+submate-proto = { path = "../submate-proto" }
+submate-queue = { path = "../submate-queue" }
+submate-types = { path = "../submate-types" }
 submate-jellyfin = { path = "../submate-jellyfin", optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
 http-body-util = "0.1"
 
 [lints]
