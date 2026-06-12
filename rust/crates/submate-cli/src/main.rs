@@ -15,8 +15,8 @@
 //!
 //! Pure sub-helpers that decide *which* files to process and *how* the
 //! `config show` table is laid out live in their own byte-for-byte-ported
-//! modules ([`config_show`], [`translate_paths`]); this file is the clap wiring
-//! and the IO around them.
+//! modules ([`config_show`], [`translate_paths`], [`transcribe_collect`]); this
+//! file is the clap wiring and the IO around them.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +26,13 @@ use submate_config::Config;
 
 mod config_show;
 mod translate_paths;
+// Pure-data classifier + extension formatter for `submate transcribe`, ported
+// ahead of the IO wiring. `cmd_transcribe`/`collect_media_files` still carry
+// their own glob-based collection; `port-cli-commands` swaps them onto these
+// byte-for-byte-ported helpers. Allowed dead until then so the parity tests
+// (the item's falsifier) build and run.
+#[allow(dead_code)]
+mod transcribe_collect;
 
 /// AI-powered subtitle generation using Whisper.
 ///
