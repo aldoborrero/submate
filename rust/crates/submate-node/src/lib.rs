@@ -39,7 +39,8 @@
 //! the server comes back.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use submate_proto::{
@@ -546,6 +547,44 @@ fn jitter_fraction() -> f64 {
     0.5 + (x as f64 / u64::MAX as f64) * 0.5
 }
 
+/// Guards the one-time install of the whisper.cpp logging redirection.
+static WHISPER_LOG_HOOK: Once = Once::new();
+
+/// Counts how many times the logging redirection was actually installed.
+///
+/// The structural falsifier reads this to confirm the hook installs exactly
+/// once no matter how many nodes/processors are built. It increments only inside
+/// the [`Once`], so it can never exceed 1.
+static WHISPER_LOG_HOOK_INSTALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Route whisper.cpp/ggml stderr spam (`whisper_full_with_state`, `seek=…`,
+/// `ggml_…`, `system_info`) through `tracing` instead of raw C stderr.
+///
+/// whisper.cpp installs a process-global log callback, so this must run exactly
+/// once; the [`Once`] makes repeated calls (one per node/model init) a no-op.
+/// With the redirection in place the C library's chatter becomes `tracing`
+/// events — hidden at the default `INFO` level and surfaced only at
+/// `--log-level DEBUG` — so a normal transcribe run no longer floods the
+/// terminal.
+///
+/// Defined regardless of the `model` feature so the install path stays testable
+/// without linking whisper.cpp; the actual `whisper_rs` call is gated on
+/// `model`, the only build that has a C library to quiet.
+pub fn install_whisper_logging() {
+    WHISPER_LOG_HOOK.call_once(|| {
+        #[cfg(feature = "model")]
+        whisper_rs::install_whisper_tracing_trampoline();
+        WHISPER_LOG_HOOK_INSTALLS.fetch_add(1, Ordering::SeqCst);
+    });
+}
+
+/// How many times [`install_whisper_logging`] has installed the redirection
+/// (`0` before the first call, `1` forever after). Exposed for the structural
+/// falsifier that pins the once-only install at model-init.
+pub fn whisper_logging_install_count() -> usize {
+    WHISPER_LOG_HOOK_INSTALLS.load(Ordering::SeqCst)
+}
+
 /// Build a [`JobProcessor`] that decodes the server's PCM and transcribes it
 /// through the [`Dispatcher`] into a subtitle string.
 ///
@@ -553,11 +592,16 @@ fn jitter_fraction() -> f64 {
 /// holds a runner permit across the whole inference so per-node concurrency
 /// stays capped; the subtitle assembly (regroup / output) is the
 /// `submate-subtitle` slice and is wired in by its own backlog item.
+///
+/// Building the processor also installs the whisper.cpp logging redirection
+/// (once per process) so the C library's stderr spam routes through `tracing`
+/// rather than the terminal.
 #[cfg(feature = "model")]
 pub fn whisper_processor(
     dispatcher: Dispatcher,
     model_path: impl Into<String>,
 ) -> impl JobProcessor {
+    install_whisper_logging();
     let model_path = model_path.into();
     move |opts: &JobOpts, pcm: Vec<u8>| {
         let dispatcher = dispatcher.clone();
@@ -745,6 +789,42 @@ mod tests {
     #[should_panic(expected = "at least one runner")]
     async fn zero_runners_panics() {
         let _ = Dispatcher::new(0);
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+
+    /// Falsifier: the whisper.cpp logging redirection installs exactly once,
+    /// even though the install runs at every node/model init. whisper.cpp's log
+    /// callback is process-global, so a second install would re-register it; the
+    /// [`Once`] guard must collapse repeated calls into a single install.
+    ///
+    /// Pins the structural wiring without a model file: the test exercises the
+    /// install path directly and asserts the install counter saturates at 1. Full
+    /// terminal silence is confirmed by a human run; here we lock in the
+    /// once-only contract the model-init path relies on.
+    #[test]
+    fn whisper_logging_hooked() {
+        // First install crosses the Once and bumps the counter to exactly 1.
+        install_whisper_logging();
+        assert_eq!(
+            whisper_logging_install_count(),
+            1,
+            "first install should hook the whisper.cpp logger exactly once",
+        );
+
+        // Every later call (a second node, another model init) is a no-op: the
+        // process-global callback stays installed and the counter never grows.
+        for _ in 0..5 {
+            install_whisper_logging();
+        }
+        assert_eq!(
+            whisper_logging_install_count(),
+            1,
+            "repeated installs must not re-register the whisper.cpp log callback",
+        );
     }
 }
 
