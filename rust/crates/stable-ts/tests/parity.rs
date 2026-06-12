@@ -8,7 +8,7 @@
 //! is irrelevant). The goldens span the empty (`00_raw`), regroup-staged
 //! (`01_regroup_*`), and populated-`nonspeech_sections` (`02_suppress`) shapes.
 
-use parity::{assert_f32_close, assert_json_eq, golden, load_f32};
+use parity::{assert_f32_close, assert_json_eq, assert_str_eq, fixture_path, golden, load_f32};
 use stable_ts::{
     apply_regroup_op, audio2timings, ops_to_value, parse_regroup_algo, set_current_as_orig,
     suppress_silence, update_nonspeech_sections, WhisperResult, DEFAULT_MIN_WORD_DUR,
@@ -137,4 +137,75 @@ fn suppress() {
     set_current_as_orig(&mut result);
 
     assert_json_eq(&result.to_dict(), &expected);
+}
+
+/// D output falsifier: `to_srt_vtt(word_level=false)` must reproduce the real
+/// `03.srt` / `03.vtt` goldens byte-for-byte.
+///
+/// Those goldens are dumped from a *separate* end-to-end transcription run
+/// (`capture_stablets.py`'s `final = model.transcribe_stable(regroup=REGROUP,
+/// suppress_silence=True)`), whose non-deterministic Whisper decode produced
+/// different text than the `00_raw`/`02_suppress` JSON goldens — so the final
+/// result is not byte-reproducible from any captured JSON, and (being
+/// `word_level=False`) the goldens carry only segment-level timing+text.
+///
+/// We therefore reconstruct the final segments from `03.srt` (its blocks are
+/// exactly `{start, end, text}`), build a [`WhisperResult`] from them, and
+/// assert that emitting SRT reproduces `03.srt` (round-trip) and that emitting
+/// VTT from the *same* segments reproduces `03.vtt` (cross-format).
+///
+/// The VTT direction is non-circular — those segments are parsed from the SRT,
+/// never the VTT — so it pins `sec2vtt`, `WEBVTT` framing, and block assembly
+/// independently. Together they nail `sec2srt`/`sec2vtt`, `finalize_text`, and
+/// the `\n\n`-joined block layout against the real fixtures. The word-level
+/// `<font>`/`<timestamp>` paths (absent from every fixture) are pinned by the
+/// unit tests in `stable_ts::output`.
+#[test]
+fn output() {
+    let srt_golden = std::fs::read_to_string(fixture_path("stablets/clipA/03.srt"))
+        .expect("03.srt fixture present");
+    let vtt_golden = std::fs::read_to_string(fixture_path("stablets/clipA/03.vtt"))
+        .expect("03.vtt fixture present");
+
+    // Reconstruct the final segments from the SRT blocks: `idx\nHH:MM:SS,mmm -->
+    // HH:MM:SS,mmm\ntext...`. These are segment-level (`word_level=False`), so
+    // no words are needed to re-emit.
+    let segments: Vec<serde_json::Value> = srt_golden
+        .split("\n\n")
+        .map(|block| {
+            let mut lines = block.lines();
+            lines.next().expect("index line"); // the 1-based block index
+            let ts = lines.next().expect("timestamp line");
+            let (start_s, end_s) = ts.split_once(" --> ").expect("`start --> end`");
+            let text = lines.collect::<Vec<_>>().join("\n");
+            serde_json::json!({
+                "start": parse_srt_ts(start_s),
+                "end": parse_srt_ts(end_s),
+                "text": text,
+            })
+        })
+        .collect();
+
+    let input = serde_json::json!({ "segments": segments });
+    let result = WhisperResult::from_value(&input);
+
+    assert_str_eq(
+        &stable_ts::output::to_srt_vtt(&result, false, false),
+        &srt_golden,
+    );
+    assert_str_eq(
+        &stable_ts::output::to_srt_vtt(&result, false, true),
+        &vtt_golden,
+    );
+}
+
+/// Parse an `HH:MM:SS,mmm` SRT timestamp into seconds.
+fn parse_srt_ts(ts: &str) -> f64 {
+    let (hms, ms) = ts.split_once(',').expect("`HH:MM:SS,mmm`");
+    let mut parts = hms.split(':');
+    let hh: f64 = parts.next().unwrap().parse().unwrap();
+    let mm: f64 = parts.next().unwrap().parse().unwrap();
+    let ss: f64 = parts.next().unwrap().parse().unwrap();
+    let mmm: f64 = ms.parse().unwrap();
+    hh * 3600.0 + mm * 60.0 + ss + mmm / 1000.0
 }
