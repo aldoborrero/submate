@@ -61,3 +61,14 @@ In the interim (before the golden lands), `validate_ass_tags` is pure and
 self-contained, so an inline `#[test]` table covering the regex edge cases
 (`{}`, `{a{b}`, unbalanced trailing `{`, identical vs reordered tag lists)
 proves the core comparison without the fixture.
+
+---
+
+**META note (round 3 re-triage, 2026-06-12):** unparked from `needs-human/` →
+`backlog/`. `validate_ass_tags` is pure string/regex logic and the
+`translate_ass_content` capture (mocked LLM, no external API/credential/network)
+is pure-data — it fits the documented capture pre-pass rule in
+`meta-contention.md`, not a human gate. Dependency `port-subtitle-ass-tags` was
+unparked the same round. Next capture pre-pass should author the
+`rust/fixtures/translate/ass_tags.*` golden (both a tag-preserving and a
+tag-dropping cue) before dispatch. Do NOT re-park to `needs-human/`.
