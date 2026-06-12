@@ -45,11 +45,14 @@ submate-whisper (whisper.py via whisper-rs), submate-translate (translation.py),
 submate-jellyfin + submate-bazarr (integrations), submate-queue (queue/),
 submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 
-// Single-cluster focus for triage. Set to a slug prefix to make triage pick
-// every READY item with that prefix first each round; set to null to disable
-// (normal foundational-first priority). The cluster is still gated by the
-// blocked-by readiness rule, so a serial chain advances one stage per round.
-const FOCUS = 'port-stablets-'
+// Triage focus: a list of slug PREFIXES triage picks first each round (every
+// ready item matching ANY prefix), then fills remaining slots normally. Set to
+// [] to disable (foundational-first priority). Still gated by blocked-by, so a
+// dependency chain advances one stage per round.
+//
+// stable-ts is DONE — now focused on the runnable path toward a working
+// `submate transcribe`: whisper pipeline -> node dispatcher/agent -> cli.
+const FOCUS = ['port-whisper-pipeline', 'port-node-', 'port-cli-']
 
 const CONFIG = {
   name: 'submate-rs',
@@ -79,14 +82,16 @@ const CONFIG = {
      [ -f "backlog/$(echo "$dep" | xargs).md" ] && echo "BLOCKED by $dep"
    done
    \`\`\`
-   Skip any item with an unsatisfied blocker THIS round.${FOCUS ? `
+   Skip any item with an unsatisfied blocker THIS round.${FOCUS && FOCUS.length ? `
 
-3. **FOCUS — priority override (this run).** The port is focused on the
-   \`${FOCUS}\` cluster. Among READY items, pick EVERY ready \`${FOCUS}\`* item
-   FIRST (top priority) before anything else; fill any leftover implementer
-   slots with other ready items by normal priority. This cluster is a serial
-   A→B→C→D chain, so usually only 1–2 stages are ready per round — advancing it
-   one stage per round is the intended outcome, not a shortfall.` : `
+3. **FOCUS — priority override (this run).** The port is focused on the runnable
+   path. Among READY items, pick EVERY ready item whose slug STARTS WITH any of
+   these prefixes FIRST (top priority) before anything else, then fill leftover
+   implementer slots with other ready items by normal priority:
+   ${FOCUS.map((p) => '`' + p + '`').join(', ')}.
+   These form a dependency chain (whisper-pipeline → node dispatcher/agent →
+   cli), so usually only 1–2 are ready per round — advancing one stage per round
+   is the intended outcome, not a shortfall.` : `
    Prefer ready foundational items (types/lang/config/proto/paths, then the
    stable-ts A stage) — they unblock the most downstream work.`}`,
 
