@@ -1740,6 +1740,7 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "submate-config",
  "submate-jellyfin",
  "submate-proto",
  "submate-queue",

@@ -26,6 +26,7 @@ use axum::{
 };
 use serde::Serialize;
 use serde_json::json;
+use submate_config::ServerSettings;
 use submate_proto::{
     JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, Progress, WorkResponse,
 };
@@ -90,16 +91,19 @@ impl StatsSource for EmptyStats {
 pub struct AppState {
     stats: Arc<dyn StatsSource>,
     coord: Option<Arc<NodeCoordinator>>,
+    server: Arc<ServerSettings>,
 }
 
 impl AppState {
     /// Build state from a [`StatsSource`] with no node coordinator wired up.
     /// The `/nodes/*` and `/jobs/*` routes return `503` until a coordinator is
-    /// attached via [`AppState::with_coordinator`].
+    /// attached via [`AppState::with_coordinator`]. Server processing settings
+    /// default to the Python defaults (`process_on_add = true`).
     pub fn new(stats: impl StatsSource) -> AppState {
         AppState {
             stats: Arc::new(stats),
             coord: None,
+            server: Arc::new(ServerSettings::default()),
         }
     }
 
@@ -109,7 +113,15 @@ impl AppState {
         AppState {
             stats: coord.clone(),
             coord: Some(coord),
+            server: Arc::new(ServerSettings::default()),
         }
+    }
+
+    /// Override the server processing settings (`process_on_add` /
+    /// `process_on_play`) that gate Jellyfin webhook handling.
+    pub fn with_server_settings(mut self, server: ServerSettings) -> AppState {
+        self.server = Arc::new(server);
+        self
     }
 
     fn coordinator(&self) -> std::result::Result<&Arc<NodeCoordinator>, ServerError> {
@@ -558,11 +570,25 @@ fn jellyfin_router() -> Router<AppState> {
 /// `POST /webhooks/jellyfin` — accept a Jellyfin webhook notification.
 ///
 /// Validates the `User-Agent` (must come from a Jellyfin server) and parses the
-/// PascalCase [`JellyfinWebhookPayload`]. The full event handling (ItemAdded
-/// filtering, file-path resolution, skip decision, and job enqueue) is added by
-/// `backlog/port-server-jellyfin-webhook.md`.
+/// PascalCase [`JellyfinWebhookPayload`], then mirrors the response *shape* of
+/// Python's `handle_jellyfin_webhook`:
+///
+/// - **skipped** — the event is not configured for processing (the
+///   `process_on_add` / `process_on_play` gate): `{"status": "skipped",
+///   "message": "Event {notification_type} not configured"}`.
+/// - **queued** — enqueue succeeds: `{"status": "queued", "task_id": <ItemId>,
+///   "file_path": <mapped_path>}`, where `task_id` is the *ItemId* (not an
+///   internal job id).
+/// - **error** — processing raises: `{"status": "error", "message": <str>}`.
+///
+/// Only the skipped path (deterministic, no node/queue) is wired here; the
+/// file-path resolution and enqueue behind the should-process branch are filled
+/// in by `backlog/port-server-jellyfin-webhook.md`. Until then the
+/// should-process branch reports the `error` shape, which is a valid Python
+/// response value.
 #[cfg(feature = "jellyfin")]
 async fn jellyfin_webhook(
+    State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(payload): Json<submate_jellyfin::JellyfinWebhookPayload>,
 ) -> std::result::Result<Json<serde_json::Value>, ServerError> {
@@ -575,10 +601,22 @@ async fn jellyfin_webhook(
         ));
     }
 
+    let should_process = (payload.is_item_added() && state.server.process_on_add)
+        || (payload.is_playback_start() && state.server.process_on_play);
+
+    if !should_process {
+        return Ok(Json(json!({
+            "status": "skipped",
+            "message": format!("Event {} not configured", payload.notification_type),
+        })));
+    }
+
+    // Enqueue pipeline (file-path resolution + job enqueue) is wired by
+    // backlog/port-server-jellyfin-webhook.md. Report the Python `error` shape
+    // until then rather than the foreign "accepted" shape.
     Ok(Json(json!({
-        "status": "accepted",
-        "notification_type": payload.notification_type,
-        "item_id": payload.item_id,
+        "status": "error",
+        "message": "Jellyfin enqueue pipeline not yet wired",
     })))
 }
 
@@ -696,6 +734,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[cfg(feature = "jellyfin")]
+    #[tokio::test]
+    async fn jellyfin_webhook_response_shape() {
+        // Deterministic, node-free falsifier: a valid Jellyfin `ItemAdded`
+        // webhook against a server with `process_on_add = false` must return
+        // exactly the Python "skipped" shape — `{status, message}` and nothing
+        // else.
+        let server = ServerSettings {
+            process_on_add: false,
+            ..ServerSettings::default()
+        };
+        let state = AppState::default().with_server_settings(server);
+
+        let body = serde_json::to_vec(&json!({
+            "NotificationType": "ItemAdded",
+            "ItemId": "abc",
+            "ItemType": "Movie",
+        }))
+        .unwrap();
+        let res = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/jellyfin")
+                    .header("content-type", "application/json")
+                    .header("user-agent", "Jellyfin-Server/10.9.0")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 2, "skipped body has exactly two keys");
+        assert_eq!(json["status"], "skipped");
+        assert_eq!(json["message"], "Event ItemAdded not configured");
+        // The foreign skeleton keys must be gone.
+        assert!(obj.get("notification_type").is_none());
+        assert!(obj.get("item_id").is_none());
     }
 
     #[cfg(feature = "jellyfin")]
