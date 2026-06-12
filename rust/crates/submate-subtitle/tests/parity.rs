@@ -7,15 +7,9 @@
 //! check and the presence of the (denylisted, capture-first)
 //! `subtitle/clipS.{mkv,subs.json}` fixtures.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use parity::{fixture_path, golden};
 use serde_json::Value;
-use submate_subtitle::discovery::{
-    get_external_subtitle_paths, get_internal_subtitle_languages, get_lrc_path,
-    has_external_subtitle_language, has_subtitle_language, parse_subtitle_language,
-};
 
 /// The captured five-field view of a `LanguageCode`:
 /// `[iso_639_1, iso_639_2_t, iso_639_2_b, name_en, name_native]`, each a JSON
@@ -72,78 +66,6 @@ fn file_name(path: &Path) -> String {
         .to_string()
 }
 
-#[test]
-fn discovery_fs() {
-    let cases = golden("subtitle/discovery_cases.json");
-
-    let discovery = cases["discovery"].as_object().expect("discovery object");
-    for (tag, case) in discovery {
-        let video_stem = case["video_stem"].as_str().expect("video_stem");
-        let dir_files: Vec<&str> = case["dir_files"]
-            .as_array()
-            .expect("dir_files array")
-            .iter()
-            .map(|v| v.as_str().expect("dir file name"))
-            .collect();
-        let expect_external: BTreeSet<String> = case["expect_external"]
-            .as_array()
-            .expect("expect_external array")
-            .iter()
-            .map(|v| v.as_str().expect("external name").to_string())
-            .collect();
-
-        let tmp = TempDir::new(tag);
-        for name in &dir_files {
-            std::fs::write(tmp.path().join(name), b"").expect("write fixture file");
-        }
-
-        // The video file is the dir entry whose stem matches the video stem but
-        // is not itself an expected subtitle (in every fixture case a `.mkv`).
-        let video_name = dir_files
-            .iter()
-            .find(|name| {
-                let stem = submate_subtitle::discovery::path_stem(Path::new(name));
-                stem == video_stem && !expect_external.contains(**name)
-            })
-            .unwrap_or_else(|| panic!("{tag}: no video file in dir_files"));
-        let video_path = tmp.path().join(video_name);
-
-        // Set-equality on the discovered external subtitle file names.
-        let actual: BTreeSet<String> = get_external_subtitle_paths(&video_path)
-            .iter()
-            .map(|p| file_name(p))
-            .collect();
-        assert_eq!(actual, expect_external, "{tag}: external subtitle set");
-
-        // Exact language tuple per parsed subtitle filename.
-        let expect_parse = case["expect_parse"].as_object().expect("expect_parse object");
-        for (sub_name, expected) in expect_parse {
-            let sub_path = tmp.path().join(sub_name);
-            let lang = parse_subtitle_language(&sub_path, video_stem);
-            let expected: Vec<Value> = expected.as_array().expect("lang tuple").clone();
-            assert_eq!(
-                lang_tuple(lang),
-                expected,
-                "{tag}: parse_subtitle_language({sub_name:?})"
-            );
-        }
-    }
-}
-
-#[test]
-fn lrc_paths() {
-    let cases = golden("subtitle/discovery_cases.json");
-    let lrc = cases["lrc"].as_object().expect("lrc object");
-    for (audio, expected) in lrc {
-        let expected = expected.as_str().expect("lrc path string");
-        assert_eq!(
-            get_lrc_path(Path::new(audio)),
-            PathBuf::from(expected),
-            "get_lrc_path({audio:?})"
-        );
-    }
-}
-
 /// Whether `ffprobe` is callable on `PATH`. Mirrors the binary-detection
 /// posture of `submate-media`'s real-binary tests.
 fn ffprobe_on_path() -> bool {
@@ -154,68 +76,153 @@ fn ffprobe_on_path() -> bool {
         .unwrap_or(false)
 }
 
-/// Probe the real embedded-subtitle fixture and assert the returned
-/// `LanguageCode` list **exactly** equals the golden captured from the Python
-/// `get_internal_subtitle_languages` reference run, then check the
-/// internal-vs-external / `only_subgen` matrix of `has_subtitle_language`.
-///
-/// Skipped (passes as a no-op) when `ffprobe` is absent or the denylisted,
-/// capture-first `subtitle/clipS.{mkv,subs.json}` fixtures have not landed yet —
-/// the test arms itself the moment the capture harness commits them. The golden
-/// stores each stream's language as the five-field
-/// `[iso_639_1, iso_639_2_t, iso_639_2_b, name_en, name_native]` view, matching
-/// how the discovery golden serializes a `LanguageCode`.
-#[test]
-fn internal_probe() {
-    if !ffprobe_on_path() {
-        eprintln!("skipping internal_probe: ffprobe not available on PATH");
-        return;
+mod parity {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    use ::parity::{fixture_path, golden};
+    use submate_subtitle::discovery::{
+        get_external_subtitle_paths, get_internal_subtitle_languages, get_lrc_path,
+        has_external_subtitle_language, has_subtitle_language, parse_subtitle_language,
+    };
+
+    #[test]
+    fn discovery_fs() {
+        let cases = golden("subtitle/discovery_cases.json");
+
+        let discovery = cases["discovery"].as_object().expect("discovery object");
+        for (tag, case) in discovery {
+            let video_stem = case["video_stem"].as_str().expect("video_stem");
+            let dir_files: Vec<&str> = case["dir_files"]
+                .as_array()
+                .expect("dir_files array")
+                .iter()
+                .map(|v| v.as_str().expect("dir file name"))
+                .collect();
+            let expect_external: BTreeSet<String> = case["expect_external"]
+                .as_array()
+                .expect("expect_external array")
+                .iter()
+                .map(|v| v.as_str().expect("external name").to_string())
+                .collect();
+
+            let tmp = TempDir::new(tag);
+            for name in &dir_files {
+                std::fs::write(tmp.path().join(name), b"").expect("write fixture file");
+            }
+
+            // The video file is the dir entry whose stem matches the video stem but
+            // is not itself an expected subtitle (in every fixture case a `.mkv`).
+            let video_name = dir_files
+                .iter()
+                .find(|name| {
+                    let stem = submate_subtitle::discovery::path_stem(Path::new(name));
+                    stem == video_stem && !expect_external.contains(**name)
+                })
+                .unwrap_or_else(|| panic!("{tag}: no video file in dir_files"));
+            let video_path = tmp.path().join(video_name);
+
+            // Set-equality on the discovered external subtitle file names.
+            let actual: BTreeSet<String> = get_external_subtitle_paths(&video_path)
+                .iter()
+                .map(|p| file_name(p))
+                .collect();
+            assert_eq!(actual, expect_external, "{tag}: external subtitle set");
+
+            // Exact language tuple per parsed subtitle filename.
+            let expect_parse = case["expect_parse"]
+                .as_object()
+                .expect("expect_parse object");
+            for (sub_name, expected) in expect_parse {
+                let sub_path = tmp.path().join(sub_name);
+                let lang = parse_subtitle_language(&sub_path, video_stem);
+                let expected: Vec<Value> = expected.as_array().expect("lang tuple").clone();
+                assert_eq!(
+                    lang_tuple(lang),
+                    expected,
+                    "{tag}: parse_subtitle_language({sub_name:?})"
+                );
+            }
+        }
     }
 
-    let clip = fixture_path("subtitle/clipS.mkv");
-    let golden_path = fixture_path("subtitle/clipS.subs.json");
-    if !clip.exists() || !golden_path.exists() {
-        eprintln!(
+    #[test]
+    fn lrc_paths() {
+        let cases = golden("subtitle/discovery_cases.json");
+        let lrc = cases["lrc"].as_object().expect("lrc object");
+        for (audio, expected) in lrc {
+            let expected = expected.as_str().expect("lrc path string");
+            assert_eq!(
+                get_lrc_path(Path::new(audio)),
+                PathBuf::from(expected),
+                "get_lrc_path({audio:?})"
+            );
+        }
+    }
+
+    /// Probe the real embedded-subtitle fixture and assert the returned
+    /// `LanguageCode` list **exactly** equals the golden captured from the Python
+    /// `get_internal_subtitle_languages` reference run, then check the
+    /// internal-vs-external / `only_subgen` matrix of `has_subtitle_language`.
+    ///
+    /// Skipped (passes as a no-op) when `ffprobe` is absent or the denylisted,
+    /// capture-first `subtitle/clipS.{mkv,subs.json}` fixtures have not landed yet —
+    /// the test arms itself the moment the capture harness commits them. The golden
+    /// stores each stream's language as the five-field
+    /// `[iso_639_1, iso_639_2_t, iso_639_2_b, name_en, name_native]` view, matching
+    /// how the discovery golden serializes a `LanguageCode`.
+    #[test]
+    fn internal_probe() {
+        if !ffprobe_on_path() {
+            eprintln!("skipping internal_probe: ffprobe not available on PATH");
+            return;
+        }
+
+        let clip = fixture_path("subtitle/clipS.mkv");
+        let golden_path = fixture_path("subtitle/clipS.subs.json");
+        if !clip.exists() || !golden_path.exists() {
+            eprintln!(
             "skipping internal_probe: golden subtitle/clipS.{{mkv,subs.json}} not captured yet \
              (requires fixture: rust/fixtures/subtitle/clipS.mkv + clipS.subs.json — capture first)"
         );
-        return;
+            return;
+        }
+
+        let golden_bytes = std::fs::read(&golden_path).expect("read clipS.subs.json");
+        let expected: Vec<Vec<Value>> = serde_json::from_slice(&golden_bytes)
+            .expect("clipS.subs.json is a list of language tuples");
+
+        let actual: Vec<Vec<Value>> = get_internal_subtitle_languages(&clip)
+            .into_iter()
+            .map(lang_tuple)
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "internal subtitle languages must match golden subtitle/clipS.subs.json",
+        );
+
+        // The fixture is the documented two-tagged (eng/spa) + one-untagged clip,
+        // so the internal half answers English/Spanish but not, say, German.
+        assert!(
+            has_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, false),
+            "internal English track must satisfy has_subtitle_language",
+        );
+        assert!(
+            has_subtitle_language(&clip, submate_lang::LanguageCode::SPANISH, false),
+            "internal Spanish track must satisfy has_subtitle_language",
+        );
+        assert!(
+            !has_subtitle_language(&clip, submate_lang::LanguageCode::GERMAN, false),
+            "absent German track must not satisfy has_subtitle_language",
+        );
+
+        // only_subgen=true skips the internal half entirely; with no external
+        // subgen files next to the fixture clip the combinator reduces to the
+        // external predicate (false here), never to the internal English match.
+        assert_eq!(
+            has_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, true),
+            has_external_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, true),
+            "only_subgen=true must defer entirely to the external half",
+        );
     }
-
-    let golden_bytes = std::fs::read(&golden_path).expect("read clipS.subs.json");
-    let expected: Vec<Vec<Value>> =
-        serde_json::from_slice(&golden_bytes).expect("clipS.subs.json is a list of language tuples");
-
-    let actual: Vec<Vec<Value>> = get_internal_subtitle_languages(&clip)
-        .into_iter()
-        .map(lang_tuple)
-        .collect();
-    assert_eq!(
-        actual, expected,
-        "internal subtitle languages must match golden subtitle/clipS.subs.json",
-    );
-
-    // The fixture is the documented two-tagged (eng/spa) + one-untagged clip,
-    // so the internal half answers English/Spanish but not, say, German.
-    assert!(
-        has_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, false),
-        "internal English track must satisfy has_subtitle_language",
-    );
-    assert!(
-        has_subtitle_language(&clip, submate_lang::LanguageCode::SPANISH, false),
-        "internal Spanish track must satisfy has_subtitle_language",
-    );
-    assert!(
-        !has_subtitle_language(&clip, submate_lang::LanguageCode::GERMAN, false),
-        "absent German track must not satisfy has_subtitle_language",
-    );
-
-    // only_subgen=true skips the internal half entirely; with no external
-    // subgen files next to the fixture clip the combinator reduces to the
-    // external predicate (false here), never to the internal English match.
-    assert_eq!(
-        has_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, true),
-        has_external_subtitle_language(&clip, submate_lang::LanguageCode::ENGLISH, true),
-        "only_subgen=true must defer entirely to the external half",
-    );
 }
