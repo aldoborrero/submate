@@ -324,6 +324,14 @@ impl Segment {
         self.lock_right();
     }
 
+    /// Overwrite the wordless-segment default `start`/`end`, rounding each like
+    /// the Python `start`/`end` setters. Only meaningful for a segment without
+    /// words: the suppress-silence `else` branch adjusts these defaults.
+    pub fn set_default_span(&mut self, start: f64, end: f64) {
+        self.default_start = round_timestamp(start);
+        self.default_end = round_timestamp(end);
+    }
+
     /// `unlock_all_words`: clear both locks on every word.
     pub fn unlock_all_words(&mut self) {
         if let Some(w) = self.words.as_mut() {
