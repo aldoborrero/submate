@@ -53,7 +53,7 @@ submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 // EXCLUSIVE CLI-UX focus: work ONLY items whose slug starts with these prefixes;
 // do NOT fill leftover implementer slots with other product items. When no
 // matching item is ready, the round runs no implementers and the run dries out.
-const FOCUS = ['port-cli-']
+const FOCUS = ['cli-audio-']
 const FOCUS_EXCLUSIVE = true
 
 const CONFIG = {
@@ -63,7 +63,7 @@ const CONFIG = {
   // Round cap. Honored even when launch args don't propagate (the earlier run
   // ignored {rounds:2} and ran unbounded). Raise this — or pass {rounds:N} at
   // launch — for a longer run; set Infinity to drain the whole backlog.
-  maxRounds: 3,
+  maxRounds: 5,
   dryLimit: 2,
   rotation: ['parity', 'porter-scout', 'aligner', 'simplifier', 'curator', 'documenter'],
 
