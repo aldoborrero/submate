@@ -34,6 +34,8 @@ fixtures/
             <clip>/02_suppress.json   # after suppress_silence
             <clip>/03.srt 03.vtt      # final formatted output
             <clip>/audio.f32          # raw little-endian f32 PCM the DSP (C) consumes
+            <clip>/loudness.f32       # nonvad.audio2loudness(audio.f32) — DSP intermediate
+            <clip>/mask.f32           # nonvad.wav2mask(audio.f32) — 0/1 silence mask (C falsifier)
             regroup_parse.json        # "cm_sl=84_sl=42++++++1" -> parsed op list
   transcribe/ <clip>.wav -> <clip>.expected.srt + <clip>.segments.json  # structural
   media/    <clip>.mkv -> <clip>.probe.json + <clip>.pcm.sha256

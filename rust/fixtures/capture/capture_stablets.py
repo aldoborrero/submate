@@ -87,12 +87,27 @@ def main() -> None:
     # Best-effort via stable-ts's own loader; verify the dtype/rate matches the
     # non-VAD path (16kHz mono f32) when wiring the Rust wav2mask test.
     try:
+        import torch
         from stable_whisper.audio import load_audio  # type: ignore
+        from stable_whisper.stabilization import nonvad  # type: ignore
 
         samples = load_audio(str(clip), sr=16000)
         _dump_f32(f"{base}/audio.f32", samples)
+
+        # non-VAD DSP intermediates the suppress-dsp (wav2mask) port is falsified
+        # against — the exact Python functions, not a reimplementation.
+        audio_t = torch.as_tensor(samples, dtype=torch.float32).flatten()
+        loudness = nonvad.audio2loudness(audio_t)
+        if loudness is not None:
+            _dump_f32(f"{base}/loudness.f32", loudness.tolist())
+        mask = nonvad.wav2mask(audio_t, sr=16000)
+        if mask is not None:
+            # bool mask -> 0.0/1.0 f32 so the Rust test compares with assert_f32_close
+            _dump_f32(f"{base}/mask.f32", mask.float().tolist())
+        else:
+            print("WARN: wav2mask returned None (no silence in clip) — mask.f32 not written")
     except Exception as e:  # noqa: BLE001 — capture-time best effort
-        print(f"WARN: could not dump audio.f32 ({e}); wire the loader manually")
+        print(f"WARN: could not dump audio/DSP goldens ({e}); wire the loader manually")
 
     # --- 03.srt / 03.vtt: the REAL end-to-end output ---------------------
     final = model.transcribe_stable(str(clip), regroup=REGROUP, suppress_silence=True, word_timestamps=True)
