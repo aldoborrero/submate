@@ -12,6 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+parity = { path = "../parity" }
+submate-config = { path = "../submate-config" }
+# `preserve_order` keeps serde_json object keys in struct field-declaration
+# order; `config_show_rows` row ordering is the golden contract, so the
+# serialized `Config` must mirror Pydantic field order, not BTreeMap key sorting.
+serde_json = { workspace = true, features = ["preserve_order"] }
+# `test` adds `figment::Jail` to set the override env vars in a serialized,
+# isolated scope (no `SUBMATE__*` leak, no cross-test race).
+figment = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true
