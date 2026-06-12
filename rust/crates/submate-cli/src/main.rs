@@ -218,8 +218,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn init_logging(log_level: &str, _log_file: Option<&Path>) {
     use tracing_subscriber::filter::EnvFilter;
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level.to_lowercase()));
+    let level = log_level.to_lowercase();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // whisper.cpp's internal logs are routed through the
+        // `whisper_rs::whisper_sys_tracing` target — verbose model-load/buffer
+        // lines that shouldn't clutter normal output. Keep them out unless the
+        // user explicitly asks for debug/trace (or sets RUST_LOG).
+        let base = EnvFilter::new(&level);
+        if level == "debug" || level == "trace" {
+            base
+        } else {
+            base.add_directive("whisper_rs=warn".parse().expect("static directive"))
+        }
+    });
 
     // `try_init` so a double-initialization (e.g. in tests) is a no-op rather
     // than a panic.
