@@ -34,6 +34,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Row};
 
+pub mod models;
+pub use models::{OutputFormat, SkipReason};
+
 /// Errors surfaced by the job store.
 #[derive(Debug, thiserror::Error)]
 pub enum QueueError {
