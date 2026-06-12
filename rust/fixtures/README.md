@@ -27,7 +27,9 @@ fixtures/
   config/   <case>.env      ->  <case>.resolved.json     # Settings.model_dump(mode="json")
   lang/     lang_conversions.json                        # every LanguageCode <-> iso pair
   paths/    path_cases.json                              # build_subtitle_path inputs -> output
-  subtitle/ <name>.{srt,vtt,ass} -> <name>.detected.json # + *.srt round-trip goldens
+  subtitle/ <name>.{srt,vtt,ass} -> <name>.detected.json # + *.srt/*.vtt round-trip goldens
+            discovery_cases.json                         # fs discovery + filename-language + .lrc cases
+  bazarr/   pcm/sine440.{pcm,wav}                        # raw s16le PCM -> wave-module WAV header golden
   translate/ <name>.in.srt + mock_llm.json -> <name>.out.srt
   stablets/ <clip>/00_raw.json        # WhisperResult after ingest (word ts from whisper)
             <clip>/01_regroup_<algo>.json   # after EACH parse_regroup_algo stage

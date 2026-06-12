@@ -97,3 +97,33 @@ The structural action item — make the capture pre-pass an *enforced* stage so 
 future `requires fixture:` item does not bounce again — stays open. But no item is
 currently blocked on it; this file is informational until the next golden-absent
 item appears.
+
+## META cleanup (round 3, 2026-06-12): subtitle + bazarr pre-pass run by hand
+
+The predicted "next golden-absent item" arrived as a cluster of three, all
+re-parked to `needs-human/` this round for the same phantom denylist gate:
+
+- `port-bazarr-pcm-wav-wrap` — goldens `rust/fixtures/bazarr/pcm/sine440.{pcm,wav}`
+  already existed and tracked; `capture_bazarr_audio.py` re-emits them
+  byte-identically (verified, no diff). No new capture work; just unparked.
+- `port-subtitle-discovery-fs` — authored + ran
+  `rust/fixtures/capture/capture_subtitle_discovery.py`, committed
+  `rust/fixtures/subtitle/discovery_cases.json` (temp-dir scenarios from
+  `test_subtitle.py` + `with_suffix(".lrc")` cases, live Python outputs). The
+  aligner had also stranded untracked `needs-human/` and `tried/` duplicates of
+  this item; deleted — the `backlog/` copy is canonical.
+- `port-subtitle-srt-vtt-parse` — authored + ran
+  `rust/fixtures/capture/capture_subtitle.py`, committed
+  `rust/fixtures/subtitle/{basic.srt,single.srt,basic.vtt}` (srt parse->compose,
+  pysubs2 from_string->to_string round-trips). This item had bounced
+  needs-human<->backlog **3 times** (1783cdd / e845c80 / d87907f / a1d95d3 /
+  ad9d436) — the textbook chronic deferral this file warned about.
+
+All three goldens were captured in the active nix python env (`srt`, `pysubs2`,
+`numpy`, `wave`, `submate` all import; PYTHONPATH=`<repo>:<repo>/rust/fixtures/capture`)
+and landed in a deliberate capture commit, then the items returned to `backlog/`.
+`needs-human/` is now empty.
+
+The structural action remains: until the pre-pass is an enforced pre-dispatch
+stage, every new `requires fixture:` item will bounce 2-3 rounds before a META
+cleanup runs the capture by hand. That is the cost being paid here a fourth time.

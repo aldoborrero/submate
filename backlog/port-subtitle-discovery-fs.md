@@ -104,3 +104,11 @@ author `rust/fixtures/capture/capture_subtitle_discovery.py` and land
 `rust/fixtures/subtitle/discovery_cases.json` in a dedicated capture commit
 **before** the porter is dispatched, so the porter never touches the oracle.
 Do NOT re-park to `needs-human/`.
+
+**META capture pre-pass LANDED (round 3 cleanup):** done. `capture_subtitle_discovery.py`
+is authored and run; `rust/fixtures/subtitle/discovery_cases.json` is committed
+(the temp-dir `test_subtitle.py` scenarios + `with_suffix(".lrc")` cases, with
+live Python `get_external_subtitle_paths`/`parse_subtitle_language`/`get_lrc_path`
+outputs). The porter diffs against it and must NOT touch `rust/fixtures/**`.
+This round's aligner re-created stranded untracked `needs-human/` and `tried/`
+copies of this item; both were deleted — this `backlog/` copy is canonical.

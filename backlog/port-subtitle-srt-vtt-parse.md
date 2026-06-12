@@ -1,5 +1,11 @@
 # Port SRT/VTT parsing + round-trip
 
+**META capture pre-pass LANDED (round 3 cleanup):** `capture_subtitle.py` is
+authored and run; goldens `rust/fixtures/subtitle/{basic.srt,single.srt,basic.vtt}`
+are committed (the parse->compose / from_string->to_string round-trips). The
+oracle now exists — the porter diffs against it and must NOT touch
+`rust/fixtures/**`. Item returned to `backlog/` for automated pickup.
+
 **META note (r2 round 1 confirm):** env re-verified — `python3 -c "import srt,
 pysubs2"` succeeds in the active nix devshell (`srt` 1.8.0, `pysubs2` present),
 so the capture is runnable **now** with no external runtime. The stale
