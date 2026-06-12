@@ -169,3 +169,26 @@ capture-blocked item belongs in `backlog/`, never `needs-human/`, unless its
 capture genuinely needs an external runtime (GPU/credential/network). If an
 item is re-parked a 3rd time without the pre-pass running, treat it as a
 harness ordering bug, not an item defect.
+
+## sixth pattern (META parity round, 2026-06-13): submate-cli/src/main.rs command-tree hotspot
+
+`rust/crates/submate-cli/src/main.rs` (907 lines) is the most frequently
+touched file in the recent merge window — 8 of the last 12 first-parent merges
+and 3 of the last 5 (`46ee11c` cli-result-summary, `b5e09ba` cli-model-flag,
+`466b26d` cli-transcribe-collect). The crate already extracts per-command logic
+into sibling files (`config_show.rs`, `transcribe_collect.rs`,
+`translate_paths.rs`), but `main.rs` still owns the clap command tree, the arg
+structs, and the dispatch `match`, so every CLI port appends a subcommand
+variant + a dispatch arm + arg fields to the same three regions. All these
+merges landed cleanly (additive edits to distinct subcommands), so this is a
+realized-but-not-yet-conflicting hotspot, same shape as the stable-ts crate root
+(pattern 2) and submate-server/lib.rs (pattern 3).
+
+Contention is winding down here: only one CLI port (`port-cli-progress`)
+remains active, so a structural split is likely not worth it now. Recorded so
+the trend is in git: if a future wave dispatches 2+ CLI items concurrently, move
+the clap command/arg definitions next to each subcommand's module (each
+subcommand file exposes its own `Args` struct + a `fn run`) and reduce `main.rs`
+to subcommand registration + dispatch, mirroring the per-command file layout
+that already exists. Until then, serialize CLI items through the merge queue
+rather than dispatching them in the same wave.
