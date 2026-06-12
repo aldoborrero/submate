@@ -30,7 +30,7 @@
 //!   `rust/fixtures/config/nested.env` through [`Config::from_env`] and diffs
 //!   the result against `rust/fixtures/config/nested.resolved.json`.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use submate_types::{Device, LanguageNamingType, TranslationBackend, WhisperImplementation};
 
@@ -66,9 +66,9 @@ pub struct WhisperSettings {
     pub compute_type: String,
     #[serde(default = "default_implementation")]
     pub implementation: WhisperImplementation,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_json_kwargs")]
     pub transcribe_kwargs: Map<String, Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_pipe_list")]
     pub folders: Vec<String>,
 }
 
@@ -103,7 +103,10 @@ impl Default for WhisperSettings {
 pub struct StableTsSettings {
     #[serde(default)]
     pub word_level_highlight: bool,
-    #[serde(default = "default_custom_regroup")]
+    #[serde(
+        default = "default_custom_regroup",
+        deserialize_with = "deserialize_regroup"
+    )]
     pub custom_regroup: StrOrBool,
     #[serde(default = "default_true")]
     pub suppress_silence: bool,
@@ -202,7 +205,7 @@ pub struct JellyfinSettings {
     pub server_url: String,
     #[serde(default)]
     pub api_key: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_pipe_list")]
     pub libraries: Vec<String>,
 }
 
@@ -255,13 +258,13 @@ pub struct SubtitleSettings {
     pub skip_if_external_subtitles_exist: bool,
     #[serde(default)]
     pub skip_if_internal_subtitle_language: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_pipe_list")]
     pub skip_subtitle_languages: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_pipe_list")]
     pub skip_if_audio_languages: Vec<String>,
     #[serde(default)]
     pub skip_unknown_language: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_pipe_list")]
     pub preferred_audio_languages: Vec<String>,
     #[serde(default)]
     pub limit_to_preferred_audio_languages: bool,
@@ -441,4 +444,74 @@ impl Config {
 /// `serde` default helper for `bool` fields that default to `true`.
 fn default_true() -> bool {
     true
+}
+
+/// Coerce a pipe-separated env string into a `Vec<String>`, or pass through an
+/// already-typed sequence from the file/defaults layer.
+///
+/// Ports the `parse_pipe_separated_*` `mode="before"` validators in
+/// `submate/config.py`: figment hands env vars to serde as bare strings, so
+/// `"a|b|c"` must be split on `'|'`, each element `trim()`-med, and empty
+/// elements dropped (`"a||b"` and a trailing `|` yield no blank entries). The
+/// file/defaults layer instead supplies a real JSON array, which must still
+/// deserialize unchanged — matching Python's permissive branch where a
+/// non-string value is returned as-is.
+fn deserialize_pipe_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(s) => Ok(s
+            .split('|')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect()),
+        other => Vec::<String>::deserialize(other).map_err(serde::de::Error::custom),
+    }
+}
+
+/// Coerce a JSON-string env value into a `Map`, or pass through an already-typed
+/// map.
+///
+/// Ports `WhisperSettings.parse_json_kwargs`: `transcribe_kwargs` arrives from
+/// the env as a JSON **string** (`'{"beam_size": 5}'`) which must be parsed into
+/// a map; the file/defaults layer supplies a real object that passes through
+/// unchanged. An absent field falls back to `#[serde(default)]` (`{}`); an empty
+/// string also yields `{}`, matching the Python validator's empty-input branch.
+fn deserialize_json_kwargs<'de, D>(deserializer: D) -> Result<Map<String, Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(s) if s.is_empty() => Ok(Map::new()),
+        Value::String(s) => serde_json::from_str(&s).map_err(serde::de::Error::custom),
+        other => Map::<String, Value>::deserialize(other).map_err(serde::de::Error::custom),
+    }
+}
+
+/// Coerce a regroup env value into a [`StrOrBool`], or pass through an
+/// already-typed bool/string.
+///
+/// Ports `StableTsSettings.parse_regroup`: a string in `{false, off, 0, no, ""}`
+/// (case-insensitive) disables regrouping (`Bool(false)`); any other string is a
+/// regroup pattern (`Str(_)`). A real bool from the file/defaults layer passes
+/// through unchanged.
+fn deserialize_regroup<'de, D>(deserializer: D) -> Result<StrOrBool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::Bool(b) => Ok(StrOrBool::Bool(b)),
+        Value::String(s) => {
+            if matches!(s.to_lowercase().as_str(), "false" | "off" | "0" | "no" | "") {
+                Ok(StrOrBool::Bool(false))
+            } else {
+                Ok(StrOrBool::Str(s))
+            }
+        }
+        other => Err(serde::de::Error::custom(format!(
+            "custom_regroup must be a string or bool, got {other}"
+        ))),
+    }
 }
