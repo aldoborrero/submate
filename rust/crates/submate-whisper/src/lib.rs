@@ -279,6 +279,245 @@ mod inference {
 #[cfg(feature = "model")]
 pub use inference::transcribe_pcm;
 
+/// The submate config regroup string this pipeline drives by default.
+///
+/// Mirrors `StableTsSettings.custom_regroup`'s default
+/// (`config.py`): a `clamp_max` followed by two `split_by_length` passes. The
+/// [`transcribe`] / [`assemble_result`] entry points take it as a parameter so
+/// callers can pass their resolved config value (or `""`/`None` to skip
+/// regrouping), but this constant documents the shipped default.
+pub const DEFAULT_REGROUP: &str = "cm_sl=84_sl=42++++++1";
+
+/// `min_word_dur` the suppress-silence stage uses, matching
+/// `StableTsSettings.min_word_duration`'s default and
+/// `transcribe_stable`'s `min_word_dur=0.1`.
+pub const DEFAULT_MIN_WORD_DUR: f64 = 0.1;
+
+/// `nonspeech_error` `transcribe_stable` passes to `suppress_silence`.
+pub const DEFAULT_NONSPEECH_ERROR: f64 = 0.1;
+
+/// Errors raised while assembling the post-inference pipeline (regroup →
+/// suppress → output).
+#[derive(Debug, thiserror::Error)]
+pub enum PipelineError {
+    /// The regroup string named a method the parser does not know.
+    #[error("unknown regroup method: {0}")]
+    UnknownRegroupMethod(String),
+    /// A parsed regroup op is not yet runnable in the ported regroup engine.
+    #[error("unsupported regroup method: {0}")]
+    UnsupportedRegroupMethod(String),
+}
+
+/// The finished transcription, shaped like the Python `TranscriptionResult`
+/// the CLI and queue consume: `.text`, `.language`, `.segments`, and
+/// `.to_srt_vtt()`.
+///
+/// Built by [`assemble_result`] from a raw [`WhisperResult`] (whisper.cpp
+/// inference output) by running the same post-decode stages
+/// `WhisperModelWrapper.transcribe` runs: regroup, then suppress-silence, then
+/// SRT/VTT rendering. The stages live in the ported sibling crates
+/// (`stable_ts`); this crate only wires them.
+#[derive(Debug, Clone)]
+pub struct Transcription {
+    /// Detected (or forced) language code, e.g. `"english"`/`"en"`.
+    pub language: Option<String>,
+    /// The post-stage [`stable_ts::WhisperResult`], carrying the regrouped /
+    /// suppressed segments and word timings.
+    pub result: stable_ts::WhisperResult,
+}
+
+impl Transcription {
+    /// Joined transcript text across all segments (the `.text` attribute).
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.result.text()
+    }
+
+    /// Segment-level `{start, end, text}` views, for parity comparison or
+    /// downstream consumers that only need the timed lines.
+    #[must_use]
+    pub fn segments(&self) -> Vec<TranscriptionSegment> {
+        self.result
+            .segments
+            .iter()
+            .map(|s| TranscriptionSegment { start: s.start(), end: s.end(), text: s.text() })
+            .collect()
+    }
+
+    /// Render SRT (`vtt=false`) or VTT (`vtt=true`) at segment level, matching
+    /// `TranscriptionResult.to_srt_vtt(word_level=False)`.
+    #[must_use]
+    pub fn to_srt_vtt(&self, vtt: bool) -> String {
+        stable_ts::output::to_srt_vtt(&self.result, false, vtt)
+    }
+}
+
+/// A segment-level timed line of the finished transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptionSegment {
+    /// Segment start, in seconds.
+    pub start: f64,
+    /// Segment end, in seconds.
+    pub end: f64,
+    /// Segment text.
+    pub text: String,
+}
+
+/// Convert raw whisper.cpp inference output into the `to_dict()`-shaped JSON
+/// the ported [`stable_ts::WhisperResult`] parses.
+///
+/// `WhisperResult::from_value` reads top-level `language` (via `ori_dict`) and a
+/// `segments` array of `{start, end, text, words: [{word, start, end,
+/// probability}]}`, exactly the fields whisper.cpp gives us. We emit that shape
+/// so the downstream stages operate on real word timings.
+fn raw_to_value(raw: &WhisperResult) -> serde_json::Value {
+    use serde_json::{json, Value};
+
+    let segments: Vec<Value> = raw
+        .segments
+        .iter()
+        .map(|seg| {
+            let words: Vec<Value> = seg
+                .words
+                .iter()
+                .map(|w| {
+                    json!({
+                        "word": w.word,
+                        "start": w.start,
+                        "end": w.end,
+                        "probability": w.probability,
+                    })
+                })
+                .collect();
+            json!({
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "words": words,
+            })
+        })
+        .collect();
+
+    json!({
+        "language": raw.language,
+        "segments": segments,
+    })
+}
+
+/// Run the post-inference stages `WhisperModelWrapper.transcribe` runs after
+/// the model decode: regroup the raw result, suppress silence against the
+/// decoded PCM, then return a [`Transcription`] ready to render SRT/VTT.
+///
+/// This is the structural core of the pipeline and is independent of the
+/// `model` feature, so the parity falsifier can drive it from a captured raw
+/// transcription fixture without a model on hand.
+///
+/// * `regroup_algo` — the regroup DSL string (e.g. [`DEFAULT_REGROUP`]); an
+///   empty string skips regrouping, matching `custom_regroup=False`.
+/// * `pcm` — the mono 16 kHz f32 samples the result was decoded from, used to
+///   derive the non-VAD silence ranges. Empty (or too-short) audio yields no
+///   silence and leaves timings untouched, matching `audio2timings` returning
+///   `None`.
+pub fn assemble_result(
+    raw: &WhisperResult,
+    regroup_algo: &str,
+    pcm: &[f32],
+) -> Result<Transcription, PipelineError> {
+    let mut result = stable_ts::WhisperResult::from_value(&raw_to_value(raw));
+
+    // Stage B: regroup. `parse_regroup_algo("")` is an empty op list, so an
+    // empty `regroup_algo` is a no-op (custom_regroup disabled).
+    let ops = stable_ts::parse_regroup_algo(regroup_algo)
+        .map_err(|e| PipelineError::UnknownRegroupMethod(e.0))?;
+    stable_ts::apply_regroup(&mut result, &ops)
+        .map_err(|e| PipelineError::UnsupportedRegroupMethod(e.0))?;
+
+    // Stage C: suppress silence (non-VAD), the submate default. Derive the
+    // silence ranges from the same PCM the model decoded; `None` (silent /
+    // too-short audio) means nothing to suppress.
+    if let Some((starts, ends)) = stable_ts::audio2timings(pcm) {
+        stable_ts::suppress_silence(
+            &mut result,
+            &starts,
+            &ends,
+            DEFAULT_MIN_WORD_DUR,
+            DEFAULT_NONSPEECH_ERROR,
+        );
+        stable_ts::update_nonspeech_sections(&mut result, &starts, &ends);
+        stable_ts::set_current_as_orig(&mut result);
+    }
+
+    let language = result.language.clone();
+    Ok(Transcription { language, result })
+}
+
+/// End-to-end transcription entry point, mirroring
+/// `WhisperModelWrapper.transcribe` (`submate/whisper.py`).
+///
+/// Media path → PCM (via `submate-media`) → whisper.cpp inference → regroup →
+/// suppress-silence → [`Transcription`] (`.text`/`.language`/`.segments`/
+/// `.to_srt_vtt`). Real model execution is gated behind the `model` cargo
+/// feature; the assembly stages ([`assemble_result`]) are not, so the default
+/// build still compiles and the structural parity test runs without a model.
+#[cfg(feature = "model")]
+pub async fn transcribe(
+    model_path: impl Into<String>,
+    media_path: &std::path::Path,
+    regroup_algo: &str,
+    options: TranscribeOptions,
+) -> Result<Transcription, TranscribeError> {
+    use submate_media::{prepare_audio_for_transcription, PreparedAudio};
+
+    // Prepare audio: extract a track to PCM only when the file has several,
+    // otherwise hand whisper the file path directly (matches the Python helper).
+    let prepared =
+        prepare_audio_for_transcription(media_path, options.language.as_deref()).await;
+    let pcm = match prepared {
+        PreparedAudio::Pcm(bytes) => pcm_s16le_to_f32(&bytes),
+        PreparedAudio::Path(path) => {
+            // whisper.cpp needs decoded f32 PCM; decode the whole file's first
+            // audio track to s16le and convert.
+            let bytes = submate_media::extract_audio_track_to_memory(&path, 0)
+                .await
+                .map_err(|e| TranscribeError::Media(e.to_string()))?;
+            pcm_s16le_to_f32(&bytes)
+        }
+    };
+
+    let raw = transcribe_pcm(model_path, pcm.clone(), options)
+        .await
+        .map_err(TranscribeError::Whisper)?;
+
+    assemble_result(&raw, regroup_algo, &pcm).map_err(TranscribeError::Pipeline)
+}
+
+/// Errors raised by the end-to-end [`transcribe`] entry point.
+#[cfg(feature = "model")]
+#[derive(Debug, thiserror::Error)]
+pub enum TranscribeError {
+    /// Audio extraction / probing failed.
+    #[error("media error: {0}")]
+    Media(String),
+    /// whisper.cpp inference failed.
+    #[error("whisper error: {0}")]
+    Whisper(#[source] WhisperError),
+    /// A post-inference assembly stage failed.
+    #[error("pipeline error: {0}")]
+    Pipeline(#[source] PipelineError),
+}
+
+/// Decode signed 16-bit little-endian PCM bytes into normalized f32 samples in
+/// `-1.0..=1.0`, the layout whisper.cpp expects. Mirrors what
+/// `extract_audio_track_to_memory` (`s16le`/mono/16 kHz) produces. Any trailing
+/// odd byte is ignored.
+#[cfg(feature = "model")]
+fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

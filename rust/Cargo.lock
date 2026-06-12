@@ -1795,7 +1795,11 @@ dependencies = [
 name = "submate-whisper"
 version = "0.1.0"
 dependencies = [
+ "parity",
  "serde",
+ "serde_json",
+ "stable-ts",
+ "submate-media",
  "thiserror",
  "tokio",
  "tracing",
