@@ -142,9 +142,9 @@ impl Default for AppState {
 
 /// Errors surfaced by the server, rendered by the global error handler.
 ///
-/// Every variant maps to a JSON body `{"error": "<message>"}` plus an HTTP
-/// status, so clients see a single, predictable error envelope regardless of
-/// which handler failed.
+/// Every variant maps to a JSON body `{"detail": "<message>"}` plus an HTTP
+/// status, matching FastAPI's `HTTPException` envelope, so clients see a single,
+/// predictable error envelope regardless of which handler failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// A requested resource does not exist.
@@ -187,7 +187,7 @@ impl IntoResponse for ServerError {
         if status.is_server_error() {
             tracing::error!(error = %self, "request failed");
         }
-        (status, Json(json!({ "error": self.to_string() }))).into_response()
+        (status, Json(json!({ "detail": self.to_string() }))).into_response()
     }
 }
 
@@ -912,6 +912,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        // Python emits FastAPI's `HTTPException` envelope `{"detail": ...}`; the
+        // error body must match that shape (not the `error` key).
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body["detail"], "Invalid request - not from Jellyfin server",
+            "FastAPI error bodies use the `detail` key, not `error`"
+        );
+        assert!(
+            body.get("error").is_none(),
+            "must not use the `error` key"
+        );
     }
 
     #[cfg(feature = "jellyfin")]
@@ -933,16 +945,24 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
-    #[test]
-    fn server_error_renders_json_envelope_with_status() {
+    #[tokio::test]
+    async fn server_error_renders_json_envelope_with_status() {
+        use http_body_util::BodyExt;
+
         let res = ServerError::NotFound("nope".into()).into_response();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         let res = ServerError::BadRequest("bad".into()).into_response();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let res = ServerError::Internal("boom".into()).into_response();
-        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let res = ServerError::Unavailable("nope".into()).into_response();
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        // The 500 envelope matches FastAPI's global handler: `{"detail": ...}`.
+        let res = ServerError::Internal("boom".into()).into_response();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["detail"], "boom");
+        assert!(body.get("error").is_none(), "must not use the `error` key");
     }
 
     // ---- node-coordination API ---------------------------------------------
