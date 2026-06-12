@@ -3,7 +3,7 @@
 **blocked-by:** port-server-node-api, port-queue-transcription-service
 
 ## what
-Port `/jellyfin/webhook`: validate User-Agent, filter ItemAdded, resolve the file path, run the skip decision, and enqueue a file-transcription job (fire-and-forget; a node drains it).
+Port `POST /webhooks/jellyfin` (router prefix `/webhooks`, path `/jellyfin`, per `submate/server/handlers/jellyfin/router.py` — NOT `/jellyfin/webhook`; see `backlog/align-jellyfin-webhook-route.md`): validate User-Agent, filter ItemAdded, resolve the file path, run the skip decision, and enqueue a file-transcription job (fire-and-forget; a node drains it).
 
 ## where
 `rust/crates/submate-server/src/lib.rs`.
