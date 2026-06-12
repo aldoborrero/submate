@@ -15,12 +15,17 @@ branch/worktree were discarded.
 
 - Worktree `port-bazarr-language-name-lookup` removed.
 - Branch `grind/port-bazarr-language-name-lookup` deleted.
-- Item rerouted to `backlog/needs-human/port-bazarr-language-name-lookup.md`.
+- Item initially rerouted to `backlog/needs-human/`, then unparked back to
+  `backlog/port-bazarr-language-name-lookup.md`.
 
-Triage skips `backlog/` subdirectories, so the item will not be re-picked
-automatically. A human reviews it and either:
+The denylist hit was on a capture *script* (`rust/fixtures/capture/capture_bazarr_lang.py`),
+not an external-runtime gate. Per the capture-prepass triage rule
+(`meta-contention.md`, fifth pattern), a capture-blocked item whose capture is
+pure-data with no external runtime belongs in `backlog/`, not `needs-human/`.
+This item's body confirms it is a pure-data table + two-step lookup with no
+whisper/runtime dependency, so it was unparked.
 
-1. applies the denylisted change (`rust/fixtures/capture/capture_bazarr_lang.py`) directly,
-2. re-scopes the item so it avoids the denylisted file and moves it back to
-   `backlog/`, or
-3. deletes it.
+The correct fix is a **capture pre-pass**: author `capture_bazarr_lang.py` and
+land its golden under `rust/fixtures/**` in a dedicated capture commit, then
+re-dispatch the porter (whose scope excludes `rust/fixtures/**`) against the
+now-present oracle.
