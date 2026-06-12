@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+whisper-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 submate-types = { path = "../submate-types" }
@@ -23,7 +24,9 @@ wiremock = { workspace = true }
 # `model` forwards to submate-whisper's real whisper.cpp inference, enabling
 # `Dispatcher::transcribe_pcm`. Off by default so CI builds without a model.
 default = []
-model = ["submate-whisper/model"]
+# `whisper-cpp-tracing` exposes whisper-rs's tracing trampoline so whisper.cpp's
+# stderr logging is redirected through `tracing` at model init.
+model = ["submate-whisper/model", "dep:whisper-rs", "whisper-rs/whisper-cpp-tracing"]
 
 [lints]
 workspace = true
