@@ -1778,6 +1778,11 @@ dependencies = [
 [[package]]
 name = "submate-subtitle"
 version = "0.1.0"
+dependencies = [
+ "parity",
+ "serde_json",
+ "submate-lang",
+]
 
 [[package]]
 name = "submate-translate"

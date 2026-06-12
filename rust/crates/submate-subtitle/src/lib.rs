@@ -3,3 +3,4 @@
 //! Stub — implemented by the grind backlog (see `backlog/`).
 
 pub mod cue;
+pub mod discovery;
