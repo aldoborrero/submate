@@ -48,9 +48,10 @@ perSystem.devshell.mkShell {
       rust-analyzer
       cargo-audit
 
-      # whisper-rs builds whisper.cpp and runs bindgen.
+      # whisper-rs builds whisper.cpp (cmake + a build tool) and runs bindgen.
       clang
       cmake
+      gnumake
       pkg-config
     ]
   );
