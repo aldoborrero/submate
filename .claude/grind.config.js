@@ -45,6 +45,12 @@ submate-whisper (whisper.py via whisper-rs), submate-translate (translation.py),
 submate-jellyfin + submate-bazarr (integrations), submate-queue (queue/),
 submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 
+// Single-cluster focus for triage. Set to a slug prefix to make triage pick
+// every READY item with that prefix first each round; set to null to disable
+// (normal foundational-first priority). The cluster is still gated by the
+// blocked-by readiness rule, so a serial chain advances one stage per round.
+const FOCUS = 'port-stablets-'
+
 const CONFIG = {
   name: 'submate-rs',
   implementers: 3,
@@ -73,9 +79,16 @@ const CONFIG = {
      [ -f "backlog/$(echo "$dep" | xargs).md" ] && echo "BLOCKED by $dep"
    done
    \`\`\`
-   Skip any item with an unsatisfied blocker THIS round. Prefer ready
-   foundational items (types/lang/config/proto/paths, then the stable-ts A
-   stage) — they unblock the most downstream work.`,
+   Skip any item with an unsatisfied blocker THIS round.${FOCUS ? `
+
+3. **FOCUS — priority override (this run).** The port is focused on the
+   \`${FOCUS}\` cluster. Among READY items, pick EVERY ready \`${FOCUS}\`* item
+   FIRST (top priority) before anything else; fill any leftover implementer
+   slots with other ready items by normal priority. This cluster is a serial
+   A→B→C→D chain, so usually only 1–2 stages are ready per round — advancing it
+   one stage per round is the intended outcome, not a shortfall.` : `
+   Prefer ready foundational items (types/lang/config/proto/paths, then the
+   stable-ts A stage) — they unblock the most downstream work.`}`,
 
   // Skip parity when no rust src changed since its last run (nothing new to
   // diverge). One gate-agent evaluates this; rotation advances past it.
