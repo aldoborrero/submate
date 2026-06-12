@@ -1,5 +1,13 @@
 # Port SRT/VTT parsing + round-trip
 
+**META note (r2 round 1 confirm):** env re-verified — `python3 -c "import srt,
+pysubs2"` succeeds in the active nix devshell (`srt` 1.8.0, `pysubs2` present),
+so the capture is runnable **now** with no external runtime. The stale
+`backlog/tried/` abandon record for this item was removed this round (it
+contradicted the unpark at `a1d95d3`). Next round's META/capture pre-pass should
+**execute** `capture_subtitle.py` and land the goldens in a deliberate capture
+commit before dispatch — do NOT re-park to `needs-human/`; there is no gate.
+
 **META note (round 3 unblock):** previously parked in `needs-human/` as if it
 needed a human/credential. It does not — this is a **pure-data capture**
 (`capture_subtitle.py`, mirroring `capture_paths.py`). `srt`, `pysubs2`, and the
