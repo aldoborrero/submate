@@ -1792,6 +1792,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "submate-subtitle",
  "tokio",
  "wiremock",
 ]

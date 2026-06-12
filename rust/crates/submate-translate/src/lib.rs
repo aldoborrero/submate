@@ -636,8 +636,226 @@ pub fn split_batch(translated: &str, separator_token: &str, originals: &[String]
     parts
 }
 
+/// ASS/SSA tag-preservation prompt (ports `ASS_TRANSLATION_PROMPT`).
+///
+/// Used by [`translate_ass_dialogue`] instead of [`TRANSLATION_PROMPT`]: it
+/// instructs the model to translate only the human-readable dialogue while
+/// leaving `{...}` override tags and `\N` / `\n` newline markers untouched.
+/// The literal `{{...}}` braces in the Python f-string-style template are
+/// single braces here (Rust does not escape them).
+pub const ASS_TRANSLATION_PROMPT: &str = "Translate the following ASS subtitle dialogue from {source_lang} to {target_lang}.\n\nCRITICAL RULES:\n1. ONLY translate the human-readable dialogue text\n2. PRESERVE ALL formatting tags exactly as-is: {\\i1}, {\\b1}, {\\pos(x,y)}, {\\an8}, {\\fad(x,y)}, etc.\n3. PRESERVE newline markers: \\N and \\n\n4. PRESERVE the exact line structure (one subtitle per line, separated by |||SUBTITLE_BREAK|||)\n5. DO NOT add, remove, or modify any tags inside curly braces {}\n6. DO NOT translate or modify anything inside curly braces {}\n7. Output ONLY the translated subtitles, no explanations\n\nExample input:\n{\\i1}Bonjour{\\i0} monde\n|||SUBTITLE_BREAK|||\n{\\an8}Comment ça va?\n\nExample output:\n{\\i1}Hello{\\i0} world\n|||SUBTITLE_BREAK|||\n{\\an8}How are you?\n\nSubtitles to translate:\n{text}";
+
+/// Extract every `{...}` override-tag substring from an ASS dialogue line, in
+/// order. Ports the `re.findall(r"\{[^}]*\}", text)` in `validate_ass_tags`:
+/// each match starts at a `{` and runs to the next `}` (empty bodies allowed).
+fn ass_tags(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut tags = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some(rel) = text[i + 1..].find('}') {
+                let end = i + 1 + rel; // index of the closing '}'
+                tags.push(&text[i..=end]);
+                i = end + 1;
+                continue;
+            }
+            // No closing brace: the regex cannot match here; stop scanning.
+            break;
+        }
+        i += 1;
+    }
+    tags
+}
+
+/// Whether `translated` preserves the exact ASS override tags of `original`
+/// (same `{...}` substrings, in the same order). Ports `validate_ass_tags`.
+pub fn validate_ass_tags(original: &str, translated: &str) -> bool {
+    ass_tags(original) == ass_tags(translated)
+}
+
+/// Translate a batch of cue texts in one model round-trip and realign the
+/// result (ports `TranslationService._translate_batch`).
+///
+/// Joins `texts` with the newline-wrapped `separator_token` ([`join_batch`]),
+/// runs `complete` on the formatted prompt, then splits the reply back into
+/// per-cue blocks ([`split_batch`]). On a block-count mismatch the originals are
+/// kept for the whole batch. `complete` receives the fully-formed prompt and
+/// returns the model reply (already stripped, as the backends do); decoupling it
+/// from [`Backend`] lets callers drive the flow from a recorded map in tests.
+fn translate_batch<E>(
+    texts: &[String],
+    source_lang: &str,
+    target_lang: &str,
+    separator_token: &str,
+    prompt_template: &str,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<Vec<String>, E> {
+    let combined = join_batch(texts, separator_token);
+    let prompt = format_prompt(prompt_template, source_lang, target_lang, &combined);
+    let translated = complete(&prompt)?;
+    Ok(split_batch(&translated, separator_token, texts))
+}
+
+/// Run the chunked batch-translation loop over `texts`, returning a
+/// translation aligned 1:1 with the input (ports the `chunk_size` loop shared by
+/// `translate_subtitles`, `translate_vtt_content` and `translate_ass_content`).
+///
+/// Splits `texts` into batches of `chunk_size` ([`chunk_ranges`]), translating
+/// each via [`translate_batch`]. The returned vec has the same length as
+/// `texts`; a `chunk_size` of zero translates everything in a single batch.
+fn translate_chunks<E>(
+    texts: &[String],
+    source_lang: &str,
+    target_lang: &str,
+    chunk_size: usize,
+    separator_token: &str,
+    prompt_template: &str,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<Vec<String>, E> {
+    let mut out = Vec::with_capacity(texts.len());
+    for range in chunk_ranges(texts.len(), chunk_size) {
+        let batch = &texts[range];
+        let translated = translate_batch(
+            batch,
+            source_lang,
+            target_lang,
+            separator_token,
+            prompt_template,
+            complete,
+        )?;
+        out.extend(translated);
+    }
+    Ok(out)
+}
+
+/// Translate raw SRT content, preserving cue indices and timing (ports
+/// `TranslationService.translate_srt_content`).
+///
+/// Short-circuits and returns the input unchanged when `source_lang ==
+/// target_lang`. Otherwise parses with [`submate_subtitle::cue::parse_srt`],
+/// translates the cue contents in chunks of `chunk_size` (joined with
+/// [`SRT_SEPARATOR_TOKEN`] under [`TRANSLATION_PROMPT`]), writes the results
+/// back onto the cues, and re-emits via [`submate_subtitle::cue::compose_srt`].
+/// `complete` is invoked once per batch with the fully-formed prompt.
+pub fn translate_srt_content<E>(
+    srt_content: &str,
+    source_lang: &str,
+    target_lang: &str,
+    chunk_size: usize,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<String, E> {
+    if source_lang == target_lang {
+        return Ok(srt_content.to_string());
+    }
+
+    let mut cues = submate_subtitle::cue::parse_srt(srt_content);
+    let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
+    let translated = translate_chunks(
+        &texts,
+        source_lang,
+        target_lang,
+        chunk_size,
+        SRT_SEPARATOR_TOKEN,
+        TRANSLATION_PROMPT,
+        complete,
+    )?;
+    for (cue, text) in cues.iter_mut().zip(translated) {
+        cue.text = text;
+    }
+    Ok(submate_subtitle::cue::compose_srt(&cues))
+}
+
+/// Translate raw WebVTT content, preserving cue timing and structure (ports
+/// `TranslationService.translate_vtt_content`).
+///
+/// Mirrors [`translate_srt_content`] but parses/serializes with
+/// [`submate_subtitle::cue::parse_vtt`] / [`compose_vtt`] and joins cues with
+/// [`VTT_SEPARATOR_TOKEN`]. Like the Python port, when the parse yields no
+/// translatable cues the input is returned unchanged.
+///
+/// [`compose_vtt`]: submate_subtitle::cue::compose_vtt
+pub fn translate_vtt_content<E>(
+    vtt_content: &str,
+    source_lang: &str,
+    target_lang: &str,
+    chunk_size: usize,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<String, E> {
+    if source_lang == target_lang {
+        return Ok(vtt_content.to_string());
+    }
+
+    let mut cues = submate_subtitle::cue::parse_vtt(vtt_content);
+    if cues.is_empty() {
+        return Ok(vtt_content.to_string());
+    }
+
+    let texts: Vec<String> = cues.iter().map(|c| c.text.clone()).collect();
+    let translated = translate_chunks(
+        &texts,
+        source_lang,
+        target_lang,
+        chunk_size,
+        VTT_SEPARATOR_TOKEN,
+        TRANSLATION_PROMPT,
+        complete,
+    )?;
+    for (cue, text) in cues.iter_mut().zip(translated) {
+        cue.text = text;
+    }
+    Ok(submate_subtitle::cue::compose_vtt(&cues))
+}
+
+/// Translate already-extracted ASS dialogue lines, dropping any translation that
+/// would alter the line's override tags (ports the tag-preservation body of
+/// `TranslationService.translate_ass_content`).
+///
+/// The workspace has no ASS (de)serializer, so this ports the portable core:
+/// given the dialogue `texts` pysubs2 would have extracted, it translates them
+/// in chunks (joined with [`VTT_SEPARATOR_TOKEN`] under
+/// [`ASS_TRANSLATION_PROMPT`]) and, per line, keeps the translation only when
+/// [`validate_ass_tags`] confirms the `{...}` tags are unchanged — otherwise it
+/// keeps the original, matching the Python "tag mismatch, keeping original"
+/// fallback. The returned vec aligns 1:1 with `texts`.
+pub fn translate_ass_dialogue<E>(
+    texts: &[String],
+    source_lang: &str,
+    target_lang: &str,
+    chunk_size: usize,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<Vec<String>, E> {
+    if source_lang == target_lang {
+        return Ok(texts.to_vec());
+    }
+
+    let translated = translate_chunks(
+        texts,
+        source_lang,
+        target_lang,
+        chunk_size,
+        VTT_SEPARATOR_TOKEN,
+        ASS_TRANSLATION_PROMPT,
+        complete,
+    )?;
+
+    Ok(texts
+        .iter()
+        .zip(translated)
+        .map(|(original, new_text)| {
+            if validate_ass_tags(original, &new_text) {
+                new_text
+            } else {
+                original.clone()
+            }
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use super::*;
 
     #[test]
@@ -671,6 +889,44 @@ mod tests {
         // model collapsed three cues into two blocks: keep originals.
         let reply = "uno ---BREAK--- dos";
         assert_eq!(split_batch(reply, "---BREAK---", &originals), originals);
+    }
+
+    #[test]
+    fn ass_tags_match_when_only_dialogue_changes() {
+        // Same `{...}` tags in the same order -> preserved.
+        assert!(validate_ass_tags(
+            "{\\i1}Bonjour{\\i0} monde",
+            "{\\i1}Hello{\\i0} world"
+        ));
+        // A dropped tag -> rejected.
+        assert!(!validate_ass_tags("{\\i1}Bonjour{\\i0}", "{\\i1}Hello"));
+        // A reordered/changed tag -> rejected.
+        assert!(!validate_ass_tags("{\\an8}Hi", "{\\an2}Hi"));
+        // No tags either side -> trivially preserved.
+        assert!(validate_ass_tags("plain", "llano"));
+    }
+
+    #[test]
+    fn translate_srt_short_circuits_on_same_language() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
+        let mut complete = |_: &str| -> Result<String, Infallible> {
+            panic!("backend must not be called when source == target");
+        };
+        let out = translate_srt_content(srt, "en", "en", 50, &mut complete).unwrap();
+        assert_eq!(out, srt);
+    }
+
+    #[test]
+    fn ass_dialogue_keeps_original_on_tag_mismatch() {
+        // Two cues in one batch; the model drops the tag on the second.
+        let texts = vec!["{\\i1}Hello".to_string(), "{\\b1}World".to_string()];
+        let mut complete = |_: &str| -> Result<String, Infallible> {
+            Ok(format!("{{\\i1}}Hola{VTT_SEPARATOR_TOKEN}Mundo"))
+        };
+        let out = translate_ass_dialogue(&texts, "en", "es", 50, &mut complete).unwrap();
+        // First cue's tags preserved -> translation kept; second mismatched ->
+        // original kept.
+        assert_eq!(out, vec!["{\\i1}Hola".to_string(), "{\\b1}World".to_string()]);
     }
 
     #[test]
