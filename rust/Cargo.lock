@@ -1758,6 +1758,7 @@ dependencies = [
  "axum",
  "hex",
  "http-body-util",
+ "parity",
  "serde",
  "serde_json",
  "sha2",

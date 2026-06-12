@@ -29,6 +29,7 @@ submate-jellyfin = { path = "../submate-jellyfin", optional = true }
 submate-config = { path = "../submate-config" }
 
 [dev-dependencies]
+parity = { path = "../parity" }
 http-body-util = "0.1"
 sha2 = { workspace = true }
 hex = { workspace = true }

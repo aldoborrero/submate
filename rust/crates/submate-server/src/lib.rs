@@ -841,28 +841,21 @@ mod tests {
         (status, body)
     }
 
+    // The literal `GET /` and `GET /status` bodies (server name, version, docs,
+    // and all five `endpoints` paths) are pinned against the Python-captured
+    // golden in `tests/parity.rs` (`core_router::root` / `core_router::status`),
+    // not hand-encoded here, so the Rust handlers cannot silently drift from the
+    // `core/router.py` SPEC. This inline test keeps only the *structural* guard
+    // that is local to the Rust shape: `GET /status` has exactly the three
+    // top-level keys and its `queue` value is an object.
     #[tokio::test]
-    async fn ops_routes_root_returns_server_info() {
-        let (status, body) = get_json(app(AppState::default()), "/").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["name"], "Submate Server");
-        assert_eq!(body["version"], VERSION);
-        assert_eq!(body["docs"], "/docs");
-        assert_eq!(body["endpoints"]["status"], "/status");
-        assert_eq!(body["endpoints"]["queue"], "/queue");
-        assert_eq!(body["endpoints"]["bazarr_asr"], "/bazarr/asr");
-    }
-
-    #[tokio::test]
-    async fn ops_routes_status_has_status_version_queue() {
+    async fn ops_routes_status_top_level_shape() {
         let (status, body) = get_json(app(AppState::default()), "/status").await;
         assert_eq!(status, StatusCode::OK);
-        // Exactly the Python top-level keys: status, version, queue.
         let obj = body.as_object().unwrap();
         assert_eq!(obj.len(), 3);
-        assert_eq!(body["status"], "ok");
-        assert_eq!(body["version"], VERSION);
-        assert_eq!(body["version"], "1.0.0");
+        assert!(obj.contains_key("status"));
+        assert!(obj.contains_key("version"));
         assert!(body["queue"].is_object());
     }
 
