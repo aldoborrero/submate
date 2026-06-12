@@ -113,6 +113,16 @@ def main() -> None:
     final = model.transcribe_stable(str(clip), regroup=REGROUP, suppress_silence=True, word_timestamps=True)
     write_text(f"{base}/03.srt", final.to_srt_vtt(word_level=False, vtt=False))
     write_text(f"{base}/03.vtt", final.to_srt_vtt(word_level=False, vtt=True))
+
+    # --- transcribe parity golden: final segments for the STRUCTURAL pipeline
+    # comparison (parity::assert_segments_close — whisper.cpp != faster-whisper,
+    # so the Rust port is checked on count/timing/text-similarity, not bytes).
+    segs = [
+        {"start": round(s.start, 3), "end": round(s.end, 3), "text": s.text}
+        for s in final.segments
+    ]
+    write_json(f"transcribe/{name}.segments.json", segs)
+    write_text(f"transcribe/{name}.expected.srt", final.to_srt_vtt(word_level=False, vtt=False))
     print(f"staged stable-ts goldens for {name} -> {FIXTURES / base}")
 
 
