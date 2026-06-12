@@ -7,8 +7,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+submate-proto = { path = "../submate-proto" }
 submate-whisper = { path = "../submate-whisper" }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+submate-types = { path = "../submate-types" }
+wiremock = { workspace = true }
 
 [features]
 # `model` forwards to submate-whisper's real whisper.cpp inference, enabling
