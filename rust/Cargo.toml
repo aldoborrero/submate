@@ -61,6 +61,8 @@ whisper-rs = "0.12"
 float-cmp = "0.10"
 pretty_assertions = "1"
 wiremock = "0.6"
+sha2 = "0.10"
+hex = "0.4"
 
 # Shared lints — every crate sets `[lints] workspace = true`.
 [workspace.lints.clippy]

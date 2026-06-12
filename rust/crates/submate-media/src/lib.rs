@@ -1,11 +1,13 @@
 //! ffmpeg/ffprobe wrappers (ports `submate/media.py`).
 //!
-//! Currently covers audio-track probing: [`get_audio_tracks`] and
-//! [`get_audio_languages`] port the equivalently named Python helpers, which
+//! Covers audio-track probing — [`get_audio_tracks`] and [`get_audio_languages`]
 //! run `ffprobe -show_streams -select_streams a -of json` and read each audio
-//! stream's index, language tag and codec name.
+//! stream's index, language tag and codec name — and audio extraction:
+//! [`extract_audio_track_to_memory`] and [`prepare_audio_for_transcription`]
+//! spawn `ffmpeg` to decode a selected audio track to raw 16-bit mono 16 kHz
+//! PCM in memory.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -166,6 +168,147 @@ pub async fn get_audio_languages(video_path: &Path) -> Vec<String> {
     }
 }
 
+/// The audio format `ffmpeg` decodes a track to before it reaches whisper:
+/// signed 16-bit little-endian PCM (`s16le`), mono (`-ac 1`), 16 kHz
+/// (`-ar 16000`). Mirrors the keyword arguments the Python
+/// `extract_audio_track_to_memory` passes (`format="s16le"`, `ac=1`,
+/// `ar=16000`), which is the sample format speech models expect.
+const PCM_FORMAT: &str = "s16le";
+const PCM_CHANNELS: &str = "1";
+const PCM_SAMPLE_RATE: &str = "16000";
+
+/// Errors raised while extracting an audio track to PCM via `ffmpeg`.
+#[derive(Debug, thiserror::Error)]
+pub enum ExtractError {
+    /// Spawning or waiting on the `ffmpeg` process failed.
+    #[error("failed to run ffmpeg: {0}")]
+    Spawn(#[source] std::io::Error),
+
+    /// `ffmpeg` exited non-zero. Carries its captured stderr.
+    #[error("ffmpeg exited with status {status}: {stderr}")]
+    Exit {
+        /// The process exit status, rendered as ffmpeg printed it.
+        status: String,
+        /// Captured stderr, for diagnostics.
+        stderr: String,
+    },
+}
+
+/// Extract one audio track from a media file to raw PCM held in memory.
+///
+/// Ports `extract_audio_track_to_memory` in `submate/media.py`. Runs
+/// `ffmpeg -i <path> -map 0:a:<track_index> -f s16le -ac 1 -ar 16000 pipe:`
+/// and returns the decoded bytes: signed 16-bit little-endian, mono, 16 kHz.
+///
+/// `track_index` selects the track *among the audio streams* (the `0:a:N`
+/// stream specifier), matching the [`AudioTrack::index`] enumeration produced
+/// by [`get_audio_tracks`]. Returns an [`ExtractError`] if `ffmpeg` cannot be
+/// run or exits non-zero.
+///
+/// Unlike the Python version, the output format is fixed to `s16le`: the only
+/// caller-visible use is feeding whisper / streaming to nodes, both of which
+/// want this exact raw layout, so the `format` parameter is dropped rather than
+/// carried as dead generality.
+pub async fn extract_audio_track_to_memory(
+    video_path: &Path,
+    track_index: usize,
+) -> Result<Vec<u8>, ExtractError> {
+    let output = tokio::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(video_path)
+        .args(["-map", &format!("0:a:{track_index}")])
+        .args(["-f", PCM_FORMAT])
+        .args(["-ac", PCM_CHANNELS])
+        .args(["-ar", PCM_SAMPLE_RATE])
+        .args(["-loglevel", "quiet"])
+        .arg("pipe:")
+        .output()
+        .await
+        .map_err(ExtractError::Spawn)?;
+
+    if !output.status.success() {
+        return Err(ExtractError::Exit {
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+
+    Ok(output.stdout)
+}
+
+/// The two ways audio can reach the transcription pipeline, mirroring the
+/// Python `Path | BytesIO` union returned by `prepare_audio_for_transcription`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedAudio {
+    /// The original media file should be handed to whisper directly (single- or
+    /// zero-track files: nothing to disambiguate).
+    Path(PathBuf),
+    /// A specific track was extracted to in-memory `s16le`/mono/16 kHz PCM.
+    Pcm(Vec<u8>),
+}
+
+/// Prepare a media file for transcription, extracting a specific track only
+/// when one must be chosen.
+///
+/// Ports `prepare_audio_for_transcription` in `submate/media.py`. If the file
+/// has at most one audio track, returns [`PreparedAudio::Path`] with the
+/// original path (whisper can open it directly). With multiple tracks it picks
+/// one — by `language` when supplied and matched, otherwise the first track —
+/// and returns its extracted PCM as [`PreparedAudio::Pcm`].
+///
+/// Like the Python helper, any failure (probe or extraction) is swallowed and
+/// degrades to [`PreparedAudio::Path`] with the original path, so transcription
+/// can still proceed against the whole file.
+pub async fn prepare_audio_for_transcription(
+    file_path: &Path,
+    language: Option<&str>,
+) -> PreparedAudio {
+    let fallback = || PreparedAudio::Path(file_path.to_path_buf());
+
+    let tracks = match get_audio_tracks(file_path).await {
+        Ok(tracks) => tracks,
+        Err(err) => {
+            tracing::warn!(
+                path = %file_path.display(),
+                error = %err,
+                "failed to detect audio tracks, falling back to direct path",
+            );
+            return fallback();
+        }
+    };
+
+    // At most one track: nothing to disambiguate, hand whisper the file.
+    if tracks.len() <= 1 {
+        tracing::debug!(
+            path = %file_path.display(),
+            "single audio track detected, passing file path directly",
+        );
+        return fallback();
+    }
+
+    // Prefer a language match; fall back to the first track otherwise.
+    let selected = language
+        .and_then(|lang| get_audio_track_by_language(&tracks, lang))
+        .unwrap_or(&tracks[0]);
+    tracing::debug!(
+        path = %file_path.display(),
+        index = selected.index,
+        "extracting selected audio track",
+    );
+
+    match extract_audio_track_to_memory(file_path, selected.index).await {
+        Ok(pcm) => PreparedAudio::Pcm(pcm),
+        Err(err) => {
+            tracing::warn!(
+                path = %file_path.display(),
+                error = %err,
+                "audio extraction failed, falling back to direct path",
+            );
+            fallback()
+        }
+    }
+}
+
 #[cfg(test)]
 mod parity {
     use super::*;
@@ -313,5 +456,87 @@ mod real_ffprobe {
         assert_eq!(tracks.len(), 1, "expected one audio track");
         assert_eq!(tracks[0].index, 0);
         assert_eq!(tracks[0].language, "eng");
+    }
+}
+
+#[cfg(test)]
+mod extract {
+    use super::*;
+
+    /// A probe failure (here: a path that does not exist, so `ffprobe` errors)
+    /// must degrade to the original path, not panic — matching the Python
+    /// helper's blanket `except: return file_path`.
+    #[tokio::test]
+    async fn prepare_falls_back_to_path_on_probe_failure() {
+        let missing = Path::new("/nonexistent/submate-media/does-not-exist.mkv");
+        let prepared = prepare_audio_for_transcription(missing, None).await;
+        assert_eq!(prepared, PreparedAudio::Path(missing.to_path_buf()));
+    }
+}
+
+/// Falsifier `extract_pcm_sha`: extract `clipA`'s first audio track to PCM with
+/// the real `ffmpeg` and assert its sha256 matches the golden captured from the
+/// Python `extract_audio_track_to_memory` (`media/clipA.pcm.sha256`).
+///
+/// Skipped (passes as a no-op) when `ffmpeg` is not on `PATH` or the golden has
+/// not been captured yet — the `media/` goldens are produced by a manual
+/// `capture_media.py` run and are denylisted for the port, so this test arms
+/// itself the moment the fixture lands.
+#[cfg(test)]
+mod extract_pcm_sha {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn fixtures_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
+    }
+
+    fn ffmpeg_on_path() -> bool {
+        std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Locate the golden sha file, tolerating either the flat
+    /// `media/clipA.pcm.sha256` layout `capture_media.py` writes or a
+    /// `media/clipA/...pcm.sha256` per-clip directory layout.
+    fn golden_sha() -> Option<String> {
+        let media = fixtures_dir().join("media");
+        let flat = media.join("clipA.pcm.sha256");
+        let nested = media.join("clipA").join("clipA.pcm.sha256");
+        for candidate in [flat, nested] {
+            if let Ok(text) = std::fs::read_to_string(&candidate) {
+                return Some(text.trim().to_string());
+            }
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn extract_pcm_sha() {
+        if !ffmpeg_on_path() {
+            eprintln!("skipping extract_pcm_sha: ffmpeg not available on PATH");
+            return;
+        }
+        let Some(expected) = golden_sha() else {
+            eprintln!(
+                "skipping extract_pcm_sha: golden media/clipA.pcm.sha256 not captured yet \
+                 (requires fixture: rust/fixtures/media/clipA.pcm.sha256 — capture first)"
+            );
+            return;
+        };
+
+        let clip = fixtures_dir().join("clips").join("clipA.wav");
+        let pcm = extract_audio_track_to_memory(&clip, 0)
+            .await
+            .expect("ffmpeg extracts clipA's first audio track");
+
+        let digest = hex::encode(Sha256::digest(&pcm));
+        assert_eq!(
+            digest, expected,
+            "extracted PCM sha256 must match golden media/clipA.pcm.sha256",
+        );
     }
 }
