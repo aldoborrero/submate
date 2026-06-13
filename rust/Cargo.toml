@@ -48,7 +48,7 @@ tower = "0.5"
 clap = { version = "4", features = ["derive"] }
 # live progress spinner/bar for `transcribe --sync` (disables its own TTY
 # detection so the CLI controls TTY vs. plain-line fallback explicitly).
-indicatif = { version = "0.17", default-features = false }
+indicatif = { version = "0.18", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # storage
