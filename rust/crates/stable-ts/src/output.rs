@@ -79,6 +79,38 @@ pub fn sec2srt(seconds: f64) -> String {
     sec2vtt(seconds).replace('.', ",")
 }
 
+/// `sec2ass`: `f"{hh:0>1.0f}:{mm:0>2.0f}:{ss:0>2.2f}"`.
+///
+/// The ASS timestamp form `H:MM:SS.cc`: `hh` is width-1 (no effective padding),
+/// `mm` is zero-padded to width 2, and `ss` is 2 decimals zero-padded to width 2
+/// (e.g. `0:00:0.00`, `0:00:5.90`, `0:00:10.36`). Rust's `{:.2}` rounds
+/// half-to-even, matching Python's `format`.
+#[must_use]
+pub fn sec2ass(seconds: f64) -> String {
+    let (hh, mm, ss) = sec2hhmmss(seconds);
+    format!("{hh:01.0}:{mm:02.0}:{ss:02.2}")
+}
+
+/// ASS header: the `[Script Info]`, `[V4+ Styles]`, and `[Events]` sections
+/// upstream emits verbatim, ending with the blank line before the first
+/// `Dialogue`. Matches `result_to_ass`'s default-style branch exactly.
+const ASS_HEADER: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 288\nScaledBorderAndShadow: yes\n\n\
+[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+Style: Default,Arial,24,&H00ff00,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,0\n\n\
+[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\n";
+
+/// One ASS event: `segment2assblock(segment, idx)` —
+/// `"Dialogue: {layer},{start},{end},Default,,0,0,0,,{finalize_text(text)}"`.
+///
+/// Upstream uses the segment's `enumerate` index as the `Layer` field. ASS uses
+/// the literal `\N` escape for a hard line break, so any `finalize_text`
+/// newlines are converted (the fixture has none; a raw `\n` inside a `Dialogue`
+/// line would otherwise corrupt the event).
+fn dialogue_line(layer: usize, start: f64, end: f64, text: &str) -> String {
+    let body = finalize_text(text).replace('\n', "\\N");
+    format!("Dialogue: {layer},{},{},Default,,0,0,0,,{body}", sec2ass(start), sec2ass(end))
+}
+
 /// `finalize_text` with `strip=True` (the only mode submate uses):
 /// `text.strip().replace('\n ', '\n')`.
 fn finalize_text(text: &str) -> String {
@@ -233,6 +265,31 @@ pub fn to_srt_vtt(result: &WhisperResult, word_level: bool, vtt: bool) -> String
     }
 }
 
+/// `result_to_ass` / `WhisperResult.to_ass`, restricted to the segment-level
+/// path submate uses (`segment_level=True`, `word_level=False`, default style,
+/// `strip=True`).
+///
+/// Emits the fixed `[Script Info]` / `[V4+ Styles]` / `[Events]` header
+/// followed by one `Dialogue` line per segment (the segment's index is the
+/// `Layer` field, exactly as upstream's `enumerate(segments)`), joined with
+/// `"\n"`. Returns the joined string (no trailing newline), matching
+/// `result_to_any` when `filepath is None`.
+///
+/// The word-level (karaoke) path is a separate future item.
+#[must_use]
+pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
+    if word_level {
+        unimplemented!("word-level (karaoke) ASS output is not ported");
+    }
+    let blocks: Vec<String> = result
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| dialogue_line(i, s.start(), s.end(), &s.text()))
+        .collect();
+    format!("{ASS_HEADER}{}", blocks.join("\n"))
+}
+
 /// Build the SRT cue list: segment-level rows, or per-word highlight rows.
 fn srt_cues(segments: &[Segment], word_level: bool) -> Vec<OutCue> {
     if word_level {
@@ -288,6 +345,16 @@ mod tests {
     fn sec2srt_swaps_decimal_for_comma() {
         assert_eq!(sec2srt(2.44), "00:00:02,440");
         assert_eq!(sec2srt(10.36), "00:00:10,360");
+    }
+
+    #[test]
+    fn sec2ass_matches_python_format() {
+        // hh width-1 (no pad), mm zero-padded to 2, ss 2 decimals width-2.
+        assert_eq!(sec2ass(0.0), "0:00:0.00");
+        assert_eq!(sec2ass(5.9), "0:00:5.90");
+        assert_eq!(sec2ass(10.36), "0:00:10.36");
+        assert_eq!(sec2ass(65.0), "0:01:5.00");
+        assert_eq!(sec2ass(3661.5), "1:01:1.50");
     }
 
     #[test]
