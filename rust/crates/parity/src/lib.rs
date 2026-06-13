@@ -179,6 +179,76 @@ pub fn assert_segments_close(actual: &[Seg], golden: &[Seg], tol: SegTol) {
     }
 }
 
+/// Process-global lock serializing env-mutating tests. The process environment
+/// is shared mutable state, so parallel test threads must take turns on it.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RAII environment isolation for the env-driven config parity tests.
+///
+/// Replaces `figment::Jail` in tests. `Jail::expect_with`'s closure is forced to
+/// return `Result<(), figment::Error>`; that error is ~208 bytes and trips
+/// `clippy::result_large_err`, which cannot be satisfied by boxing because the
+/// type is fixed by figment's API. This guard delivers the same guarantees a
+/// jail does — serialized execution (via [`ENV_LOCK`]), ambient `SUBMATE__*`
+/// vars cleared so a developer/CI machine can't leak them into resolution, and
+/// the previous environment restored on drop even if the test panics — without
+/// routing through a large-error closure.
+///
+/// Hold the returned guard for the duration of the test:
+/// `let _env = EnvGuard::set(&[("SUBMATE__SERVER__PORT", "9123")]);`
+#[must_use = "the environment is restored when the guard is dropped; bind it for the test's scope"]
+pub struct EnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    /// Keys touched, with their value before this guard (None = was unset), for
+    /// exact restoration on drop.
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl EnvGuard {
+    /// Acquire the global env lock, clear every ambient `SUBMATE__*` var, then
+    /// apply `overrides`, recording prior values so [`Drop`] restores the exact
+    /// previous state.
+    pub fn set(overrides: &[(&str, &str)]) -> Self {
+        // Recover from a poisoned lock (a prior test panicked mid-guard): the
+        // data is just `()`, and Drop will have restored that test's env.
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut saved: Vec<(String, Option<String>)> = Vec::new();
+
+        // Snapshot and clear all ambient SUBMATE__* vars first.
+        let ambient: Vec<String> = std::env::vars()
+            .map(|(k, _)| k)
+            .filter(|k| k.starts_with("SUBMATE__"))
+            .collect();
+        for key in ambient {
+            saved.push((key.clone(), std::env::var(&key).ok()));
+            std::env::remove_var(&key);
+        }
+
+        // Apply overrides, snapshotting any key not already recorded above.
+        for (key, value) in overrides {
+            if !saved.iter().any(|(k, _)| k == key) {
+                saved.push(((*key).to_string(), std::env::var(key).ok()));
+            }
+            std::env::set_var(key, value);
+        }
+
+        Self { _lock: lock, saved }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, prior) in self.saved.drain(..) {
+            match prior {
+                Some(value) => std::env::set_var(&key, value),
+                None => std::env::remove_var(&key),
+            }
+        }
+    }
+}
+
 /// Normalized token-set similarity: |A∩B| / |A∪B| over lowercased,
 /// punctuation-stripped whitespace tokens. 1.0 == identical token sets.
 fn token_set_ratio(a: &str, b: &str) -> f64 {

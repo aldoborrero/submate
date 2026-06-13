@@ -161,7 +161,7 @@ pub fn config_show_rows(config_json: &Value) -> Vec<(String, String)> {
 #[cfg(test)]
 mod parity {
     use super::*;
-    use ::parity::{assert_json_eq, golden};
+    use ::parity::{assert_json_eq, golden, EnvGuard};
     use submate_config::Config;
 
     /// `[[setting, value], ...]` JSON, matching the goldens' shape.
@@ -230,22 +230,18 @@ mod parity {
 
     #[test]
     fn config_show_rows_overridden() {
-        // Capture the XDG base from the ambient env before the jail clears it.
+        // Capture the XDG base from the ambient env up front.
         let xdg = xdg_data_home();
-        // `Jail` clears ambient `SUBMATE__*` and sets the override env in a
-        // serialized, isolated scope so resolution is reproducible and race-free.
-        figment::Jail::expect_with(|jail| {
-            jail.clear_env();
-            for (key, value) in OVERRIDE_ENV {
-                jail.set_env(key, value);
-            }
-            let cfg = Config::from_env(None).expect("override env resolves into Config");
-            let mut json = serde_json::to_value(&cfg).expect("Config serializes to JSON");
-            expand_db_path(&mut json, &xdg);
-            let actual = rows_to_value(&config_show_rows(&json));
-            let expected = golden("cli/config_show.overridden.rows.json");
-            assert_json_eq(&actual, &expected);
-            Ok(())
-        });
+        // Clear ambient `SUBMATE__*` and set the override env in a serialized,
+        // isolated scope (see `parity::EnvGuard`) so resolution is reproducible
+        // and race-free; the previous environment is restored when `_env` drops.
+        let _env = EnvGuard::set(OVERRIDE_ENV);
+
+        let cfg = Config::from_env(None).expect("override env resolves into Config");
+        let mut json = serde_json::to_value(&cfg).expect("Config serializes to JSON");
+        expand_db_path(&mut json, &xdg);
+        let actual = rows_to_value(&config_show_rows(&json));
+        let expected = golden("cli/config_show.overridden.rows.json");
+        assert_json_eq(&actual, &expected);
     }
 }

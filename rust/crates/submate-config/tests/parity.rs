@@ -16,7 +16,7 @@
 //! Object key ordering is irrelevant: both sides are compared as
 //! `serde_json::Value` (BTreeMap-backed).
 
-use parity::{assert_json_eq, fixture_path, golden};
+use parity::{assert_json_eq, fixture_path, golden, EnvGuard};
 use submate_config::Config;
 
 #[test]
@@ -49,37 +49,27 @@ fn parse_env(rel: &str) -> Vec<(String, String)> {
 
 #[test]
 fn env_nesting() {
-    // `Jail` sets the env vars in an isolated, serialized scope so this test
-    // neither leaks `SUBMATE__*` into the process nor races other tests.
-    figment::Jail::expect_with(|jail| {
-        // Start from an empty environment so ambient `SUBMATE__*` vars on the
-        // developer/CI machine can't leak into resolution. `clear_env` records
-        // every removed var and restores it when the jail drops.
-        jail.clear_env();
-        for (key, value) in parse_env("config/nested.env") {
-            jail.set_env(key, value);
-        }
+    // Clear ambient `SUBMATE__*` and set the test vars in a serialized, isolated
+    // scope (see `parity::EnvGuard`) so this test neither leaks `SUBMATE__*` into
+    // the process nor races other env-driven tests; restored when `_env` drops.
+    let vars = parse_env("config/nested.env");
+    let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let _env = EnvGuard::set(&pairs);
 
-        let cfg = Config::from_env(None).expect("env resolves into Config");
-        let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
-        let expected = golden("config/nested.resolved.json");
-        assert_json_eq(&actual, &expected);
-        Ok(())
-    });
+    let cfg = Config::from_env(None).expect("env resolves into Config");
+    let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
+    let expected = golden("config/nested.resolved.json");
+    assert_json_eq(&actual, &expected);
 }
 
 #[test]
 fn validators() {
-    figment::Jail::expect_with(|jail| {
-        jail.clear_env();
-        for (key, value) in parse_env("config/validators.env") {
-            jail.set_env(key, value);
-        }
+    let vars = parse_env("config/validators.env");
+    let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let _env = EnvGuard::set(&pairs);
 
-        let cfg = Config::from_env(None).expect("env resolves into Config");
-        let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
-        let expected = golden("config/validators.resolved.json");
-        assert_json_eq(&actual, &expected);
-        Ok(())
-    });
+    let cfg = Config::from_env(None).expect("env resolves into Config");
+    let actual = serde_json::to_value(&cfg).expect("Config serializes to JSON");
+    let expected = golden("config/validators.resolved.json");
+    assert_json_eq(&actual, &expected);
 }

@@ -44,10 +44,9 @@ anyhow = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 
 [dev-dependencies]
+# `parity::EnvGuard` isolates the env (clears `SUBMATE__*`, sets overrides,
+# serialized + restored on drop) for the `config_show` parity test.
 parity = { path = "../parity" }
-# `test` adds `figment::Jail` to set the override env vars in a serialized,
-# isolated scope (no `SUBMATE__*` leak, no cross-test race).
-figment = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true
