@@ -309,6 +309,54 @@ pub fn lang_match_is_ambiguous(tracks: &[AudioTrack], sel: &AudioSelector) -> bo
     }
 }
 
+/// Language tags that mean "no usable language" and so should not seed the
+/// whisper decode hint — `und` (the ffprobe untagged default) and `unknown`.
+/// A track tagged with either is treated as untagged for hint purposes, falling
+/// back to whisper auto-detection.
+fn is_untagged_language(code: &str) -> bool {
+    let code = code.trim();
+    code.is_empty()
+        || code.eq_ignore_ascii_case(UNKNOWN_LANGUAGE)
+        || code.eq_ignore_ascii_case(UNKNOWN_CODEC)
+}
+
+/// Resolve the whisper *decode-language* hint independently of track selection.
+///
+/// This is the language whisper is told to decode in (`TranscribeOptions.language`),
+/// which is distinct from which track the [`AudioSelector`] picks. Rules, in order:
+/// - An explicit `--language` flag wins. `auto` (case-insensitive) → `None`
+///   (whisper auto-detects); any other value → `Some(code)`.
+/// - Otherwise default to the *selected* track's language tag: resolve `sel`
+///   against `tracks`, and use that track's language unless it is untagged
+///   (`und`/`unknown`/empty), in which case → `None`.
+/// - If there is no selector, or it cannot be resolved (e.g. out of range, no
+///   matching language), fall back to `None`.
+///
+/// Pure and I/O-free so the (selector, decode-language) pair can be unit-tested
+/// against a fixed track list.
+pub fn resolve_decode_language(
+    tracks: &[AudioTrack],
+    sel: Option<&AudioSelector>,
+    language_flag: Option<&str>,
+) -> Option<String> {
+    if let Some(flag) = language_flag {
+        let flag = flag.trim();
+        if flag.eq_ignore_ascii_case("auto") {
+            return None;
+        }
+        return Some(flag.to_string());
+    }
+
+    let sel = sel?;
+    let index = resolve_audio_selector(tracks, sel).ok()?;
+    let track = tracks.iter().find(|t| t.index == index)?;
+    if is_untagged_language(&track.language) {
+        None
+    } else {
+        Some(track.language.clone())
+    }
+}
+
 /// Extract audio-track information from a media file via `ffprobe`.
 ///
 /// Ports `get_audio_tracks` in `submate/media.py`. Runs
@@ -827,6 +875,97 @@ mod parity {
             resolve_audio_selector(&[], &AudioSelector::Auto),
             Err(SelectError::NoTracks),
         ));
+    }
+
+    #[test]
+    fn decode_language_explicit_flag_wins_over_track() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        // The flag is the decode hint even though track 1 is tagged "jpn".
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(1)), Some("en")),
+            Some("en".to_string()),
+        );
+    }
+
+    #[test]
+    fn decode_language_auto_flag_is_none() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        // `--language auto` → whisper auto-detects regardless of the track tag.
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(0)), Some("auto")),
+            None,
+        );
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(0)), Some("AUTO")),
+            None,
+        );
+    }
+
+    #[test]
+    fn decode_language_defaults_to_selected_track_tag() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        // Lang selector, no `--language` → tag of the picked track seeds the hint.
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Lang("jpn".to_string())), None),
+            Some("jpn".to_string()),
+        );
+        // Index selector likewise inherits the chosen track's tag.
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(0)), None),
+            Some("eng".to_string()),
+        );
+    }
+
+    #[test]
+    fn decode_language_untagged_track_is_none() {
+        let tracks = [track(0, "eng", false), track(1, "und", false)];
+        // Selecting an untagged track with no `--language` → auto-detect.
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(1)), None),
+            None,
+        );
+        // `unknown` and empty tags behave the same as `und`.
+        let weird = [track(0, "unknown", false), track(1, "", false)];
+        assert_eq!(
+            resolve_decode_language(&weird, Some(&AudioSelector::Index(0)), None),
+            None,
+        );
+        assert_eq!(
+            resolve_decode_language(&weird, Some(&AudioSelector::Index(1)), None),
+            None,
+        );
+    }
+
+    #[test]
+    fn decode_language_unresolvable_selector_is_none() {
+        let tracks = [track(0, "eng", false)];
+        // Out-of-range index, no flag → no hint rather than an error.
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&AudioSelector::Index(9)), None),
+            None,
+        );
+        // No selector and no flag → no hint.
+        assert_eq!(resolve_decode_language(&tracks, None, None), None);
+    }
+
+    #[test]
+    fn decode_language_varies_independently_of_selector() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        // Same selector (Index 1 → "jpn") yields different decode hints solely
+        // from the `--language` flag, proving the two are decoupled.
+        let sel = AudioSelector::Index(1);
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&sel), None),
+            Some("jpn".to_string()),
+        );
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&sel), Some("en")),
+            Some("en".to_string()),
+        );
+        assert_eq!(
+            resolve_decode_language(&tracks, Some(&sel), Some("auto")),
+            None,
+        );
     }
 
     #[test]
