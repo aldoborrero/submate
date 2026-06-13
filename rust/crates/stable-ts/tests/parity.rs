@@ -184,6 +184,33 @@ fn output() {
     );
 }
 
+/// JSON output falsifier (value-parity): `to_json` of the result parsed from
+/// `00_raw.json` must parse back to the golden `output.json` Value (== the
+/// result's `to_dict()`). Asserts the round-trip, not the byte layout —
+/// `serde_json` separators / key order are formatting a JSON consumer ignores.
+#[test]
+fn output_json() {
+    let raw = golden("stablets/clipA/00_raw.json");
+    let expected = golden("stablets/clipA/output.json");
+    let result = WhisperResult::from_value(&raw);
+
+    let emitted = stable_ts::output::to_json(&result);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&emitted).expect("to_json emits valid JSON");
+    assert_json_eq(&parsed, &expected);
+}
+
+/// TXT output falsifier: `to_txt` of the result parsed from `00_raw.json` must
+/// equal that golden's `text` field verbatim (the concatenated transcript).
+#[test]
+fn output_txt() {
+    let raw = golden("stablets/clipA/00_raw.json");
+    let expected = raw["text"].as_str().expect("00_raw.json has a string `text`");
+    let result = WhisperResult::from_value(&raw);
+
+    assert_str_eq(&stable_ts::output::to_txt(&result), expected);
+}
+
 /// Parse an `HH:MM:SS,mmm` SRT timestamp into seconds.
 fn parse_srt_ts(ts: &str) -> f64 {
     let (hms, ms) = ts.split_once(',').expect("`HH:MM:SS,mmm`");
