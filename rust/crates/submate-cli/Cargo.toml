@@ -17,6 +17,12 @@ path = "src/main.rs"
 # a processor that reports "model support not built in" for any job.
 default = []
 model = ["submate-node/model"]
+# GPU backends — build the CLI (and its embedded node) with whisper.cpp GPU
+# acceleration. Pick the one matching the host GPU; needs the backend toolkit at
+# build time. `nix build .#docker-gpu` builds with `cuda`.
+cuda = ["submate-node/cuda"]
+metal = ["submate-node/metal"]
+hipblas = ["submate-node/hipblas"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }

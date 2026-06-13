@@ -11,6 +11,15 @@ repository.workspace = true
 # without a model (and without LIBCLANG_PATH/cmake) still builds the crate.
 default = []
 model = ["dep:whisper-rs", "dep:submate-media"]
+# GPU backends for whisper.cpp inference. Each enables `model` and forwards to
+# the matching whisper-rs backend, which compiles whisper.cpp with that backend
+# and flips `WhisperContextParameters::use_gpu` to default `true`. Pick the one
+# matching the host GPU; each needs its toolkit at build time (CUDA toolkit /
+# Apple Metal / AMD ROCm). whisper-rs 0.12 has no Vulkan/Intel backend — that
+# needs the whisper-rs upgrade.
+cuda = ["model", "whisper-rs/cuda"]
+metal = ["model", "whisper-rs/metal"]
+hipblas = ["model", "whisper-rs/hipblas"]
 
 [dependencies]
 serde = { workspace = true }

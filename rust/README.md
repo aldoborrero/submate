@@ -63,12 +63,37 @@ nix develop --command bash -c '
 That command is the grind's `fastCheck` — every backlog item is "done" iff its
 named `parity::*` test passes under it.
 
+## GPU acceleration
+
+Transcription runs on CPU by default. To build with whisper.cpp GPU offload,
+enable the cargo feature matching the host GPU (each implies `model` and needs
+that backend's toolchain at build time):
+
+```sh
+cargo build --manifest-path rust/Cargo.toml -p submate-cli --release --features cuda     # NVIDIA (CUDA toolkit + nvcc)
+cargo build … --features metal                                                           # Apple Silicon
+cargo build … --features hipblas                                                         # AMD ROCm
+```
+
+A GPU feature flips whisper-rs's `use_gpu` on automatically (it defaults to
+`cfg!(feature = "_gpu")`), so a binary built with `cuda` uses the GPU with no
+runtime flag. whisper-rs 0.12 has **no Vulkan/Intel backend** — that needs the
+whisper-rs upgrade.
+
+`SUBMATE_WHISPER_THREADS` overrides the CPU inference thread count (default =
+whisper.cpp's `min(4, n_cpu)`; raising it can *regress* small models, which are
+memory-bandwidth-bound — measure per host).
+
+> Note: the Rust port is not nix-packaged yet, so `nix build .#docker-gpu` still
+> builds the **Python** image. A CUDA-enabled Rust image is a follow-up to
+> packaging the `rust/` workspace in nix.
+
 ## Running the port
 
 1. Land this scaffold on `origin/main`.
-2. Capture golden fixtures once: run `rust/fixtures/capture/*.py` against the
+1. Capture golden fixtures once: run `rust/fixtures/capture/*.py` against the
    Python tree (see `rust/fixtures/capture/README.md`). Commit `rust/fixtures/`.
-3. Launch `/grind` (3 implementers + a rotating port specialist) and let it work
+1. Launch `/grind` (3 implementers + a rotating port specialist) and let it work
    the `backlog/` until dry.
 
 See `rust/fixtures/README.md` for the parity contract.
