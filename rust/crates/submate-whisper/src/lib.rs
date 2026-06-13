@@ -350,6 +350,13 @@ impl Transcription {
     pub fn to_srt_vtt(&self, vtt: bool) -> String {
         stable_ts::output::to_srt_vtt(&self.result, false, vtt)
     }
+
+    /// Render segment-level ASS, matching
+    /// `TranscriptionResult.to_ass(segment_level=True, word_level=False)`.
+    #[must_use]
+    pub fn to_ass(&self) -> String {
+        stable_ts::output::to_ass(&self.result, false)
+    }
 }
 
 /// A segment-level timed line of the finished transcript.

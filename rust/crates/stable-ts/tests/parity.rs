@@ -184,6 +184,22 @@ fn output() {
     );
 }
 
+/// Segment-level ASS output must be byte-identical to `output.ass`, which was
+/// captured via `WhisperResult.to_ass(segment_level=True, word_level=False)` on
+/// the `00_raw` result. Unlike the SRT/VTT goldens, this fixture comes from the
+/// same `00_raw.json` we parse, so we feed `00_raw` directly. This pins the
+/// header, the `Default` style line, `sec2ass`, and the `Dialogue` event layout
+/// against the real stable_whisper output.
+#[test]
+fn output_ass() {
+    let raw = golden("stablets/clipA/00_raw.json");
+    let result = WhisperResult::from_value(&raw);
+    let ass_golden = std::fs::read_to_string(fixture_path("stablets/clipA/output.ass"))
+        .expect("output.ass fixture present");
+
+    assert_str_eq(&stable_ts::output::to_ass(&result, false), &ass_golden);
+}
+
 /// Parse an `HH:MM:SS,mmm` SRT timestamp into seconds.
 fn parse_srt_ts(ts: &str) -> f64 {
     let (hms, ms) = ts.split_once(',').expect("`HH:MM:SS,mmm`");
