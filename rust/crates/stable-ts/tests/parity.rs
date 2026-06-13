@@ -94,6 +94,34 @@ fn regroup_apply() {
     }
 }
 
+/// B2 apply falsifier for the split-by-duration (`sd`) and merge-all-segments
+/// (`ms`) ops, which parse (B1) but were unrunnable until this port.
+///
+/// Each op string is parsed by the same `parse_regroup_algo` the rest of the
+/// pipeline uses and applied in isolation to a fresh `WhisperResult` rebuilt
+/// from `00_raw.json`, exactly as `capture_stablets.py` produced the golden
+/// (`fresh.split_by_duration(max_dur=4)` / `fresh.merge_all_segments()`). The
+/// re-emitted `to_dict()` must match the captured golden value.
+#[test]
+fn regroup_apply_duration_merge() {
+    let raw = golden("stablets/clipA/00_raw.json");
+
+    for (algo, golden_name) in [
+        ("sd=4", "stablets/clipA/01c_regroup_sd.json"),
+        ("ms", "stablets/clipA/01c_regroup_ms.json"),
+    ] {
+        let expected = golden(golden_name);
+        let ops = parse_regroup_algo(algo).expect("known methods");
+
+        let mut result = WhisperResult::from_value(&raw);
+        for op in &ops {
+            apply_regroup_op(&mut result, op).expect("sd/ms are applicable in B2");
+        }
+
+        assert_json_eq(&result.to_dict(), &expected);
+    }
+}
+
 /// C2 apply falsifier: the full non-VAD suppress-silence stage.
 ///
 /// `capture_stablets.py` produces `02_suppress.json` by re-running the engine

@@ -238,16 +238,18 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
 
 // ---------------------------------------------------------------------------
 // B2 apply stage: bind a parsed `RegroupOp` to the regroup method it names and
-// run it against a `WhisperResult`. Only the two ops the submate config string
-// actually drives are implemented — `clamp_max` and `split_by_length` — plus
-// the segment-split helpers they share. Other method codes parse fine (B1) but
-// are not yet runnable here and return `UnsupportedMethod`.
+// run it against a `WhisperResult`. The split/merge apply family that parses in
+// B1 is implemented here — `clamp_max`, `split_by_length`, `split_by_duration`,
+// and `merge_all_segments` — along with the segment-split/merge helpers they
+// share. Other method codes parse fine (B1) but are not yet runnable here and
+// return `UnsupportedMethod`.
 // ---------------------------------------------------------------------------
 
 use crate::model::{Segment, WhisperResult, WordTiming};
 
 /// Error returned when [`apply_regroup_op`] is handed a method that B2 parses
-/// but does not yet execute (everything except `clamp_max`/`split_by_length`).
+/// but does not yet execute (everything outside the split/merge family —
+/// `clamp_max`/`split_by_length`/`split_by_duration`/`merge_all_segments`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedMethod(pub String);
 
@@ -302,6 +304,28 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             );
             Ok(())
         }
+        "split_by_duration" => {
+            // Defaults from `WhisperResult.split_by_duration`: max_dur=None,
+            // even_split=True, force_len=False, lock=False, include_lock=False,
+            // newline=False. `max_dur` is the lone required positional upstream;
+            // when absent the parsed `sd` op simply carries no `max_dur` kwarg,
+            // mirroring the `sl` arm's optional-`max_chars` handling.
+            let max_dur = op.kwarg_value("max_dur");
+            let even_split = op.kwarg_bool("even_split").unwrap_or(Some(true)).unwrap_or(true);
+            let force_len = op.kwarg_bool("force_len").unwrap_or(Some(false)).unwrap_or(false);
+            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
+            let include_lock = op.kwarg_bool("include_lock").unwrap_or(Some(false)).unwrap_or(false);
+            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            split_by_duration(
+                result,
+                SplitByDuration { max_dur, even_split, force_len, lock, include_lock, newline },
+            );
+            Ok(())
+        }
+        "merge_all_segments" => {
+            merge_all_segments(result);
+            Ok(())
+        }
         other => Err(UnsupportedMethod(other.to_string())),
     }
 }
@@ -311,6 +335,13 @@ impl RegroupOp {
     /// caller should use the method default); `Some(v)` is the bound JSON value.
     fn kwarg(&self, name: &str) -> Option<&Value> {
         self.kwargs.iter().find(|(k, _)| k == name).map(|(_, v)| v)
+    }
+
+    /// Read a kwarg as its raw JSON value, cloned. Used by `split_by_duration`,
+    /// which keeps `max_dur` verbatim so the history string formats it exactly
+    /// as the DSL coerced it (an int `4` stays `4`, a float `4.0` stays `4.0`).
+    fn kwarg_value(&self, name: &str) -> Option<Value> {
+        self.kwarg(name).cloned()
     }
 
     /// Read a kwarg as `Option<f64>`. Outer `None` = absent; inner `None` would
@@ -338,6 +369,17 @@ fn py_float(v: f64) -> String {
         format!("{v:.1}")
     } else {
         format!("{v}")
+    }
+}
+
+/// Format a coerced DSL numeric value for a history entry the way Python's
+/// `f'{x}'` does. An integer (`sd=4`) renders as `4`; a float (`sd=4.0`) renders
+/// via [`py_float`] (`4.0`). Falls back to the value's display for any non-number.
+fn py_number(v: &Value) -> String {
+    match v {
+        Value::Number(n) if n.is_f64() => n.as_f64().map_or_else(|| n.to_string(), py_float),
+        Value::Number(n) => n.to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -448,9 +490,9 @@ struct SplitByLength {
 /// any segment exceeding `max_chars`/`max_words`.
 fn split_by_length(result: &mut WhisperResult, p: SplitByLength) {
     if p.force_len {
-        // `merge_all_segments()` — not exercised by the staged ops; left
-        // unimplemented so an accidental force_len=1 op fails loudly.
-        unimplemented!("split_by_length(force_len=True) requires merge_all_segments (not in B2)");
+        // Upstream collapses everything into one segment first so each piece
+        // gets a constant length (without recording the merge in history).
+        merge_all_segments_inner(result);
     }
     split_segments(
         result,
@@ -470,6 +512,143 @@ fn split_by_length(result: &mut WhisperResult, p: SplitByLength) {
         i32::from(p.newline),
     );
     push_history(result, &entry);
+}
+
+/// Bound parameters for [`split_by_duration`], matching the Python method's
+/// keyword arguments. `max_dur` is kept as the raw coerced JSON value so the
+/// history string reproduces the DSL form (int vs float) exactly.
+struct SplitByDuration {
+    max_dur: Option<Value>,
+    even_split: bool,
+    force_len: bool,
+    lock: bool,
+    include_lock: bool,
+    newline: bool,
+}
+
+/// Port of `WhisperResult.split_by_duration`: split (or insert line breaks in)
+/// any segment whose total word duration exceeds `max_dur`.
+///
+/// Same shape as [`split_by_length`] — it runs the shared `split_segments`
+/// driver with `get_duration_indices` as the per-segment index function, then
+/// appends the `sd=...` history entry.
+fn split_by_duration(result: &mut WhisperResult, p: SplitByDuration) {
+    if p.force_len {
+        // `merge_all_segments()` is now implemented; mirror split_by_length by
+        // collapsing first so each piece gets a constant length.
+        merge_all_segments_inner(result);
+    }
+    let max_dur = p.max_dur.as_ref().and_then(Value::as_f64);
+    split_segments(
+        result,
+        |seg| get_duration_indices(seg, max_dur, p.even_split, p.include_lock),
+        p.lock,
+        p.newline,
+    );
+
+    let entry = format!(
+        "sd={}+{}+{}+{}+{}+{}",
+        p.max_dur.as_ref().map_or(String::new(), py_number),
+        i32::from(p.even_split),
+        i32::from(p.force_len),
+        i32::from(p.lock),
+        i32::from(p.include_lock),
+        i32::from(p.newline),
+    );
+    push_history(result, &entry);
+}
+
+/// Port of `Segment.get_duration_indices` (stable-ts 2.17.5): the word indices
+/// after which to split so each piece's total word duration stays near
+/// `max_dur`.
+///
+/// Returns no splits when the segment is wordless, `max_dur` is absent, or the
+/// segment's total duration is already within `max_dur`. With `even_split` the
+/// splits are distributed evenly (the same `ceil`/`argmin` scheme
+/// `get_length_indices` uses for characters); otherwise it splits greedily
+/// after the first non-locked word that pushes the running duration over
+/// `max_dur`.
+fn get_duration_indices(seg: &Segment, max_dur: Option<f64>, even_split: bool, include_lock: bool) -> Vec<usize> {
+    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    let Some(max_dur) = max_dur else { return Vec::new() };
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    // `np.sum([w.duration ...]) <= max_dur` -> nothing to split.
+    let durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
+    let total_duration: f64 = durations.iter().sum();
+    if total_duration <= max_dur {
+        return Vec::new();
+    }
+
+    if even_split {
+        // splits = ceil(total / max_dur); dur_per_split = total / splits.
+        let splits = (total_duration / max_dur).ceil();
+        let dur_per_split = total_duration / splits;
+        // cum_dur = np.cumsum(durations[:-1]).
+        let cum: Vec<f64> = cumsum_f64(&durations[..durations.len() - 1]);
+        (1..splits as usize)
+            .map(|i| argmin_abs(&cum, i as f64 * dur_per_split))
+            .collect()
+    } else {
+        let locked: Vec<usize> = if include_lock { get_locked_indices(words) } else { Vec::new() };
+        let mut indices = Vec::new();
+        let mut curr_total_dur = 0.0;
+        for (i, &dur) in durations.iter().enumerate() {
+            curr_total_dur += dur;
+            if i != 0 && curr_total_dur > max_dur && !locked.contains(&(i - 1)) {
+                indices.push(i - 1);
+                curr_total_dur = dur;
+            }
+        }
+        indices
+    }
+}
+
+/// Port of `WhisperResult.merge_all_segments`: collapse every segment into one.
+///
+/// Concatenates all words (in order) into a single segment cloned from the
+/// first (so its per-segment metadata carries over), recomputing `start`/`end`/
+/// `text` from the merged words, then appends the `ms` history entry. The
+/// wordless fallback merges the segments' text/tokens onto the first segment's
+/// defaults, matching the upstream `else` branch.
+fn merge_all_segments(result: &mut WhisperResult) {
+    if result.segments.is_empty() {
+        return;
+    }
+    merge_all_segments_inner(result);
+    push_history(result, "ms");
+}
+
+/// The history-free body of [`merge_all_segments`], shared with the
+/// `split_by_duration(force_len=True)` pre-merge (`split_by_length` and
+/// `split_by_duration` both call `merge_all_segments()` without recording).
+fn merge_all_segments_inner(result: &mut WhisperResult) {
+    if result.segments.is_empty() {
+        return;
+    }
+    let mut merged = result.segments[0].clone();
+    if result_has_words(result) {
+        // `all_words` = chain of every segment's words, in order.
+        let all_words: Vec<WordTiming> = result
+            .segments
+            .iter()
+            .filter_map(|s| s.words.as_ref())
+            .flatten()
+            .cloned()
+            .collect();
+        merged.set_words(all_words);
+    } else {
+        // Wordless: text is the concatenation of every segment's text, and the
+        // end extends to the last segment's end (start stays the first's).
+        let text: String = result.segments.iter().map(Segment::text).collect();
+        let end = result.segments[result.segments.len() - 1].end();
+        let start = merged.start();
+        merged.set_default_text(text);
+        merged.set_default_span(start, end);
+    }
+    result.segments = vec![merged];
 }
 
 /// Port of `Segment.get_locked_indices`: positions where word `i` and `i+1`
@@ -696,6 +875,18 @@ fn prefix_sums_f64(lens: &[usize]) -> Vec<f64> {
         .collect()
 }
 
+/// Prefix sums of `f64` values, mirroring `np.cumsum` over word durations.
+fn cumsum_f64(values: &[f64]) -> Vec<f64> {
+    let mut acc = 0.0;
+    values
+        .iter()
+        .map(|&v| {
+            acc += v;
+            acc
+        })
+        .collect()
+}
+
 /// `np.abs(arr - target).argmin()`: index of the element closest to `target`,
 /// ties going to the lowest index (numpy `argmin` returns the first minimum).
 fn argmin_abs(arr: &[f64], target: f64) -> usize {
@@ -823,6 +1014,56 @@ mod tests {
         let two = result.segments[1].words.as_ref().unwrap();
         assert_eq!(two[0].start(), 2.0);
         assert_eq!(two[1].end(), 3.0);
+    }
+
+    /// `merge_all_segments` folds every word-bearing segment into one whose
+    /// `start`/`end`/`text` derive from the concatenated words, and records `ms`.
+    #[test]
+    fn merge_all_segments_folds_words_into_one() {
+        let raw = json!({
+            "regroup_history": "cm",
+            "segments": [
+                {"words": [
+                    {"word": " Hello", "start": 0.0, "end": 0.5, "probability": 0.9},
+                    {"word": " world", "start": 0.5, "end": 1.0, "probability": 0.9},
+                ]},
+                {"words": [
+                    {"word": " again", "start": 2.0, "end": 2.5, "probability": 0.9},
+                ]},
+            ]
+        });
+        let mut result = WhisperResult::from_value(&raw);
+        merge_all_segments(&mut result);
+
+        assert_eq!(result.segments.len(), 1);
+        let seg = &result.segments[0];
+        assert_eq!(seg.start(), 0.0);
+        assert_eq!(seg.end(), 2.5);
+        assert_eq!(seg.text(), " Hello world again");
+        // History append matches upstream (`_` join onto the prior `cm`).
+        assert_eq!(result.regroup_history, "cm_ms");
+    }
+
+    /// `get_duration_indices(even_split=True)` splits a long segment evenly,
+    /// mirroring the char-based even split but over word durations.
+    #[test]
+    fn duration_indices_even_split() {
+        // Four 1.0s words, total 4.0s, max_dur 2.0 -> splits = 2, one cut.
+        let raw = json!({"segments": [seg_with_words(vec![
+            (0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 4.0),
+        ])]});
+        let result = WhisperResult::from_value(&raw);
+        let seg = &result.segments[0];
+
+        let indices = get_duration_indices(seg, Some(2.0), true, false);
+        // dur_per_split = 2.0; cum_dur over words[:-1] = [1,2,3]; closest to 2.0
+        // is index 1, so split after word 1.
+        assert_eq!(indices, vec![1]);
+
+        // Within max_dur -> no split.
+        assert_eq!(get_duration_indices(seg, Some(10.0), true, false), Vec::<usize>::new());
+        // Absent max_dur -> no split.
+        assert_eq!(get_duration_indices(seg, None, true, false), Vec::<usize>::new());
     }
 
     #[test]
