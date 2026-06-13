@@ -84,6 +84,25 @@ def main() -> None:
         bound(**kwargs)
         write_json(f"{base}/01_regroup_{i}_{fn.__name__}.json", fresh.to_dict())
 
+    # --- 01b/01c_regroup_<op>: single-op goldens for the sg/sp/mg/mp/sd/ms
+    # regroup-apply ports. Each op string is parsed by stable-ts's own algo
+    # parser and applied in isolation to a fresh raw, so the Rust port (parsing
+    # the same string) reproduces it byte-for-byte. Re-run from raw_dict each
+    # time so stages don't compound.
+    extra_regroup = {
+        "01b_regroup_sg": "sg=.5",
+        "01b_regroup_sp": "sp=,* /，",
+        "01c_regroup_mg": "mg=.3+3",
+        "01c_regroup_mp": "mp=.* /。/?/？",
+        "01c_regroup_sd": "sd=4",
+        "01c_regroup_ms": "ms",
+    }
+    for name, algo in extra_regroup.items():
+        fresh = stable_whisper.WhisperResult(raw_dict)
+        for op in fresh.parse_regroup_algo(algo, include_str=True):
+            getattr(fresh, op[0].__name__)(**op[1])
+        write_json(f"{base}/{name}.json", fresh.to_dict())
+
     # --- 02_suppress: suppress_silence applied to a fresh raw -------------
     # Re-run the engine with suppress on but regroup off to get the suppressed
     # word timings (and to let stable-ts load the audio the same way it will at
