@@ -107,6 +107,15 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
+/// A transport failure (`send`/`error_for_status`/`json`) becomes a
+/// [`BackendError::Request`] carrying the [`reqwest::Error`]'s display string,
+/// so the four HTTP backends can lean on `?` instead of repeating a `.map_err`.
+impl From<reqwest::Error> for BackendError {
+    fn from(err: reqwest::Error) -> Self {
+        BackendError::Request(err.to_string())
+    }
+}
+
 /// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
 pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 
@@ -203,12 +212,9 @@ impl Backend for OllamaBackend {
             .http
             .post(&url)
             .json(&body)
-            .send()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .json::<OllamaChatResponse>()
-            .map_err(|e| BackendError::Request(e.to_string()))?;
+            .send()?
+            .error_for_status()?
+            .json::<OllamaChatResponse>()?;
 
         Ok(response.message.content.trim().to_string())
     }
@@ -322,12 +328,9 @@ impl Backend for ClaudeBackend {
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .json::<ClaudeResponse>()
-            .map_err(|e| BackendError::Request(e.to_string()))?;
+            .send()?
+            .error_for_status()?
+            .json::<ClaudeResponse>()?;
 
         let text = response
             .content
@@ -431,12 +434,9 @@ impl Backend for OpenAIBackend {
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
-            .send()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .json::<OpenAiResponse>()
-            .map_err(|e| BackendError::Request(e.to_string()))?;
+            .send()?
+            .error_for_status()?
+            .json::<OpenAiResponse>()?;
 
         let content = response
             .choices
@@ -559,12 +559,9 @@ impl Backend for GeminiBackend {
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
             .json(&body)
-            .send()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| BackendError::Request(e.to_string()))?
-            .json::<GeminiResponse>()
-            .map_err(|e| BackendError::Request(e.to_string()))?;
+            .send()?
+            .error_for_status()?
+            .json::<GeminiResponse>()?;
 
         let text = response
             .candidates
