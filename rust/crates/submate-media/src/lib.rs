@@ -35,6 +35,11 @@ pub struct AudioTrack {
     pub language: String,
     /// Codec name (e.g. `aac`, `ac3`), or [`UNKNOWN_CODEC`] when absent.
     pub codec: String,
+    /// Whether this is the container's default audio stream, from ffprobe's
+    /// `disposition.default == 1`.
+    pub default: bool,
+    /// The stream's `title` tag (e.g. `Commentary`), or `None` when untagged.
+    pub title: Option<String>,
 }
 
 /// Errors raised while probing a media file's audio tracks.
@@ -72,14 +77,26 @@ struct ProbeOutput {
 struct RawStream {
     codec_name: Option<String>,
     #[serde(default)]
+    disposition: StreamDisposition,
+    #[serde(default)]
     tags: StreamTags,
 }
 
+/// The `disposition` object of a stream. ffprobe emits `default` as `0`/`1`;
+/// streams lacking a `disposition` object deserialize to the default (not the
+/// default stream).
+#[derive(Debug, Default, Deserialize)]
+struct StreamDisposition {
+    #[serde(default)]
+    default: u8,
+}
+
 /// The `tags` object of a stream. Absent tag objects deserialize to the
-/// default (no language), matching Python's `.get("tags", {})`.
+/// default (no language, no title), matching Python's `.get("tags", {})`.
 #[derive(Debug, Default, Deserialize)]
 struct StreamTags {
     language: Option<String>,
+    title: Option<String>,
 }
 
 /// Parse the JSON payload produced by
@@ -104,6 +121,8 @@ pub fn parse_audio_tracks(json: &str) -> Result<Vec<AudioTrack>, ProbeError> {
             codec: stream
                 .codec_name
                 .unwrap_or_else(|| UNKNOWN_CODEC.to_string()),
+            default: stream.disposition.default == 1,
+            title: stream.tags.title,
         })
         .collect();
 
@@ -353,16 +372,22 @@ mod parity {
                     index: 0,
                     language: "eng".to_string(),
                     codec: "aac".to_string(),
+                    default: false,
+                    title: Some("English".to_string()),
                 },
                 AudioTrack {
                     index: 1,
                     language: "fre".to_string(),
                     codec: "ac3".to_string(),
+                    default: false,
+                    title: None,
                 },
                 AudioTrack {
                     index: 2,
                     language: "und".to_string(),
                     codec: "dts".to_string(),
+                    default: false,
+                    title: None,
                 },
             ],
         );
@@ -379,6 +404,8 @@ mod parity {
                 index: 0,
                 language: "und".to_string(),
                 codec: "unknown".to_string(),
+                default: false,
+                title: None,
             }],
         );
     }
@@ -409,6 +436,52 @@ mod parity {
         assert_eq!(found.codec, "aac");
 
         assert!(get_audio_track_by_language(&tracks, "spa").is_none());
+    }
+
+    /// `disposition.default` and `tags.title` flow through to [`AudioTrack`]
+    /// without disturbing the existing index/language/codec mapping.
+    #[test]
+    fn parse_audio_tracks_reads_disposition_and_title() {
+        let json = r#"{
+            "streams": [
+                {
+                    "index": 1,
+                    "codec_name": "aac",
+                    "codec_type": "audio",
+                    "disposition": { "default": 1, "comment": 0 },
+                    "tags": { "language": "eng", "title": "Main" }
+                },
+                {
+                    "index": 2,
+                    "codec_name": "ac3",
+                    "codec_type": "audio",
+                    "disposition": { "default": 0 },
+                    "tags": { "language": "jpn" }
+                }
+            ]
+        }"#;
+
+        let tracks = parse_audio_tracks(json).expect("sample JSON parses");
+
+        assert_eq!(
+            tracks,
+            vec![
+                AudioTrack {
+                    index: 0,
+                    language: "eng".to_string(),
+                    codec: "aac".to_string(),
+                    default: true,
+                    title: Some("Main".to_string()),
+                },
+                AudioTrack {
+                    index: 1,
+                    language: "jpn".to_string(),
+                    codec: "ac3".to_string(),
+                    default: false,
+                    title: None,
+                },
+            ],
+        );
     }
 }
 
