@@ -216,8 +216,12 @@ where
 /// Holds the configured translation [`Backend`] plus the chunk size from config;
 /// `translate` dispatches on the job's [`OutputFormat`] into the matching
 /// `submate-translate` entry point.
+#[derive(Clone)]
 pub struct TranslationStep {
-    backend: Box<dyn Backend + Send + Sync>,
+    // `Arc` (not `Box`) so the step is cheaply cloneable into the
+    // `spawn_blocking` closure that runs the blocking-reqwest backend off the
+    // async runtime (see `Agent::run_job`).
+    backend: Arc<dyn Backend + Send + Sync>,
     chunk_size: usize,
 }
 
@@ -225,7 +229,7 @@ impl TranslationStep {
     /// Build a step from a configured backend and the config `chunk_size`.
     pub fn new(backend: Box<dyn Backend + Send + Sync>, chunk_size: usize) -> Self {
         Self {
-            backend,
+            backend: Arc::from(backend),
             chunk_size,
         }
     }
@@ -618,7 +622,19 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
         // processor output byte-for-byte, so plain transcription is unaffected.
         let result = match self.processor.process(opts, pcm).await {
             Ok(output) => match &self.translation {
-                Some(step) => step.translate(opts, output),
+                // The translation backends use blocking `reqwest` (which owns an
+                // internal runtime), so calling them directly here would panic
+                // with "Cannot drop a runtime in an async context". Run the
+                // blocking translate on a blocking thread, like the transcription
+                // dispatcher does.
+                Some(step) => {
+                    let step = step.clone();
+                    let opts = opts.clone();
+                    match tokio::task::spawn_blocking(move || step.translate(&opts, output)).await {
+                        Ok(inner) => inner,
+                        Err(join) => Err(format!("translation task panicked: {join}")),
+                    }
+                }
                 None => Ok(output),
             },
             Err(error) => Err(error),

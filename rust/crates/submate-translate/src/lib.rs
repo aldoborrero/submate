@@ -121,8 +121,10 @@ pub struct BackendSettings<'a> {
 /// mapping, shared by the CLI and the node so neither duplicates the match.
 ///
 /// The boxed backend is `Send + Sync` so the node's pull-loop can hold it as a
-/// field across `.await` points (the four backends are stateless apart from a
-/// `reqwest::blocking::Client`, itself `Send + Sync`).
+/// field across `.await` points. The four backends are stateless (just config
+/// strings) and build a `reqwest::blocking::Client` per `complete` call (see
+/// [`http_client`]) so the client is never created or dropped in an async
+/// context.
 pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
 
@@ -170,6 +172,18 @@ impl From<reqwest::Error> for BackendError {
     fn from(err: reqwest::Error) -> Self {
         BackendError::Request(err.to_string())
     }
+}
+
+/// Build a fresh blocking HTTP client for a single `complete` call.
+///
+/// The backends deliberately do NOT store a `reqwest::blocking::Client`:
+/// `reqwest::blocking` owns an internal runtime that must not be created or
+/// dropped inside a tokio async context. The node runs `complete` on a
+/// `spawn_blocking` thread, so building (and dropping) the client per call keeps
+/// its whole lifecycle off the async runtime; the standalone CLI path has no
+/// runtime at all. The cost is negligible next to the LLM round-trip it serves.
+fn http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::new()
 }
 
 /// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
@@ -228,7 +242,6 @@ struct OllamaResponseMessage {
 pub struct OllamaBackend {
     model: String,
     base_url: String,
-    http: reqwest::blocking::Client,
 }
 
 impl OllamaBackend {
@@ -240,7 +253,6 @@ impl OllamaBackend {
         Self {
             model: model.into(),
             base_url: base_url.into(),
-            http: reqwest::blocking::Client::new(),
         }
     }
 }
@@ -268,8 +280,7 @@ impl Backend for OllamaBackend {
             tools: Vec::new(),
         };
 
-        let response = self
-            .http
+        let response = http_client()
             .post(&url)
             .json(&body)
             .send()?
@@ -342,7 +353,6 @@ pub struct ClaudeBackend {
     api_key: String,
     model: String,
     base_url: String,
-    http: reqwest::blocking::Client,
 }
 
 impl ClaudeBackend {
@@ -365,7 +375,6 @@ impl ClaudeBackend {
             api_key: api_key.into(),
             model: model.into(),
             base_url: base_url.into(),
-            http: reqwest::blocking::Client::new(),
         }
     }
 }
@@ -386,8 +395,7 @@ impl Backend for ClaudeBackend {
             }],
         };
 
-        let response = self
-            .http
+        let response = http_client()
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
@@ -454,7 +462,6 @@ pub struct OpenAIBackend {
     api_key: String,
     model: String,
     base_url: String,
-    http: reqwest::blocking::Client,
 }
 
 impl OpenAIBackend {
@@ -477,7 +484,6 @@ impl OpenAIBackend {
             api_key: api_key.into(),
             model: model.into(),
             base_url: base_url.into(),
-            http: reqwest::blocking::Client::new(),
         }
     }
 }
@@ -497,8 +503,7 @@ impl Backend for OpenAIBackend {
             }],
         };
 
-        let response = self
-            .http
+        let response = http_client()
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
@@ -581,7 +586,6 @@ pub struct GeminiBackend {
     api_key: String,
     model: String,
     base_url: String,
-    http: reqwest::blocking::Client,
 }
 
 impl GeminiBackend {
@@ -604,7 +608,6 @@ impl GeminiBackend {
             api_key: api_key.into(),
             model: model.into(),
             base_url: base_url.into(),
-            http: reqwest::blocking::Client::new(),
         }
     }
 }
@@ -626,8 +629,7 @@ impl Backend for GeminiBackend {
             }],
         };
 
-        let response = self
-            .http
+        let response = http_client()
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
             .json(&body)
