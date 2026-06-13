@@ -240,9 +240,10 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
 // B2 apply stage: bind a parsed `RegroupOp` to the regroup method it names and
 // run it against a `WhisperResult`. The split/merge apply family that parses in
 // B1 is implemented here — `clamp_max`, `split_by_length`, `split_by_duration`,
-// `split_by_gap`, `split_by_punctuation`, and `merge_all_segments` — along with
-// the segment-split/merge helpers they share. Other method codes parse fine
-// (B1) but are not yet runnable here and return `UnsupportedMethod`.
+// `split_by_gap`, `split_by_punctuation`, `merge_by_gap`, `merge_by_punctuation`,
+// and `merge_all_segments` — along with the segment-split/merge helpers they
+// share. Other method codes parse fine (B1) but are not yet runnable here and
+// return `UnsupportedMethod`.
 // ---------------------------------------------------------------------------
 
 use crate::model::{Segment, WhisperResult, WordTiming};
@@ -250,7 +251,8 @@ use crate::model::{Segment, WhisperResult, WordTiming};
 /// Error returned when [`apply_regroup_op`] is handed a method that B2 parses
 /// but does not yet execute (everything outside the split/merge family —
 /// `clamp_max`/`split_by_length`/`split_by_duration`/`split_by_gap`/
-/// `split_by_punctuation`/`merge_all_segments`).
+/// `split_by_punctuation`/`merge_by_gap`/`merge_by_punctuation`/
+/// `merge_all_segments`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedMethod(pub String);
 
@@ -347,6 +349,38 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             split_by_punctuation(
                 result,
                 SplitByPunctuation { punctuation, lock, newline, min_words, min_chars, min_dur },
+            );
+            Ok(())
+        }
+        "merge_by_gap" => {
+            // Defaults from `WhisperResult.merge_by_gap`: min_gap=0.1,
+            // max_words=None, max_chars=None, is_sum_max=False, lock=False,
+            // newline=False. `min_gap` is kept as the raw coerced JSON value so
+            // the history string reproduces the DSL form (e.g. `0.3`) exactly,
+            // mirroring the `split_by_gap` arm's handling of `max_gap`.
+            let min_gap = op.kwarg_value("min_gap");
+            let max_words = op.kwarg_usize("max_words").unwrap_or(None);
+            let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
+            let is_sum_max = op.kwarg_bool("is_sum_max").unwrap_or(Some(false)).unwrap_or(false);
+            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
+            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            merge_by_gap(result, MergeByGap { min_gap, max_words, max_chars, is_sum_max, lock, newline });
+            Ok(())
+        }
+        "merge_by_punctuation" => {
+            // Defaults from `WhisperResult.merge_by_punctuation`: max_words=None,
+            // max_chars=None, is_sum_max=False, lock=False, newline=False.
+            // `punctuation` is required upstream; absent here leaves the op a
+            // no-op (mirroring the `split_by_punctuation` arm).
+            let punctuation = op.kwarg_value("punctuation");
+            let max_words = op.kwarg_usize("max_words").unwrap_or(None);
+            let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
+            let is_sum_max = op.kwarg_bool("is_sum_max").unwrap_or(Some(false)).unwrap_or(false);
+            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
+            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            merge_by_punctuation(
+                result,
+                MergeByPunctuation { punctuation, max_words, max_chars, is_sum_max, lock, newline },
             );
             Ok(())
         }
@@ -839,6 +873,293 @@ fn punct_str(tokens: &[PunctToken]) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Bound parameters for [`merge_by_gap`], matching the Python method's keyword
+/// arguments. `min_gap` is kept as the raw coerced JSON value so the history
+/// string reproduces the DSL form (int vs float) exactly.
+struct MergeByGap {
+    min_gap: Option<Value>,
+    max_words: Option<usize>,
+    max_chars: Option<usize>,
+    is_sum_max: bool,
+    lock: bool,
+    newline: bool,
+}
+
+/// Port of `WhisperResult.merge_by_gap`: merge a segment into the next when the
+/// gap between them is `<= min_gap`, subject to the `max_words`/`max_chars` cap.
+///
+/// Computes the merge-candidate boundary indices with `get_merge_gap_indices`
+/// (the result-level `get_gap_indices` for merging), runs the shared
+/// `merge_segments` driver to fuse them, then appends the `mg=...` history entry.
+fn merge_by_gap(result: &mut WhisperResult, p: MergeByGap) {
+    // Upstream default when the kwarg is absent is `0.1`; an explicit JSON null
+    // (not produced by the parser) maps to `0`, matching the `min_gap is None`
+    // branch in `WhisperResult.get_gap_indices`.
+    let min_gap = match p.min_gap.as_ref() {
+        Some(v) => v.as_f64().unwrap_or(0.0),
+        None => 0.1,
+    };
+    let indices = get_merge_gap_indices(result, min_gap);
+    merge_segments(
+        result,
+        &indices,
+        MergeCaps { max_words: p.max_words, max_chars: p.max_chars, is_sum_max: p.is_sum_max },
+        p.lock,
+        p.newline,
+    );
+
+    // `mg={min_gap}+{max_words or ""}+{max_chars or ""}+{int(is_sum_max)}+
+    // {int(lock)}+{int(newline)}` — the captured stable-ts records exactly these
+    // six fields (golden `regroup_history`: `mg=0.3+3++0+0+0`). A falsy (None/0)
+    // `max_words`/`max_chars` renders empty, matching Python's `x or ""`.
+    let entry = format!(
+        "mg={}+{}+{}+{}+{}+{}",
+        p.min_gap.as_ref().map_or_else(|| py_float(0.1), py_number),
+        max_cap_str(p.max_words),
+        max_cap_str(p.max_chars),
+        i32::from(p.is_sum_max),
+        i32::from(p.lock),
+        i32::from(p.newline),
+    );
+    push_history(result, &entry);
+}
+
+/// Bound parameters for [`merge_by_punctuation`], matching the Python method's
+/// keyword arguments. `punctuation` is kept as the raw coerced JSON value so the
+/// history string reproduces the DSL form exactly.
+struct MergeByPunctuation {
+    punctuation: Option<Value>,
+    max_words: Option<usize>,
+    max_chars: Option<usize>,
+    is_sum_max: bool,
+    lock: bool,
+    newline: bool,
+}
+
+/// Port of `WhisperResult.merge_by_punctuation`: merge across a segment boundary
+/// when the earlier segment ends with (or the later begins with) one of the
+/// `punctuation` tokens, subject to the `max_words`/`max_chars` cap.
+///
+/// Computes the merge-candidate boundary indices with
+/// `get_merge_punctuation_indices` (the result-level `get_punctuation_indices`
+/// for merging), runs the shared `merge_segments` driver, then appends the
+/// `mp=...` history entry.
+fn merge_by_punctuation(result: &mut WhisperResult, p: MergeByPunctuation) {
+    let Some(punct_value) = p.punctuation.as_ref() else { return };
+    let tokens = parse_punctuation(punct_value);
+
+    let indices = get_merge_punctuation_indices(result, &tokens);
+    merge_segments(
+        result,
+        &indices,
+        MergeCaps { max_words: p.max_words, max_chars: p.max_chars, is_sum_max: p.is_sum_max },
+        p.lock,
+        p.newline,
+    );
+
+    // `mp={punct_str}+{max_words or ""}+{max_chars or ""}+{int(is_sum_max)}+
+    // {int(lock)}+{int(newline)}` — the captured stable-ts records exactly these
+    // six fields (golden `regroup_history`: `mp=.* /。/?/？+++0+0+0`).
+    let entry = format!(
+        "mp={}+{}+{}+{}+{}+{}",
+        punct_str(&tokens),
+        max_cap_str(p.max_words),
+        max_cap_str(p.max_chars),
+        i32::from(p.is_sum_max),
+        i32::from(p.lock),
+        i32::from(p.newline),
+    );
+    push_history(result, &entry);
+}
+
+/// Render an optional `max_words`/`max_chars` cap for a merge history entry the
+/// way Python's `f'{x or ""}'` does: a present, non-zero cap renders its int; a
+/// `None` (or falsy `0`) renders empty.
+fn max_cap_str(cap: Option<usize>) -> String {
+    cap.filter(|&n| n != 0).map_or(String::new(), |n| n.to_string())
+}
+
+/// The `max_words`/`max_chars`/`is_sum_max` cap that gates each merge, mirroring
+/// the corresponding kwargs of `WhisperResult._merge_segments`.
+struct MergeCaps {
+    max_words: Option<usize>,
+    max_chars: Option<usize>,
+    is_sum_max: bool,
+}
+
+/// Port of `WhisperResult.get_locked_indices` (the result-level overload used
+/// for merging): boundary `i` is locked when segment `i+1`'s left edge or
+/// segment `i`'s right edge is locked.
+fn get_segment_locked_indices(result: &WhisperResult) -> Vec<usize> {
+    // Python zips segments[1:] with segments[:-1]; index i covers the boundary
+    // after segment i (between segment i and segment i+1).
+    if result.segments.len() < 2 {
+        return Vec::new();
+    }
+    (0..result.segments.len() - 1)
+        .filter(|&i| result.segments[i + 1].left_locked() || result.segments[i].right_locked())
+        .collect()
+}
+
+/// Port of `WhisperResult.get_gap_indices` (for merging): boundary indices where
+/// the gap between segment `i`'s end and segment `i+1`'s start is `<= min_gap`,
+/// excluding locked boundaries.
+fn get_merge_gap_indices(result: &WhisperResult, min_gap: f64) -> Vec<usize> {
+    if result.segments.len() < 2 {
+        return Vec::new();
+    }
+    let locked = get_segment_locked_indices(result);
+    let mut indices: Vec<usize> = (0..result.segments.len() - 1)
+        .filter(|&i| {
+            let gap = result.segments[i + 1].start() - result.segments[i].end();
+            gap <= min_gap && !locked.contains(&i)
+        })
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// Port of `WhisperResult.get_punctuation_indices` (for merging): boundary
+/// indices where the earlier segment's text ends with (or, for a plain token,
+/// the later begins with) a punctuation token, excluding locked boundaries.
+fn get_merge_punctuation_indices(result: &WhisperResult, tokens: &[PunctToken]) -> Vec<usize> {
+    if result.segments.len() < 2 {
+        return Vec::new();
+    }
+    let last = result.segments.len() - 1;
+    let mut indices: Vec<usize> = Vec::new();
+    for token in tokens {
+        match token {
+            PunctToken::Plain(p) => {
+                // `for i, s in enumerate(self.segments[:-1])`.
+                for i in 0..last {
+                    let text = result.segments[i].text();
+                    if !p.is_empty() && text.ends_with(p.as_str()) {
+                        indices.push(i);
+                    } else if i != 0 && !p.is_empty() && text.starts_with(p.as_str()) {
+                        indices.push(i - 1);
+                    }
+                }
+            }
+            PunctToken::Pair(ending, beginning) => {
+                // `zip(segments[:-1], segments[1:])` -> boundary i after segment i.
+                for i in 0..last {
+                    let s0 = result.segments[i].text();
+                    let s1 = result.segments[i + 1].text();
+                    if (ending.is_empty() || s0.ends_with(ending.as_str()))
+                        && (beginning.is_empty() || s1.starts_with(beginning.as_str()))
+                    {
+                        indices.push(i);
+                    }
+                }
+            }
+        }
+    }
+    // `sorted(set(indices) - set(get_locked_indices()))`.
+    let locked = get_segment_locked_indices(result);
+    indices.retain(|i| !locked.contains(i));
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// Port of `WhisperResult._merge_segments`: for each candidate boundary index
+/// (in reverse order), fuse segment `i` into segment `i+1` unless the
+/// `max_words`/`max_chars` cap forbids it, then drop any now-wordless segments.
+fn merge_segments(result: &mut WhisperResult, indices: &[usize], caps: MergeCaps, lock: bool, newline: bool) {
+    if indices.is_empty() {
+        return;
+    }
+    for &i in indices.iter().rev() {
+        if merge_capped(&result.segments[i], &result.segments[i + 1], &caps) {
+            continue;
+        }
+        let merged = merge_two_segments(&result.segments[i], &result.segments[i + 1], lock, newline);
+        result.segments[i] = merged;
+        result.segments.remove(i + 1);
+    }
+    remove_no_word_segments(result);
+}
+
+/// Port of the `_merge_segments` skip guard: true when the `max_words`/
+/// `max_chars` cap forbids merging segments `seg` and `next_seg`.
+///
+/// With `is_sum_max` the cap applies to the merged segment (the sum of both
+/// counts); otherwise it forbids the merge only when *both* segments already
+/// exceed the cap. A falsy (`None`/`0`) cap never gates (Python `max_words and
+/// ...`). The `max_words` branch additionally requires `seg.has_words` upstream.
+fn merge_capped(seg: &Segment, next_seg: &Segment, caps: &MergeCaps) -> bool {
+    let words_blocks = caps.max_words.is_some_and(|m| m != 0) && seg.has_words() && {
+        let a = seg_word_count(seg);
+        let b = seg_word_count(next_seg);
+        let m = caps.max_words.expect("checked");
+        if caps.is_sum_max {
+            a + b > m
+        } else {
+            a > m && b > m
+        }
+    };
+    let chars_blocks = caps.max_chars.is_some_and(|m| m != 0) && {
+        let a = seg_char_count(seg);
+        let b = seg_char_count(next_seg);
+        let m = caps.max_chars.expect("checked");
+        if caps.is_sum_max {
+            a + b > m
+        } else {
+            a > m && b > m
+        }
+    };
+    words_blocks || chars_blocks
+}
+
+/// Port of `Segment.add` plus the `add_segments` lock handling: fuse two
+/// adjacent word-bearing segments by concatenating their word lists (so the
+/// merged `start`/`end`/`text` derive from the words), cloning the first
+/// segment's per-segment metadata. With `newline`, append `\n` to the boundary
+/// word; with `lock`, lock the right edge of the first segment's last word and
+/// the left edge of the second segment's first word across the seam.
+fn merge_two_segments(seg: &Segment, next_seg: &Segment, lock: bool, newline: bool) -> Segment {
+    let mut merged = seg.clone();
+    if seg.ori_has_words() && next_seg.ori_has_words() {
+        let mut words: Vec<WordTiming> = seg.words.as_ref().map_or_else(Vec::new, |w| w.clone());
+        let boundary = words.len();
+        if let Some(next_words) = next_seg.words.as_ref() {
+            words.extend(next_words.iter().cloned());
+        }
+        if newline {
+            // `if not words[len(self.words)-1].word.endswith('\n')`.
+            if boundary > 0 && !words[boundary - 1].word.ends_with('\n') {
+                words[boundary - 1].word.push('\n');
+            }
+        }
+        if lock && boundary > 0 {
+            words[boundary - 1].lock_right();
+            if boundary < words.len() {
+                words[boundary].lock_left();
+            }
+        }
+        merged.set_words(words);
+    } else {
+        // Wordless seam: concatenate text and extend the end to the next
+        // segment's end (start stays the first's). `add_segments`' lock branch
+        // only fires for word-bearing segments, so nothing to lock here.
+        let first_text = seg.text();
+        let mut text = first_text.clone();
+        text.push_str(&next_seg.text());
+        if newline && !first_text.is_empty() && !first_text.ends_with('\n') {
+            // `if self_copy.text[len(self.text)-1] != '\n'`: insert a break at
+            // the seam between the two segments' text (after the first's text).
+            text.insert(first_text.len(), '\n');
+        }
+        let start = merged.start();
+        let end = next_seg.end();
+        merged.set_default_text(text);
+        merged.set_default_span(start, end);
+    }
+    merged
 }
 
 /// Port of `WhisperResult.merge_all_segments`: collapse every segment into one.
@@ -1361,10 +1682,113 @@ mod tests {
     #[test]
     fn unsupported_method_is_rejected_by_apply() {
         let mut result = WhisperResult::from_value(&json!({"segments": []}));
-        let op = RegroupOp { method: "merge_by_gap".to_string(), kwargs: Vec::new() };
+        let op = RegroupOp { method: "pad".to_string(), kwargs: Vec::new() };
         assert_eq!(
             apply_regroup_op(&mut result, &op).unwrap_err(),
-            UnsupportedMethod("merge_by_gap".to_string())
+            UnsupportedMethod("pad".to_string())
         );
+    }
+
+    /// `merge_by_gap` fuses adjacent segments whose inter-segment gap is within
+    /// `min_gap`, respecting the per-segment `max_words` ceiling, and records the
+    /// `mg=...` history. Two 2-word segments touch (gap 0.0) with `max_words=3`:
+    /// neither exceeds 3, so they merge into one 4-word segment.
+    #[test]
+    fn merge_by_gap_fuses_close_segments() {
+        let raw = json!({
+            "segments": [
+                {"words": [
+                    {"word": " a", "start": 0.0, "end": 0.5, "probability": 0.9},
+                    {"word": " b", "start": 0.5, "end": 1.0, "probability": 0.9},
+                ]},
+                {"words": [
+                    {"word": " c", "start": 1.0, "end": 1.5, "probability": 0.9},
+                    {"word": " d", "start": 1.5, "end": 2.0, "probability": 0.9},
+                ]},
+            ]
+        });
+        let mut result = WhisperResult::from_value(&raw);
+        merge_by_gap(
+            &mut result,
+            MergeByGap {
+                min_gap: Some(json!(0.3)),
+                max_words: Some(3),
+                max_chars: None,
+                is_sum_max: false,
+                lock: false,
+                newline: false,
+            },
+        );
+
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].text(), " a b c d");
+        assert_eq!(result.regroup_history, "mg=0.3+3++0+0+0");
+    }
+
+    /// The `max_words` ceiling blocks a merge when *both* neighbours exceed it
+    /// (with `is_sum_max=False`), mirroring the upstream `_merge_segments` guard.
+    #[test]
+    fn merge_by_gap_respects_max_words_ceiling() {
+        let words = |labels: &[&str], offset: f64| -> Value {
+            let ws: Vec<Value> = labels
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let s = offset + i as f64;
+                    json!({"word": w, "start": s, "end": s + 0.5, "probability": 0.9})
+                })
+                .collect();
+            json!({"words": ws})
+        };
+        let raw = json!({"segments": [
+            words(&[" a", " b", " c", " d"], 0.0),
+            words(&[" e", " f", " g", " h"], 4.0),
+        ]});
+        let mut result = WhisperResult::from_value(&raw);
+        merge_by_gap(
+            &mut result,
+            MergeByGap {
+                min_gap: Some(json!(0.3)),
+                max_words: Some(3),
+                max_chars: None,
+                is_sum_max: false,
+                lock: false,
+                newline: false,
+            },
+        );
+        // Both segments have 4 words (> 3), so the merge is skipped.
+        assert_eq!(result.segments.len(), 2);
+    }
+
+    /// `merge_by_punctuation` fuses across a boundary where the earlier segment
+    /// ends with a punctuation token and records the `mp=...` history.
+    #[test]
+    fn merge_by_punctuation_fuses_on_boundary() {
+        let raw = json!({
+            "segments": [
+                {"words": [
+                    {"word": " Hello.", "start": 0.0, "end": 0.5, "probability": 0.9},
+                ]},
+                {"words": [
+                    {"word": " World", "start": 0.5, "end": 1.0, "probability": 0.9},
+                ]},
+            ]
+        });
+        let mut result = WhisperResult::from_value(&raw);
+        merge_by_punctuation(
+            &mut result,
+            MergeByPunctuation {
+                punctuation: Some(json!(".")),
+                max_words: None,
+                max_chars: None,
+                is_sum_max: false,
+                lock: false,
+                newline: false,
+            },
+        );
+
+        assert_eq!(result.segments.len(), 1);
+        assert_eq!(result.segments[0].text(), " Hello. World");
+        assert_eq!(result.regroup_history, "mp=.+++0+0+0");
     }
 }
