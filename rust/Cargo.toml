@@ -35,6 +35,10 @@ repository = "https://github.com/aldoborrero/submate"
 tokio = { version = "1", features = ["full"] }
 # async trait methods (keeps `Box<dyn Backend>` object-safe)
 async-trait = "0.1"
+# OpenAI-compatible chat client (covers OpenAI + Ollama + Gemini via base_url).
+# Only the chat-completions surface is needed; `default-features = false` drops
+# the rest of the API. `rustls` matches the workspace's TLS backend.
+async-openai = { version = "0.41", default-features = false, features = ["chat-completion", "rustls"] }
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

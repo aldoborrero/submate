@@ -15,15 +15,22 @@
 //!   then split the model reply back into stripped blocks, falling back to the
 //!   originals when the returned block count does not match the input count.
 //!
-//! Ollama is the default local backend, ported here as [`OllamaBackend`]. The
-//! three cloud backends — [`ClaudeBackend`] (Anthropic messages API),
-//! [`OpenAIBackend`] (chat completions) and [`GeminiBackend`] (`generateContent`)
-//! — are ported here too, each as a thin raw-[`reqwest`] HTTP backend that builds
-//! its provider's request shape and extracts the reply text from the response.
+//! Three of the four providers speak the OpenAI chat-completions wire format, so
+//! they share a single [`OpenAiCompatBackend`] built on the `async-openai`
+//! crate and distinguished only by base URL: OpenAI (the default base), Ollama
+//! (`{ollama_url}/v1`) and Gemini (the Generative Language OpenAI-compat
+//! endpoint). Anthropic has no trustworthy Rust SDK, so [`ClaudeBackend`] stays
+//! a hand-rolled async-[`reqwest`] backend against the messages API.
 
 use std::future::Future;
 use std::ops::Range;
 
+use async_openai::config::{OpenAIConfig, OPENAI_API_BASE};
+use async_openai::error::OpenAIError;
+use async_openai::types::chat::{
+    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
+};
+use async_openai::Client;
 use serde::Serialize;
 
 /// Default chunked-translation prompt template (ports `TRANSLATION_PROMPT`).
@@ -128,22 +135,43 @@ pub struct BackendSettings<'a> {
 /// mapping, shared by the CLI and the node so neither duplicates the match.
 ///
 /// The boxed backend is `Send + Sync` so the node's pull-loop can hold it as a
-/// field across `.await` points. The four backends are stateless (just config
-/// strings) and build an async `reqwest::Client` per `complete` call, awaited
+/// field across `.await` points. The backends are stateless (just config /
+/// client) and issue an async HTTP request per `complete` call, awaited
 /// directly on the runtime.
+///
+/// `Ollama`/`Openai`/`Gemini` all map to an [`OpenAiCompatBackend`] differing
+/// only in base URL: Ollama serves the OpenAI-compat API under `{ollama_url}/v1`
+/// (no key needed, so a placeholder is sent); OpenAI uses the crate's default
+/// base; Gemini uses the Generative Language OpenAI-compat base ending in
+/// `/openai`, so `async-openai` appends `/chat/completions`. `Claude` keeps the
+/// native [`ClaudeBackend`].
 pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
 
     match s.backend {
-        TranslationBackend::Ollama => Box::new(OllamaBackend::new(s.ollama_model, s.ollama_url)),
+        TranslationBackend::Ollama => Box::new(OpenAiCompatBackend::new(
+            "ollama",
+            // Ollama's OpenAI-compat surface ignores the key, but the client
+            // still sends an `Authorization` header; a placeholder keeps it
+            // well-formed.
+            OLLAMA_PLACEHOLDER_KEY,
+            s.ollama_model,
+            format!("{}/v1", s.ollama_url.trim_end_matches('/')),
+        )),
+        TranslationBackend::Openai => Box::new(OpenAiCompatBackend::new(
+            "openai",
+            s.openai_api_key,
+            s.openai_model,
+            OPENAI_API_BASE,
+        )),
+        TranslationBackend::Gemini => Box::new(OpenAiCompatBackend::new(
+            "gemini",
+            s.gemini_api_key,
+            s.gemini_model,
+            GEMINI_OPENAI_BASE,
+        )),
         TranslationBackend::Claude => {
             Box::new(ClaudeBackend::new(s.anthropic_api_key, s.claude_model))
-        }
-        TranslationBackend::Openai => {
-            Box::new(OpenAIBackend::new(s.openai_api_key, s.openai_model))
-        }
-        TranslationBackend::Gemini => {
-            Box::new(GeminiBackend::new(s.gemini_api_key, s.gemini_model))
         }
     }
 }
@@ -180,111 +208,110 @@ impl From<reqwest::Error> for BackendError {
     }
 }
 
+/// An `async-openai` call/build failure becomes a [`BackendError::Request`]
+/// carrying the [`OpenAIError`]'s display string, so [`OpenAiCompatBackend`]
+/// can lean on `?`.
+impl From<OpenAIError> for BackendError {
+    fn from(err: OpenAIError) -> Self {
+        BackendError::Request(err.to_string())
+    }
+}
+
 /// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
 pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 
 /// Default Ollama host (ports `base_url="http://localhost:11434"`).
+///
+/// The [`make_backend`] routing appends `/v1` to reach Ollama's
+/// OpenAI-compatible chat endpoint.
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
-/// One chat message in the Ollama request body.
-///
-/// The Python backend sends a single `{"role": "user", "content": prompt}`
-/// message; the `ollama` client's pydantic `Message` model serialises only
-/// these two fields when the rest are unset (`model_dump(exclude_none=True)`).
-#[derive(Serialize)]
-struct OllamaMessage<'a> {
-    role: &'a str,
-    content: &'a str,
-}
+/// Default OpenAI model (ports `OpenAIBackend.__init__`'s `model="gpt-4o-mini"`).
+pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
 
-/// Body of `POST /api/chat`, matching the `ollama` Python client's wire shape.
-///
-/// The Python `client.chat(model=..., messages=[...])` call builds a
-/// `ChatRequest` and serialises it with `model_dump(exclude_none=True)`. With
-/// only `model` and `messages` supplied, the resulting body carries exactly
-/// `model`, `messages`, `stream` (defaulting to `false`) and `tools` (an empty
-/// list, since `tools` defaults to `[]` rather than `None` and so survives the
-/// `exclude_none` filter). Every other field is `None` and is dropped.
-#[derive(Serialize)]
-struct OllamaChatRequest<'a> {
-    model: &'a str,
-    messages: Vec<OllamaMessage<'a>>,
-    stream: bool,
-    tools: Vec<serde_json::Value>,
-}
+/// Default Gemini model (ports `GeminiBackend.__init__`'s
+/// `model="gemini-2.0-flash"`).
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
 
-/// Subset of the `POST /api/chat` response we read back.
+/// Base URL for Gemini's OpenAI-compatible endpoint.
 ///
-/// The Python backend extracts `response["message"]["content"]`; the rest of
-/// the `ChatResponse` is ignored.
-#[derive(serde::Deserialize)]
-struct OllamaChatResponse {
-    message: OllamaResponseMessage,
-}
+/// The Generative Language API exposes a chat-completions surface under
+/// `.../v1beta/openai`; because it ends in `/openai` (no trailing slash),
+/// `async-openai`'s `url(path)` appends `/chat/completions` to form the final
+/// request URL.
+pub const GEMINI_OPENAI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
-#[derive(serde::Deserialize)]
-struct OllamaResponseMessage {
-    content: String,
-}
+/// Placeholder API key sent to Ollama, whose OpenAI-compat surface ignores the
+/// `Authorization` header but still expects it to be present.
+const OLLAMA_PLACEHOLDER_KEY: &str = "ollama";
 
-/// Ollama-based translation backend (ports `OllamaBackend`).
+/// OpenAI-compatible translation backend, shared by OpenAI, Ollama and Gemini.
 ///
-/// The default local, free, private backend. [`complete`](Backend::complete)
-/// POSTs the prompt as a single user message to `{base_url}/api/chat` over raw
-/// [`reqwest`], then returns the stripped `message.content` from the reply,
-/// mirroring the Python backend's `client.chat(...)["message"]["content"].strip()`.
-pub struct OllamaBackend {
+/// Wraps an `async-openai` [`Client`] configured by `base_url` + API key, so the
+/// three providers differ only in those two values (and the model name). Ports
+/// the Python `OpenAIBackend`/`OllamaBackend`/`GeminiBackend` `_complete`:
+/// [`complete`](Backend::complete) sends the prompt as a single user message via
+/// `POST {base_url}/chat/completions` and returns the stripped
+/// `choices[0].message.content` (empty string when null).
+pub struct OpenAiCompatBackend {
+    id: &'static str,
+    client: Client<OpenAIConfig>,
     model: String,
     base_url: String,
 }
 
-impl OllamaBackend {
-    /// Construct a backend for `model` against the Ollama server at `base_url`.
-    ///
-    /// Ports `OllamaBackend(model, base_url)`. Pass [`DEFAULT_OLLAMA_MODEL`] /
-    /// [`DEFAULT_OLLAMA_URL`] to reproduce the Python defaults.
-    pub fn new(model: impl Into<String>, base_url: impl Into<String>) -> Self {
+impl OpenAiCompatBackend {
+    /// Construct a backend identified by `id` (`"openai"`/`"ollama"`/`"gemini"`)
+    /// for `model`, authenticating with `api_key` against `base_url`.
+    pub fn new(
+        id: &'static str,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+    ) -> Self {
+        let base_url = base_url.into();
+        let config = OpenAIConfig::new()
+            .with_api_key(api_key.into())
+            .with_api_base(base_url.clone());
         Self {
+            id,
+            client: Client::with_config(config),
             model: model.into(),
-            base_url: base_url.into(),
+            base_url,
         }
     }
-}
 
-impl Default for OllamaBackend {
-    fn default() -> Self {
-        Self::new(DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL)
+    /// The configured API base URL (the value `async-openai` prefixes onto
+    /// `/chat/completions`). Used by the factory-routing test to assert each
+    /// variant lands on the right provider.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 }
 
 #[async_trait::async_trait]
-impl Backend for OllamaBackend {
+impl Backend for OpenAiCompatBackend {
     fn id(&self) -> &'static str {
-        "ollama"
+        self.id
     }
 
     async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
-        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
-        let body = OllamaChatRequest {
-            model: &self.model,
-            messages: vec![OllamaMessage {
-                role: "user",
-                content: prompt,
-            }],
-            stream: false,
-            tools: Vec::new(),
-        };
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.model)
+            .messages([ChatCompletionRequestUserMessageArgs::default()
+                .content(prompt)
+                .build()?
+                .into()])
+            .build()?;
 
-        let response = reqwest::Client::new()
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OllamaChatResponse>()
-            .await?;
-
-        Ok(response.message.content.trim().to_string())
+        let response = self.client.chat().create(request).await?;
+        let content = response
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|c| c.message.content)
+            .unwrap_or_default();
+        Ok(content.trim().to_string())
     }
 }
 
@@ -408,247 +435,6 @@ impl Backend for ClaudeBackend {
             .content
             .into_iter()
             .find_map(|block| block.text)
-            .unwrap_or_default();
-        Ok(text.trim().to_string())
-    }
-}
-
-/// Default OpenAI model (ports `OpenAIBackend.__init__`'s `model="gpt-4o-mini"`).
-pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
-
-/// Default OpenAI API base URL.
-///
-/// The Python backend uses the `openai` SDK, whose default base is
-/// `https://api.openai.com/v1`; the chat endpoint is `{base}/chat/completions`.
-pub const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
-
-/// Body of `POST /chat/completions`, matching the OpenAI chat completions API.
-///
-/// Mirrors the Python `client.chat.completions.create(model=...,
-/// messages=[{"role": "user", "content": prompt}])` call.
-#[derive(Serialize)]
-struct OpenAiRequest<'a> {
-    model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
-}
-
-/// Subset of the chat completions response we read back.
-///
-/// The Python backend reads `response.choices[0].message.content`, falling back
-/// to `""` when it is null.
-#[derive(serde::Deserialize)]
-struct OpenAiResponse {
-    choices: Vec<OpenAiChoice>,
-}
-
-#[derive(serde::Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiMessage,
-}
-
-#[derive(serde::Deserialize)]
-struct OpenAiMessage {
-    #[serde(default)]
-    content: Option<String>,
-}
-
-/// OpenAI translation backend (ports `OpenAIBackend`).
-///
-/// [`complete`](Backend::complete) POSTs the prompt as a single user message to
-/// `{base_url}/chat/completions` with `Authorization: Bearer <key>`, then
-/// returns the stripped `choices[0].message.content` (or an empty string when
-/// it is null), mirroring the Python `... .content or ""` then `.strip()`.
-pub struct OpenAIBackend {
-    api_key: String,
-    model: String,
-    base_url: String,
-}
-
-impl OpenAIBackend {
-    /// Construct an OpenAI backend for `model` authenticating with `api_key`
-    /// against the default OpenAI base URL.
-    ///
-    /// Ports `OpenAIBackend(api_key, model)`. Pass [`DEFAULT_OPENAI_MODEL`] to
-    /// reproduce the Python default.
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self::with_base_url(api_key, model, DEFAULT_OPENAI_URL)
-    }
-
-    /// Construct an OpenAI backend pointed at an explicit `base_url` (for tests).
-    pub fn with_base_url(
-        api_key: impl Into<String>,
-        model: impl Into<String>,
-        base_url: impl Into<String>,
-    ) -> Self {
-        Self {
-            api_key: api_key.into(),
-            model: model.into(),
-            base_url: base_url.into(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Backend for OpenAIBackend {
-    fn id(&self) -> &'static str {
-        "openai"
-    }
-
-    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = OpenAiRequest {
-            model: &self.model,
-            messages: vec![ChatMessage {
-                role: "user",
-                content: prompt,
-            }],
-        };
-
-        let response = reqwest::Client::new()
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OpenAiResponse>()
-            .await?;
-
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .unwrap_or_default();
-        Ok(content.trim().to_string())
-    }
-}
-
-/// Default Gemini model (ports `GeminiBackend.__init__`'s
-/// `model="gemini-2.0-flash"`).
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
-
-/// Default Gemini API base URL.
-///
-/// The Python backend uses the `google-genai` SDK, whose default base is the
-/// Generative Language API at `https://generativelanguage.googleapis.com`; the
-/// endpoint is `{base}/v1beta/models/{model}:generateContent`.
-pub const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com";
-
-/// Body of `POST /v1beta/models/{model}:generateContent`.
-///
-/// The `google-genai` SDK sends the prompt as a single text part:
-/// `{"contents": [{"parts": [{"text": prompt}]}]}`.
-#[derive(Serialize)]
-struct GeminiRequest<'a> {
-    contents: Vec<GeminiContent<'a>>,
-}
-
-#[derive(Serialize)]
-struct GeminiContent<'a> {
-    parts: Vec<GeminiPart<'a>>,
-}
-
-#[derive(Serialize)]
-struct GeminiPart<'a> {
-    text: &'a str,
-}
-
-/// Subset of the `generateContent` response we read back.
-///
-/// The Python backend reads `response.text`, which the SDK derives from
-/// `candidates[0].content.parts[0].text`.
-#[derive(serde::Deserialize)]
-struct GeminiResponse {
-    candidates: Vec<GeminiCandidate>,
-}
-
-#[derive(serde::Deserialize)]
-struct GeminiCandidate {
-    content: GeminiResponseContent,
-}
-
-#[derive(serde::Deserialize)]
-struct GeminiResponseContent {
-    parts: Vec<GeminiResponsePart>,
-}
-
-#[derive(serde::Deserialize)]
-struct GeminiResponsePart {
-    #[serde(default)]
-    text: Option<String>,
-}
-
-/// Google Gemini translation backend (ports `GeminiBackend`).
-///
-/// [`complete`](Backend::complete) POSTs the prompt as a single text part to
-/// `{base_url}/v1beta/models/{model}:generateContent` with the API key in the
-/// `x-goog-api-key` header, then returns the stripped text of the first
-/// candidate's first part — the value the Python SDK exposes as `response.text`.
-pub struct GeminiBackend {
-    api_key: String,
-    model: String,
-    base_url: String,
-}
-
-impl GeminiBackend {
-    /// Construct a Gemini backend for `model` authenticating with `api_key`
-    /// against the default Generative Language API base URL.
-    ///
-    /// Ports `GeminiBackend(api_key, model)`. Pass [`DEFAULT_GEMINI_MODEL`] to
-    /// reproduce the Python default.
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self::with_base_url(api_key, model, DEFAULT_GEMINI_URL)
-    }
-
-    /// Construct a Gemini backend pointed at an explicit `base_url` (for tests).
-    pub fn with_base_url(
-        api_key: impl Into<String>,
-        model: impl Into<String>,
-        base_url: impl Into<String>,
-    ) -> Self {
-        Self {
-            api_key: api_key.into(),
-            model: model.into(),
-            base_url: base_url.into(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Backend for GeminiBackend {
-    fn id(&self) -> &'static str {
-        "gemini"
-    }
-
-    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
-        let url = format!(
-            "{}/v1beta/models/{}:generateContent",
-            self.base_url.trim_end_matches('/'),
-            self.model,
-        );
-        let body = GeminiRequest {
-            contents: vec![GeminiContent {
-                parts: vec![GeminiPart { text: prompt }],
-            }],
-        };
-
-        let response = reqwest::Client::new()
-            .post(&url)
-            .header("x-goog-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<GeminiResponse>()
-            .await?;
-
-        let text = response
-            .candidates
-            .into_iter()
-            .next()
-            .and_then(|c| c.content.parts.into_iter().next())
-            .and_then(|p| p.text)
             .unwrap_or_default();
         Ok(text.trim().to_string())
     }
@@ -986,6 +772,34 @@ mod tests {
         }
     }
 
+    /// Each `OpenAiCompatBackend` variant is wired to the base URL from the
+    /// routing table: OpenAI → the crate default, Ollama → `{url}/v1`, Gemini →
+    /// the Generative Language OpenAI-compat base. Built the same way as
+    /// [`make_backend`] (the factory returns `Box<dyn Backend>`, which hides the
+    /// `base_url()` accessor).
+    #[test]
+    fn backend_factory_routing() {
+        let openai = OpenAiCompatBackend::new("openai", "k", DEFAULT_OPENAI_MODEL, OPENAI_API_BASE);
+        assert_eq!(openai.id(), "openai");
+        assert_eq!(openai.base_url(), "https://api.openai.com/v1");
+
+        let ollama = OpenAiCompatBackend::new(
+            "ollama",
+            OLLAMA_PLACEHOLDER_KEY,
+            DEFAULT_OLLAMA_MODEL,
+            format!("{}/v1", DEFAULT_OLLAMA_URL.trim_end_matches('/')),
+        );
+        assert_eq!(ollama.id(), "ollama");
+        assert_eq!(ollama.base_url(), "http://localhost:11434/v1");
+
+        let gemini = OpenAiCompatBackend::new("gemini", "k", DEFAULT_GEMINI_MODEL, GEMINI_OPENAI_BASE);
+        assert_eq!(gemini.id(), "gemini");
+        assert_eq!(
+            gemini.base_url(),
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+    }
+
     #[test]
     fn chunk_ranges_ceildiv_boundaries() {
         // ceil(7 / 3) == 3 batches; final batch short.
@@ -1077,65 +891,19 @@ mod tests {
         assert!(p.ends_with("Text to translate:\nHello."));
     }
 
-    /// Golden body captured from the `ollama` Python client:
-    ///
-    /// ```text
-    /// ChatRequest(model="llama3.2", messages=[{"role": "user", "content": "Hello"}])
-    ///     .model_dump(exclude_none=True)
-    /// # -> {"model": "llama3.2", "stream": false,
-    /// #     "messages": [{"role": "user", "content": "Hello"}], "tools": []}
-    /// ```
-    ///
-    /// Compared as parsed JSON (key order is irrelevant on the wire).
-    fn ollama_payload_golden(model: &str, prompt: &str) -> serde_json::Value {
-        serde_json::json!({
-            "model": model,
-            "stream": false,
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [],
-        })
-    }
-
-    #[tokio::test]
-    async fn ollama_request_shape() {
-        use std::sync::mpsc;
-
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-
-        let server = MockServer::start().await;
-
-        // Capture the request body the async client actually sends.
-        let (tx, rx) = mpsc::channel::<serde_json::Value>();
-        Mock::given(method("POST"))
-            .and(path("/api/chat"))
-            .respond_with(move |req: &Request| {
-                tx.send(req.body_json::<serde_json::Value>().unwrap())
-                    .unwrap();
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "message": {"role": "assistant", "content": "  hola  "},
-                }))
-            })
-            .mount(&server)
-            .await;
-
-        let backend = OllamaBackend::new(DEFAULT_OLLAMA_MODEL, server.uri());
-        let reply = backend.complete("Hello").await.unwrap();
-
-        // message.content is returned stripped, matching `.strip()`.
-        assert_eq!(reply, "hola");
-
-        let sent = rx.recv().unwrap();
-        assert_eq!(sent, ollama_payload_golden(DEFAULT_OLLAMA_MODEL, "Hello"));
-    }
-
-    /// Falsifier for the three cloud backends: each provider's outgoing request
-    /// path, headers and JSON body are matched against an in-test golden under
+    /// Falsifier for the wire contract: each backend's outgoing request path,
+    /// auth headers and JSON body are matched against an in-test golden under
     /// `wiremock`, and the reply is extracted from the provider's response shape.
     ///
+    /// The three OpenAI-compatible providers (OpenAI/Ollama/Gemini) share the
+    /// [`OpenAiCompatBackend`] driven by `async-openai`, so one chat-completions
+    /// case covers the request shape they all emit; a second case pins Gemini's
+    /// `/openai`-suffixed base to `…/openai/chat/completions`. Claude keeps its
+    /// native messages-API shape.
+    ///
     /// The goldens are written here rather than committed as fixtures because
-    /// they assert the *wire contract* (request shape + auth headers), which is
-    /// owned by this crate, not captured from the Python runtime.
+    /// they assert the wire contract owned by this crate, not captured from the
+    /// Python runtime.
     mod parity {
         use std::sync::mpsc;
 
@@ -1143,8 +911,7 @@ mod tests {
         use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
         use super::super::{
-            Backend, ClaudeBackend, GeminiBackend, OpenAIBackend, DEFAULT_CLAUDE_MODEL,
-            DEFAULT_GEMINI_MODEL, DEFAULT_OPENAI_MODEL,
+            Backend, ClaudeBackend, OpenAiCompatBackend, DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL,
         };
 
         /// Captured request: the JSON body plus the auth/version headers each
@@ -1157,6 +924,10 @@ mod tests {
 
         /// Run `complete` against a wiremock server, capturing the request body
         /// and the named headers, returning them alongside the extracted reply.
+        ///
+        /// `build` receives the server's base URL (the `OpenAIConfig` API base
+        /// or the Claude base URL), so a backend's own path suffix is appended
+        /// on top of it; `request_path` is what the server should see.
         async fn run<B, F>(
             request_path: impl Into<String>,
             response: serde_json::Value,
@@ -1200,11 +971,82 @@ mod tests {
             }
         }
 
+        /// The OpenAI-compatible reply payload all three providers return.
+        ///
+        /// `async-openai` deserializes the full `CreateChatCompletionResponse`,
+        /// so the required envelope fields (`id`/`created`/`model`/`object`)
+        /// must be present alongside `choices`.
+        fn chat_response() -> serde_json::Value {
+            serde_json::json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "  hola  "},
+                    "finish_reason": "stop",
+                }],
+            })
+        }
+
         #[tokio::test]
-        async fn backend_payloads() {
+        async fn openai_compat_payload() {
+            // `async-openai` posts to `{base}/chat/completions` with Bearer auth
+            // and a single user message; the reply is the stripped
+            // choices[0].message.content.
+            let captured = run(
+                "/chat/completions",
+                chat_response(),
+                &["authorization"],
+                |base| OpenAiCompatBackend::new("openai", "sk-test", DEFAULT_OPENAI_MODEL, base),
+            )
+            .await;
+
+            assert_eq!(captured.reply, "hola");
+            assert_eq!(captured.body["model"], DEFAULT_OPENAI_MODEL);
+            assert_eq!(
+                captured.body["messages"],
+                serde_json::json!([{"role": "user", "content": "Hello"}])
+            );
+            assert_eq!(
+                captured.headers,
+                vec![("authorization".to_string(), "Bearer sk-test".to_string())]
+            );
+        }
+
+        #[tokio::test]
+        async fn gemini_base_appends_chat_completions() {
+            // Gemini's base ends in `/openai`, so the crate's `url(path)` yields
+            // `…/openai/chat/completions`. Pinning the full path here is the
+            // verify-in-work guard that the OpenAI-compat shape reaches Gemini.
+            let captured = run(
+                "/v1beta/openai/chat/completions",
+                chat_response(),
+                &["authorization"],
+                |base| {
+                    OpenAiCompatBackend::new(
+                        "gemini",
+                        "g-test",
+                        "gemini-2.0-flash",
+                        format!("{base}/v1beta/openai"),
+                    )
+                },
+            )
+            .await;
+
+            assert_eq!(captured.reply, "hola");
+            assert_eq!(
+                captured.headers,
+                vec![("authorization".to_string(), "Bearer g-test".to_string())]
+            );
+        }
+
+        #[tokio::test]
+        async fn claude_payload() {
             // Claude: x-api-key + anthropic-version headers, max_tokens=4096,
             // single user message; reply from the first text block.
-            let claude = run(
+            let captured = run(
                 "/v1/messages",
                 serde_json::json!({
                     "content": [{"type": "text", "text": "  hola  "}],
@@ -1213,9 +1055,10 @@ mod tests {
                 |base| ClaudeBackend::with_base_url("sk-ant-test", DEFAULT_CLAUDE_MODEL, base),
             )
             .await;
-            assert_eq!(claude.reply, "hola");
+
+            assert_eq!(captured.reply, "hola");
             assert_eq!(
-                claude.body,
+                captured.body,
                 serde_json::json!({
                     "model": DEFAULT_CLAUDE_MODEL,
                     "max_tokens": 4096,
@@ -1223,58 +1066,11 @@ mod tests {
                 })
             );
             assert_eq!(
-                claude.headers,
+                captured.headers,
                 vec![
                     ("x-api-key".to_string(), "sk-ant-test".to_string()),
                     ("anthropic-version".to_string(), "2023-06-01".to_string()),
                 ]
-            );
-
-            // OpenAI: Bearer auth, single user message; reply from
-            // choices[0].message.content.
-            let openai = run(
-                "/chat/completions",
-                serde_json::json!({
-                    "choices": [{"message": {"role": "assistant", "content": "  hola  "}}],
-                }),
-                &["authorization"],
-                |base| OpenAIBackend::with_base_url("sk-test", DEFAULT_OPENAI_MODEL, base),
-            )
-            .await;
-            assert_eq!(openai.reply, "hola");
-            assert_eq!(
-                openai.body,
-                serde_json::json!({
-                    "model": DEFAULT_OPENAI_MODEL,
-                    "messages": [{"role": "user", "content": "Hello"}],
-                })
-            );
-            assert_eq!(
-                openai.headers,
-                vec![("authorization".to_string(), "Bearer sk-test".to_string())]
-            );
-
-            // Gemini: model in the path, x-goog-api-key header, prompt as a
-            // single text part; reply from candidates[0].content.parts[0].text.
-            let gemini = run(
-                format!("/v1beta/models/{DEFAULT_GEMINI_MODEL}:generateContent"),
-                serde_json::json!({
-                    "candidates": [{"content": {"parts": [{"text": "  hola  "}]}}],
-                }),
-                &["x-goog-api-key"],
-                |base| GeminiBackend::with_base_url("g-test", DEFAULT_GEMINI_MODEL, base),
-            )
-            .await;
-            assert_eq!(gemini.reply, "hola");
-            assert_eq!(
-                gemini.body,
-                serde_json::json!({
-                    "contents": [{"parts": [{"text": "Hello"}]}],
-                })
-            );
-            assert_eq!(
-                gemini.headers,
-                vec![("x-goog-api-key".to_string(), "g-test".to_string())]
             );
         }
     }
