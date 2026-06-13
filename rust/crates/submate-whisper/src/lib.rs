@@ -108,9 +108,67 @@ mod inference {
     use super::*;
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+
     /// whisper.cpp reports token/segment times in centiseconds (1/100 s).
     fn centiseconds_to_seconds(cs: i64) -> f64 {
         cs as f64 / 100.0
+    }
+
+    /// Process-wide cache of loaded whisper models, keyed by model file path.
+    ///
+    /// `WhisperContext::new_with_params` parses and loads the entire GGML model
+    /// (hundreds of MB) — doing it per job dominates short-clip latency and is
+    /// pure waste when a node drains many jobs against the same model. The
+    /// context is `Send + Sync` and `create_state` is cheap and per-call, so we
+    /// load each model once and share an `Arc` across all jobs.
+    fn context_cache() -> &'static Mutex<HashMap<String, Arc<WhisperContext>>> {
+        static CACHE: OnceLock<Mutex<HashMap<String, Arc<WhisperContext>>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Return the cached context for `model_path`, loading and caching it on
+    /// first use. The load holds the cache lock, so a cold-start race serializes
+    /// on the first load and the loser reuses the freshly cached context — both
+    /// correct and a one-time cost.
+    fn load_context(model_path: &str) -> Result<Arc<WhisperContext>, WhisperError> {
+        let mut cache = context_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(ctx) = cache.get(model_path) {
+            return Ok(Arc::clone(ctx));
+        }
+        tracing::debug!(model = model_path, "loading whisper model (cache miss)");
+        let ctx = Arc::new(
+            WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+                .map_err(|e| WhisperError::Load(e.to_string()))?,
+        );
+        cache.insert(model_path.to_string(), Arc::clone(&ctx));
+        Ok(ctx)
+    }
+
+    /// Optional whisper.cpp thread-count override from `SUBMATE_WHISPER_THREADS`.
+    ///
+    /// Returns `None` (leave whisper.cpp's own default of `min(4, n_cpu)`) unless
+    /// the env var is set. Measured on a 20-thread box with the `base` model,
+    /// raising the thread count above the default *regresses* (4→27s, 8→37s,
+    /// 20→113s): inference is memory-bandwidth-bound, so oversubscription
+    /// thrashes. The optimum is model- and host-dependent (a large model on many
+    /// physical cores may benefit), so we expose it as a knob instead of forcing
+    /// a value that helps in theory but hurts in practice.
+    fn whisper_threads() -> Option<std::os::raw::c_int> {
+        std::env::var("SUBMATE_WHISPER_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(clamp_threads)
+    }
+
+    /// Clamp a core count into a valid `set_n_threads` argument (`>= 1`, fits
+    /// `c_int`). Split out so the bounds logic is testable without depending on
+    /// the host's core count.
+    fn clamp_threads(cores: usize) -> std::os::raw::c_int {
+        cores.clamp(1, std::os::raw::c_int::MAX as usize) as std::os::raw::c_int
     }
 
     /// Load a whisper model and transcribe a mono 16 kHz f32 PCM clip.
@@ -138,14 +196,18 @@ mod inference {
         pcm: &[f32],
         options: &TranscribeOptions,
     ) -> Result<WhisperResult, WhisperError> {
-        let ctx = WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-            .map_err(|e| WhisperError::Load(e.to_string()))?;
+        let ctx = load_context(model_path)?;
 
         let mut state = ctx
             .create_state()
             .map_err(|e| WhisperError::Load(e.to_string()))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Only override whisper.cpp's default thread count when explicitly asked
+        // (SUBMATE_WHISPER_THREADS) — forcing more threads regresses small models.
+        if let Some(threads) = whisper_threads() {
+            params.set_n_threads(threads);
+        }
         // Word-level timestamps: ask whisper.cpp to emit per-token times so we
         // can fold tokens into words below.
         params.set_token_timestamps(true);
@@ -296,6 +358,21 @@ mod inference {
             .and_then(whisper_rs::get_lang_str)
             .unwrap_or("en")
             .to_string()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::clamp_threads;
+
+        #[test]
+        fn clamp_threads_stays_positive_and_in_range() {
+            assert_eq!(clamp_threads(0), 1, "0 cores must clamp up to 1");
+            assert_eq!(clamp_threads(1), 1);
+            assert_eq!(clamp_threads(8), 8);
+            assert_eq!(clamp_threads(64), 64);
+            // Absurd counts saturate at c_int::MAX rather than wrapping negative.
+            assert_eq!(clamp_threads(usize::MAX), std::os::raw::c_int::MAX);
+        }
     }
 }
 
