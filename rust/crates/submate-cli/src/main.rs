@@ -434,27 +434,18 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
 
 /// Build the translation backend selected by `config.translation.backend`.
 fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend> {
-    use submate_types::TranslationBackend;
-
     let t = &config.translation;
-    match t.backend {
-        TranslationBackend::Ollama => Box::new(submate_translate::OllamaBackend::new(
-            t.ollama_model.clone(),
-            t.ollama_url.clone(),
-        )),
-        TranslationBackend::Claude => Box::new(submate_translate::ClaudeBackend::new(
-            t.anthropic_api_key.clone(),
-            t.claude_model.clone(),
-        )),
-        TranslationBackend::Openai => Box::new(submate_translate::OpenAIBackend::new(
-            t.openai_api_key.clone(),
-            t.openai_model.clone(),
-        )),
-        TranslationBackend::Gemini => Box::new(submate_translate::GeminiBackend::new(
-            t.gemini_api_key.clone(),
-            t.gemini_model.clone(),
-        )),
-    }
+    submate_translate::make_backend(&submate_translate::BackendSettings {
+        backend: t.backend,
+        ollama_model: &t.ollama_model,
+        ollama_url: &t.ollama_url,
+        anthropic_api_key: &t.anthropic_api_key,
+        claude_model: &t.claude_model,
+        openai_api_key: &t.openai_api_key,
+        openai_model: &t.openai_model,
+        gemini_api_key: &t.gemini_api_key,
+        gemini_model: &t.gemini_model,
+    })
 }
 
 /// Collect subtitle files under `path` (ports `find_subtitle_files`).
