@@ -359,6 +359,11 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
     let backend = build_backend(&config);
     let chunk_size = config.translation.chunk_size as usize;
 
+    // The translation stack is async (the backends `.await` their reqwest
+    // client); this standalone path has no ambient runtime, so drive each
+    // translate on a local runtime, mirroring `cmd_transcribe`.
+    let runtime = tokio::runtime::Runtime::new()?;
+
     for file in &files {
         let output_path = match (&args.output, files.len()) {
             (Some(out), 1) => out.clone(),
@@ -387,37 +392,45 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
             .map(|e| format!(".{}", e.to_lowercase()))
             .unwrap_or_default();
 
-        let mut complete = |prompt: &str| backend.complete(prompt).map_err(anyhow::Error::from);
-        let translated = match suffix.as_str() {
-            ".ass" | ".ssa" => {
-                // The portable ASS path translates extracted dialogue lines; with
-                // no ASS (de)serializer wired here it operates on the whole file
-                // as a single block, mirroring the SRT path's content round-trip.
-                let lines = vec![content.clone()];
-                let out = submate_translate::translate_ass_dialogue(
-                    &lines,
+        let mut complete =
+            async |prompt: String| backend.complete(&prompt).await.map_err(anyhow::Error::from);
+        let translated = runtime.block_on(async {
+            let result: anyhow::Result<String> = match suffix.as_str() {
+                ".ass" | ".ssa" => {
+                    // The portable ASS path translates extracted dialogue lines;
+                    // with no ASS (de)serializer wired here it operates on the
+                    // whole file as a single block, mirroring the SRT path's
+                    // content round-trip.
+                    let lines = vec![content.clone()];
+                    let out = submate_translate::translate_ass_dialogue(
+                        &lines,
+                        &source,
+                        &args.target_lang,
+                        chunk_size,
+                        &mut complete,
+                    )
+                    .await?;
+                    Ok(out.into_iter().next().unwrap_or(content))
+                }
+                ".vtt" => Ok(submate_translate::translate_vtt_content(
+                    &content,
                     &source,
                     &args.target_lang,
                     chunk_size,
                     &mut complete,
-                )?;
-                out.into_iter().next().unwrap_or(content)
-            }
-            ".vtt" => submate_translate::translate_vtt_content(
-                &content,
-                &source,
-                &args.target_lang,
-                chunk_size,
-                &mut complete,
-            )?,
-            _ => submate_translate::translate_srt_content(
-                &content,
-                &source,
-                &args.target_lang,
-                chunk_size,
-                &mut complete,
-            )?,
-        };
+                )
+                .await?),
+                _ => Ok(submate_translate::translate_srt_content(
+                    &content,
+                    &source,
+                    &args.target_lang,
+                    chunk_size,
+                    &mut complete,
+                )
+                .await?),
+            };
+            result
+        })?;
 
         std::fs::write(&output_path, translated)?;
         println!(

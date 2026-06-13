@@ -216,12 +216,11 @@ where
 /// Holds the configured translation [`Backend`] plus the chunk size from config;
 /// `translate` dispatches on the job's [`OutputFormat`] into the matching
 /// `submate-translate` entry point.
-#[derive(Clone)]
 pub struct TranslationStep {
-    // `Arc` (not `Box`) so the step is cheaply cloneable into the
-    // `spawn_blocking` closure that runs the blocking-reqwest backend off the
-    // async runtime (see `Agent::run_job`).
-    backend: Arc<dyn Backend + Send + Sync>,
+    // The async backends `.await` their `reqwest::Client` directly on the
+    // runtime, so the step is held by reference across `run_job`'s `.await`
+    // without any `spawn_blocking`/`Arc` shuffle.
+    backend: Box<dyn Backend + Send + Sync>,
     chunk_size: usize,
 }
 
@@ -229,7 +228,7 @@ impl TranslationStep {
     /// Build a step from a configured backend and the config `chunk_size`.
     pub fn new(backend: Box<dyn Backend + Send + Sync>, chunk_size: usize) -> Self {
         Self {
-            backend: Arc::from(backend),
+            backend,
             chunk_size,
         }
     }
@@ -253,31 +252,43 @@ impl TranslationStep {
     ///
     /// A backend error is surfaced as the `String` error the agent reports as a
     /// failed [`JobResult`].
-    pub fn translate(&self, opts: &JobOpts, subtitle: String) -> Result<String, String> {
+    pub async fn translate(&self, opts: &JobOpts, subtitle: String) -> Result<String, String> {
         let Some(target) = opts.target_language.as_deref() else {
             return Ok(subtitle);
         };
         let source = opts.source_language.as_deref().unwrap_or("auto");
 
-        let mut complete = |prompt: &str| self.backend.complete(prompt).map_err(|e| e.to_string());
+        let mut complete = async |prompt: String| {
+            self.backend
+                .complete(&prompt)
+                .await
+                .map_err(|e| e.to_string())
+        };
 
         match opts.output_format {
-            OutputFormat::Srt => submate_translate::translate_srt_content(
-                &subtitle,
-                source,
-                target,
-                self.chunk_size,
-                &mut complete,
-            ),
-            OutputFormat::Vtt => submate_translate::translate_vtt_content(
-                &subtitle,
-                source,
-                target,
-                self.chunk_size,
-                &mut complete,
-            ),
+            OutputFormat::Srt => {
+                submate_translate::translate_srt_content(
+                    &subtitle,
+                    source,
+                    target,
+                    self.chunk_size,
+                    &mut complete,
+                )
+                .await
+            }
+            OutputFormat::Vtt => {
+                submate_translate::translate_vtt_content(
+                    &subtitle,
+                    source,
+                    target,
+                    self.chunk_size,
+                    &mut complete,
+                )
+                .await
+            }
             OutputFormat::Ass => {
                 translate_ass_content(&subtitle, source, target, self.chunk_size, &mut complete)
+                    .await
             }
             // No cue structure to translate in place; leave untouched.
             OutputFormat::Json | OutputFormat::Txt => Ok(subtitle),
@@ -295,13 +306,17 @@ impl TranslationStep {
 /// commas it contains). The text fields are translated as a batch through
 /// [`submate_translate::translate_ass_dialogue`], which drops any translation
 /// that would alter the line's `{...}` tags, then spliced back onto their lines.
-fn translate_ass_content<E>(
+async fn translate_ass_content<E, F, Fut>(
     ass: &str,
     source_lang: &str,
     target_lang: &str,
     chunk_size: usize,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<String, E> {
+    complete: &mut F,
+) -> Result<String, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     // Record (line index, byte offset where the text field begins) for every
     // Dialogue line, and collect the dialogue texts to translate together.
     let mut dialogue: Vec<(usize, usize)> = Vec::new();
@@ -326,7 +341,8 @@ fn translate_ass_content<E>(
         target_lang,
         chunk_size,
         complete,
-    )?;
+    )
+    .await?;
 
     // Map each translated Dialogue line by its line index, then rebuild the
     // document line by line — swapping the text field on Dialogue lines and
@@ -622,19 +638,9 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
         // processor output byte-for-byte, so plain transcription is unaffected.
         let result = match self.processor.process(opts, pcm).await {
             Ok(output) => match &self.translation {
-                // The translation backends use blocking `reqwest` (which owns an
-                // internal runtime), so calling them directly here would panic
-                // with "Cannot drop a runtime in an async context". Run the
-                // blocking translate on a blocking thread, like the transcription
-                // dispatcher does.
-                Some(step) => {
-                    let step = step.clone();
-                    let opts = opts.clone();
-                    match tokio::task::spawn_blocking(move || step.translate(&opts, output)).await {
-                        Ok(inner) => inner,
-                        Err(join) => Err(format!("translation task panicked: {join}")),
-                    }
-                }
+                // The async backends `.await` their `reqwest::Client` directly on
+                // the runtime, so the translate runs inline here.
+                Some(step) => step.translate(opts, output).await,
                 None => Ok(output),
             },
             Err(error) => Err(error),
@@ -1050,12 +1056,13 @@ mod translation_tests {
     /// so a translated cue is its source text uppercased, with no network.
     struct UpperBackend;
 
+    #[async_trait::async_trait]
     impl Backend for UpperBackend {
         fn id(&self) -> &'static str {
             "upper"
         }
 
-        fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+        async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
             // The chunking layer joins cues with a separator token and embeds
             // them after the prompt's marker; echo the joined batch back
             // uppercased so the per-cue split realigns 1:1.
@@ -1084,13 +1091,14 @@ mod translation_tests {
     /// Falsifier: the job-layer translation post-step transforms cue text when a
     /// `target_language` is set and is a no-op otherwise — driven with a stub
     /// backend that uppercases each batch, no `model` feature, no network.
-    #[test]
-    fn translate_post_step() {
+    #[tokio::test]
+    async fn translate_post_step() {
         let step = TranslationStep::new(Box::new(UpperBackend), 50);
 
         // target_language = Some -> cue text is transformed, timing preserved.
         let translated = step
             .translate(&job(Some("es"), OutputFormat::Srt), FIXED_SRT.to_string())
+            .await
             .expect("translation succeeds");
         assert!(
             translated.contains("HELLO") && translated.contains("WORLD"),
@@ -1104,6 +1112,7 @@ mod translation_tests {
         // target_language = None -> the fixed SRT is returned byte-for-byte.
         let untouched = step
             .translate(&job(None, OutputFormat::Srt), FIXED_SRT.to_string())
+            .await
             .expect("no-op translation succeeds");
         assert_eq!(
             untouched, FIXED_SRT,
@@ -1113,8 +1122,8 @@ mod translation_tests {
 
     /// The ASS dispatch translates each `Dialogue:` line's text field while
     /// preserving every other line and the event field layout.
-    #[test]
-    fn translate_post_step_ass_preserves_layout() {
+    #[tokio::test]
+    async fn translate_post_step_ass_preserves_layout() {
         let ass = "[Events]\n\
             Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
             Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,hello\n\
@@ -1122,6 +1131,7 @@ mod translation_tests {
         let step = TranslationStep::new(Box::new(UpperBackend), 50);
         let out = step
             .translate(&job(Some("es"), OutputFormat::Ass), ass.to_string())
+            .await
             .expect("ass translation succeeds");
 
         // Header lines and the field prefix are untouched; only the text changes.

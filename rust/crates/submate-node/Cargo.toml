@@ -18,6 +18,7 @@ tracing = { workspace = true }
 whisper-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 submate-types = { path = "../submate-types" }
 wiremock = { workspace = true }
 

@@ -21,6 +21,7 @@
 //! — are ported here too, each as a thin raw-[`reqwest`] HTTP backend that builds
 //! its provider's request shape and extracts the reply text from the response.
 
+use std::future::Future;
 use std::ops::Range;
 
 use serde::Serialize;
@@ -59,6 +60,12 @@ pub fn format_prompt(template: &str, source_lang: &str, target_lang: &str, text:
 /// fully-formed prompt to the model and returning the reply text. The provided
 /// [`translate`](Backend::translate) builds the prompt from the shared template,
 /// exactly as the Python base class does.
+///
+/// `complete`/`translate` are `async` via [`async_trait`](async_trait::async_trait),
+/// which boxes the returned futures so the trait stays object-safe for
+/// `Box<dyn Backend>` — the four async HTTP backends `.await` their
+/// `reqwest::Client` directly inside the node's async runtime.
+#[async_trait::async_trait]
 pub trait Backend {
     /// Stable identifier for the backend (`"ollama"`/`"claude"`/`"openai"`/
     /// `"gemini"`), matching the [`submate_types::TranslationBackend`] string
@@ -70,13 +77,13 @@ pub trait Backend {
     /// Ports `TranslationBackendBase._complete`. Implementations strip the
     /// reply (the Python backends call `.strip()` before returning); the
     /// chunking layer does not re-strip the whole reply.
-    fn complete(&self, prompt: &str) -> Result<String, BackendError>;
+    async fn complete(&self, prompt: &str) -> Result<String, BackendError>;
 
     /// Translate `text` from `source_lang` to `target_lang`.
     ///
     /// Ports `TranslationBackendBase.translate`: format the prompt (defaulting
     /// to [`TRANSLATION_PROMPT`]) then delegate to [`complete`](Backend::complete).
-    fn translate(
+    async fn translate(
         &self,
         text: &str,
         source_lang: &str,
@@ -85,7 +92,7 @@ pub trait Backend {
     ) -> Result<String, BackendError> {
         let template = prompt_template.unwrap_or(TRANSLATION_PROMPT);
         let prompt = format_prompt(template, source_lang, target_lang, text);
-        self.complete(&prompt)
+        self.complete(&prompt).await
     }
 }
 
@@ -122,9 +129,8 @@ pub struct BackendSettings<'a> {
 ///
 /// The boxed backend is `Send + Sync` so the node's pull-loop can hold it as a
 /// field across `.await` points. The four backends are stateless (just config
-/// strings) and build a `reqwest::blocking::Client` per `complete` call (see
-/// [`http_client`]) so the client is never created or dropped in an async
-/// context.
+/// strings) and build an async `reqwest::Client` per `complete` call, awaited
+/// directly on the runtime.
 pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
 
@@ -172,18 +178,6 @@ impl From<reqwest::Error> for BackendError {
     fn from(err: reqwest::Error) -> Self {
         BackendError::Request(err.to_string())
     }
-}
-
-/// Build a fresh blocking HTTP client for a single `complete` call.
-///
-/// The backends deliberately do NOT store a `reqwest::blocking::Client`:
-/// `reqwest::blocking` owns an internal runtime that must not be created or
-/// dropped inside a tokio async context. The node runs `complete` on a
-/// `spawn_blocking` thread, so building (and dropping) the client per call keeps
-/// its whole lifecycle off the async runtime; the standalone CLI path has no
-/// runtime at all. The cost is negligible next to the LLM round-trip it serves.
-fn http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::new()
 }
 
 /// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
@@ -263,12 +257,13 @@ impl Default for OllamaBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for OllamaBackend {
     fn id(&self) -> &'static str {
         "ollama"
     }
 
-    fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let body = OllamaChatRequest {
             model: &self.model,
@@ -280,12 +275,14 @@ impl Backend for OllamaBackend {
             tools: Vec::new(),
         };
 
-        let response = http_client()
+        let response = reqwest::Client::new()
             .post(&url)
             .json(&body)
-            .send()?
+            .send()
+            .await?
             .error_for_status()?
-            .json::<OllamaChatResponse>()?;
+            .json::<OllamaChatResponse>()
+            .await?;
 
         Ok(response.message.content.trim().to_string())
     }
@@ -379,12 +376,13 @@ impl ClaudeBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for ClaudeBackend {
     fn id(&self) -> &'static str {
         "claude"
     }
 
-    fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body = ClaudeRequest {
             model: &self.model,
@@ -395,14 +393,16 @@ impl Backend for ClaudeBackend {
             }],
         };
 
-        let response = http_client()
+        let response = reqwest::Client::new()
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&body)
-            .send()?
+            .send()
+            .await?
             .error_for_status()?
-            .json::<ClaudeResponse>()?;
+            .json::<ClaudeResponse>()
+            .await?;
 
         let text = response
             .content
@@ -488,12 +488,13 @@ impl OpenAIBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for OpenAIBackend {
     fn id(&self) -> &'static str {
         "openai"
     }
 
-    fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = OpenAiRequest {
             model: &self.model,
@@ -503,13 +504,15 @@ impl Backend for OpenAIBackend {
             }],
         };
 
-        let response = http_client()
+        let response = reqwest::Client::new()
             .post(&url)
             .bearer_auth(&self.api_key)
             .json(&body)
-            .send()?
+            .send()
+            .await?
             .error_for_status()?
-            .json::<OpenAiResponse>()?;
+            .json::<OpenAiResponse>()
+            .await?;
 
         let content = response
             .choices
@@ -612,12 +615,13 @@ impl GeminiBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for GeminiBackend {
     fn id(&self) -> &'static str {
         "gemini"
     }
 
-    fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+    async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!(
             "{}/v1beta/models/{}:generateContent",
             self.base_url.trim_end_matches('/'),
@@ -629,13 +633,15 @@ impl Backend for GeminiBackend {
             }],
         };
 
-        let response = http_client()
+        let response = reqwest::Client::new()
             .post(&url)
             .header("x-goog-api-key", &self.api_key)
             .json(&body)
-            .send()?
+            .send()
+            .await?
             .error_for_status()?
-            .json::<GeminiResponse>()?;
+            .json::<GeminiResponse>()
+            .await?;
 
         let text = response
             .candidates
@@ -749,22 +755,27 @@ pub fn validate_ass_tags(original: &str, translated: &str) -> bool {
 /// result (ports `TranslationService._translate_batch`).
 ///
 /// Joins `texts` with the newline-wrapped `separator_token` ([`join_batch`]),
-/// runs `complete` on the formatted prompt, then splits the reply back into
+/// awaits `complete` on the formatted prompt, then splits the reply back into
 /// per-cue blocks ([`split_batch`]). On a block-count mismatch the originals are
-/// kept for the whole batch. `complete` receives the fully-formed prompt and
-/// returns the model reply (already stripped, as the backends do); decoupling it
-/// from [`Backend`] lets callers drive the flow from a recorded map in tests.
-fn translate_batch<E>(
+/// kept for the whole batch. `complete` is an async callback that receives the
+/// fully-formed prompt and returns the model reply (already stripped, as the
+/// backends do); decoupling it from [`Backend`] lets callers drive the flow from
+/// a recorded map in tests.
+async fn translate_batch<E, F, Fut>(
     texts: &[String],
     source_lang: &str,
     target_lang: &str,
     separator_token: &str,
     prompt_template: &str,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<Vec<String>, E> {
+    complete: &mut F,
+) -> Result<Vec<String>, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     let combined = join_batch(texts, separator_token);
     let prompt = format_prompt(prompt_template, source_lang, target_lang, &combined);
-    let translated = complete(&prompt)?;
+    let translated = complete(prompt).await?;
     Ok(split_batch(&translated, separator_token, texts))
 }
 
@@ -775,15 +786,19 @@ fn translate_batch<E>(
 /// Splits `texts` into batches of `chunk_size` ([`chunk_ranges`]), translating
 /// each via [`translate_batch`]. The returned vec has the same length as
 /// `texts`; a `chunk_size` of zero translates everything in a single batch.
-fn translate_chunks<E>(
+async fn translate_chunks<E, F, Fut>(
     texts: &[String],
     source_lang: &str,
     target_lang: &str,
     chunk_size: usize,
     separator_token: &str,
     prompt_template: &str,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<Vec<String>, E> {
+    complete: &mut F,
+) -> Result<Vec<String>, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     let mut out = Vec::with_capacity(texts.len());
     for range in chunk_ranges(texts.len(), chunk_size) {
         let batch = &texts[range];
@@ -794,7 +809,8 @@ fn translate_chunks<E>(
             separator_token,
             prompt_template,
             complete,
-        )?;
+        )
+        .await?;
         out.extend(translated);
     }
     Ok(out)
@@ -808,14 +824,18 @@ fn translate_chunks<E>(
 /// translates the cue contents in chunks of `chunk_size` (joined with
 /// [`SRT_SEPARATOR_TOKEN`] under [`TRANSLATION_PROMPT`]), writes the results
 /// back onto the cues, and re-emits via [`submate_subtitle::cue::compose_srt`].
-/// `complete` is invoked once per batch with the fully-formed prompt.
-pub fn translate_srt_content<E>(
+/// `complete` is awaited once per batch with the fully-formed prompt.
+pub async fn translate_srt_content<E, F, Fut>(
     srt_content: &str,
     source_lang: &str,
     target_lang: &str,
     chunk_size: usize,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<String, E> {
+    complete: &mut F,
+) -> Result<String, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     if source_lang == target_lang {
         return Ok(srt_content.to_string());
     }
@@ -830,7 +850,8 @@ pub fn translate_srt_content<E>(
         SRT_SEPARATOR_TOKEN,
         TRANSLATION_PROMPT,
         complete,
-    )?;
+    )
+    .await?;
     for (cue, text) in cues.iter_mut().zip(translated) {
         cue.text = text;
     }
@@ -846,13 +867,17 @@ pub fn translate_srt_content<E>(
 /// translatable cues the input is returned unchanged.
 ///
 /// [`compose_vtt`]: submate_subtitle::cue::compose_vtt
-pub fn translate_vtt_content<E>(
+pub async fn translate_vtt_content<E, F, Fut>(
     vtt_content: &str,
     source_lang: &str,
     target_lang: &str,
     chunk_size: usize,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<String, E> {
+    complete: &mut F,
+) -> Result<String, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     if source_lang == target_lang {
         return Ok(vtt_content.to_string());
     }
@@ -871,7 +896,8 @@ pub fn translate_vtt_content<E>(
         VTT_SEPARATOR_TOKEN,
         TRANSLATION_PROMPT,
         complete,
-    )?;
+    )
+    .await?;
     for (cue, text) in cues.iter_mut().zip(translated) {
         cue.text = text;
     }
@@ -889,13 +915,17 @@ pub fn translate_vtt_content<E>(
 /// [`validate_ass_tags`] confirms the `{...}` tags are unchanged — otherwise it
 /// keeps the original, matching the Python "tag mismatch, keeping original"
 /// fallback. The returned vec aligns 1:1 with `texts`.
-pub fn translate_ass_dialogue<E>(
+pub async fn translate_ass_dialogue<E, F, Fut>(
     texts: &[String],
     source_lang: &str,
     target_lang: &str,
     chunk_size: usize,
-    complete: &mut dyn FnMut(&str) -> Result<String, E>,
-) -> Result<Vec<String>, E> {
+    complete: &mut F,
+) -> Result<Vec<String>, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
     if source_lang == target_lang {
         return Ok(texts.to_vec());
     }
@@ -908,7 +938,8 @@ pub fn translate_ass_dialogue<E>(
         VTT_SEPARATOR_TOKEN,
         ASS_TRANSLATION_PROMPT,
         complete,
-    )?;
+    )
+    .await?;
 
     Ok(texts
         .iter()
@@ -1009,24 +1040,28 @@ mod tests {
         assert!(validate_ass_tags("plain", "llano"));
     }
 
-    #[test]
-    fn translate_srt_short_circuits_on_same_language() {
+    #[tokio::test]
+    async fn translate_srt_short_circuits_on_same_language() {
         let srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n";
-        let mut complete = |_: &str| -> Result<String, Infallible> {
+        let mut complete = async |_: String| -> Result<String, Infallible> {
             panic!("backend must not be called when source == target");
         };
-        let out = translate_srt_content(srt, "en", "en", 50, &mut complete).unwrap();
+        let out = translate_srt_content(srt, "en", "en", 50, &mut complete)
+            .await
+            .unwrap();
         assert_eq!(out, srt);
     }
 
-    #[test]
-    fn ass_dialogue_keeps_original_on_tag_mismatch() {
+    #[tokio::test]
+    async fn ass_dialogue_keeps_original_on_tag_mismatch() {
         // Two cues in one batch; the model drops the tag on the second.
         let texts = vec!["{\\i1}Hello".to_string(), "{\\b1}World".to_string()];
-        let mut complete = |_: &str| -> Result<String, Infallible> {
+        let mut complete = async |_: String| -> Result<String, Infallible> {
             Ok(format!("{{\\i1}}Hola{VTT_SEPARATOR_TOKEN}Mundo"))
         };
-        let out = translate_ass_dialogue(&texts, "en", "es", 50, &mut complete).unwrap();
+        let out = translate_ass_dialogue(&texts, "en", "es", 50, &mut complete)
+            .await
+            .unwrap();
         // First cue's tags preserved -> translation kept; second mismatched ->
         // original kept.
         assert_eq!(
@@ -1061,52 +1096,37 @@ mod tests {
         })
     }
 
-    #[test]
-    fn ollama_request_shape() {
+    #[tokio::test]
+    async fn ollama_request_shape() {
         use std::sync::mpsc;
 
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let server = MockServer::start().await;
 
-        runtime.block_on(async {
-            let server = MockServer::start().await;
-
-            // Capture the request body the blocking client actually sends.
-            let (tx, rx) = mpsc::channel::<serde_json::Value>();
-            Mock::given(method("POST"))
-                .and(path("/api/chat"))
-                .respond_with(move |req: &Request| {
-                    tx.send(req.body_json::<serde_json::Value>().unwrap())
-                        .unwrap();
-                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                        "message": {"role": "assistant", "content": "  hola  "},
-                    }))
-                })
-                .mount(&server)
-                .await;
-
-            let base_url = server.uri();
-            // The blocking reqwest call cannot run on the async runtime thread;
-            // drive it on a dedicated thread and await its result.
-            let reply = tokio::task::spawn_blocking(move || {
-                let backend = OllamaBackend::new(DEFAULT_OLLAMA_MODEL, base_url);
-                backend.complete("Hello")
+        // Capture the request body the async client actually sends.
+        let (tx, rx) = mpsc::channel::<serde_json::Value>();
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(move |req: &Request| {
+                tx.send(req.body_json::<serde_json::Value>().unwrap())
+                    .unwrap();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": {"role": "assistant", "content": "  hola  "},
+                }))
             })
-            .await
-            .unwrap()
-            .unwrap();
+            .mount(&server)
+            .await;
 
-            // message.content is returned stripped, matching `.strip()`.
-            assert_eq!(reply, "hola");
+        let backend = OllamaBackend::new(DEFAULT_OLLAMA_MODEL, server.uri());
+        let reply = backend.complete("Hello").await.unwrap();
 
-            let sent = rx.recv().unwrap();
-            assert_eq!(sent, ollama_payload_golden(DEFAULT_OLLAMA_MODEL, "Hello"));
-        });
+        // message.content is returned stripped, matching `.strip()`.
+        assert_eq!(reply, "hola");
+
+        let sent = rx.recv().unwrap();
+        assert_eq!(sent, ollama_payload_golden(DEFAULT_OLLAMA_MODEL, "Hello"));
     }
 
     /// Falsifier for the three cloud backends: each provider's outgoing request
@@ -1137,7 +1157,7 @@ mod tests {
 
         /// Run `complete` against a wiremock server, capturing the request body
         /// and the named headers, returning them alongside the extracted reply.
-        fn run<B, F>(
+        async fn run<B, F>(
             request_path: impl Into<String>,
             response: serde_json::Value,
             capture_headers: &'static [&'static str],
@@ -1148,53 +1168,40 @@ mod tests {
             F: FnOnce(String) -> B + Send + 'static,
         {
             let request_path = request_path.into();
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+            let server = MockServer::start().await;
 
-            runtime.block_on(async move {
-                let server = MockServer::start().await;
-
-                let (tx, rx) = mpsc::channel::<(serde_json::Value, Vec<(String, String)>)>();
-                Mock::given(method("POST"))
-                    .and(path(request_path))
-                    .respond_with(move |req: &Request| {
-                        let body = req.body_json::<serde_json::Value>().unwrap();
-                        let headers = capture_headers
-                            .iter()
-                            .filter_map(|name| {
-                                req.headers
-                                    .get(*name)
-                                    .map(|v| (name.to_string(), v.to_str().unwrap().to_string()))
-                            })
-                            .collect::<Vec<_>>();
-                        tx.send((body, headers)).unwrap();
-                        ResponseTemplate::new(200).set_body_json(response.clone())
-                    })
-                    .mount(&server)
-                    .await;
-
-                let base_url = server.uri();
-                let reply = tokio::task::spawn_blocking(move || {
-                    let backend = build(base_url);
-                    backend.complete("Hello")
+            let (tx, rx) = mpsc::channel::<(serde_json::Value, Vec<(String, String)>)>();
+            Mock::given(method("POST"))
+                .and(path(request_path))
+                .respond_with(move |req: &Request| {
+                    let body = req.body_json::<serde_json::Value>().unwrap();
+                    let headers = capture_headers
+                        .iter()
+                        .filter_map(|name| {
+                            req.headers
+                                .get(*name)
+                                .map(|v| (name.to_string(), v.to_str().unwrap().to_string()))
+                        })
+                        .collect::<Vec<_>>();
+                    tx.send((body, headers)).unwrap();
+                    ResponseTemplate::new(200).set_body_json(response.clone())
                 })
-                .await
-                .unwrap()
-                .unwrap();
+                .mount(&server)
+                .await;
 
-                let (body, headers) = rx.recv().unwrap();
-                Captured {
-                    body,
-                    headers,
-                    reply,
-                }
-            })
+            let backend = build(server.uri());
+            let reply = backend.complete("Hello").await.unwrap();
+
+            let (body, headers) = rx.recv().unwrap();
+            Captured {
+                body,
+                headers,
+                reply,
+            }
         }
 
-        #[test]
-        fn backend_payloads() {
+        #[tokio::test]
+        async fn backend_payloads() {
             // Claude: x-api-key + anthropic-version headers, max_tokens=4096,
             // single user message; reply from the first text block.
             let claude = run(
@@ -1204,7 +1211,8 @@ mod tests {
                 }),
                 &["x-api-key", "anthropic-version"],
                 |base| ClaudeBackend::with_base_url("sk-ant-test", DEFAULT_CLAUDE_MODEL, base),
-            );
+            )
+            .await;
             assert_eq!(claude.reply, "hola");
             assert_eq!(
                 claude.body,
@@ -1231,7 +1239,8 @@ mod tests {
                 }),
                 &["authorization"],
                 |base| OpenAIBackend::with_base_url("sk-test", DEFAULT_OPENAI_MODEL, base),
-            );
+            )
+            .await;
             assert_eq!(openai.reply, "hola");
             assert_eq!(
                 openai.body,
@@ -1254,7 +1263,8 @@ mod tests {
                 }),
                 &["x-goog-api-key"],
                 |base| GeminiBackend::with_base_url("g-test", DEFAULT_GEMINI_MODEL, base),
-            );
+            )
+            .await;
             assert_eq!(gemini.reply, "hola");
             assert_eq!(
                 gemini.body,

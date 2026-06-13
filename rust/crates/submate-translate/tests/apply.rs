@@ -41,8 +41,8 @@ mod parity {
 
     /// Falsifier `cargo test -p submate-translate parity::apply`: the
     /// mocked-LLM SRT apply flow reproduces the Python golden byte-for-byte.
-    #[test]
-    fn apply() {
+    #[tokio::test]
+    async fn apply() {
         let input = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.in.srt"))
             .expect("missing translate/sampleA.in.srt fixture");
 
@@ -53,18 +53,20 @@ mod parity {
             .expect("mock_llm.json is not a JSON object")
             .clone();
 
-        // The mocked "backend": return the recorded completion for the exact
-        // prompt the apply layer builds. Lookup failure is a test bug, so panic.
-        let mut complete = |prompt: &str| -> Result<String, Infallible> {
+        // The mocked async "backend": return the recorded completion for the
+        // exact prompt the apply layer builds. Lookup failure is a test bug, so
+        // panic.
+        let mut complete = async |prompt: String| -> Result<String, Infallible> {
             let completion = completions
-                .get(prompt)
+                .get(&prompt)
                 .and_then(|v| v.as_str())
                 .unwrap_or_else(|| panic!("no recorded completion for prompt:\n{prompt}"));
             Ok(completion.to_string())
         };
 
-        let actual =
-            translate_srt_content(&input, "en", "es", DEFAULT_CHUNK_SIZE, &mut complete).unwrap();
+        let actual = translate_srt_content(&input, "en", "es", DEFAULT_CHUNK_SIZE, &mut complete)
+            .await
+            .unwrap();
 
         let golden = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.out.srt"))
             .expect("missing translate/sampleA.out.srt fixture");
