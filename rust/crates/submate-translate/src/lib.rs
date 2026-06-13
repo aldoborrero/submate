@@ -60,6 +60,11 @@ pub fn format_prompt(template: &str, source_lang: &str, target_lang: &str, text:
 /// [`translate`](Backend::translate) builds the prompt from the shared template,
 /// exactly as the Python base class does.
 pub trait Backend {
+    /// Stable identifier for the backend (`"ollama"`/`"claude"`/`"openai"`/
+    /// `"gemini"`), matching the [`submate_types::TranslationBackend`] string
+    /// form. Useful for logging which backend ran.
+    fn id(&self) -> &'static str;
+
     /// Send a fully-formed prompt to the model and return the reply text.
     ///
     /// Ports `TranslationBackendBase._complete`. Implementations strip the
@@ -81,6 +86,55 @@ pub trait Backend {
         let template = prompt_template.unwrap_or(TRANSLATION_PROMPT);
         let prompt = format_prompt(template, source_lang, target_lang, text);
         self.complete(&prompt)
+    }
+}
+
+/// Borrowed settings needed to construct a [`Backend`] via [`make_backend`].
+///
+/// Mirrors the fields the four backend constructors need, so the factory can
+/// live here without depending on `submate-config`. Callers (the CLI, the
+/// node) borrow each field from their own config struct.
+pub struct BackendSettings<'a> {
+    /// Which backend to construct.
+    pub backend: submate_types::TranslationBackend,
+    /// Ollama model name.
+    pub ollama_model: &'a str,
+    /// Ollama server base URL.
+    pub ollama_url: &'a str,
+    /// Anthropic API key (for Claude).
+    pub anthropic_api_key: &'a str,
+    /// Claude model name.
+    pub claude_model: &'a str,
+    /// OpenAI API key.
+    pub openai_api_key: &'a str,
+    /// OpenAI model name.
+    pub openai_model: &'a str,
+    /// Gemini API key.
+    pub gemini_api_key: &'a str,
+    /// Gemini model name.
+    pub gemini_model: &'a str,
+}
+
+/// Construct the configured [`Backend`] from [`BackendSettings`].
+///
+/// Single source of truth for the `TranslationBackend` → `Box<dyn Backend>`
+/// mapping, shared by the CLI and the node so neither duplicates the match.
+pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend> {
+    use submate_types::TranslationBackend;
+
+    match s.backend {
+        TranslationBackend::Ollama => {
+            Box::new(OllamaBackend::new(s.ollama_model, s.ollama_url))
+        }
+        TranslationBackend::Claude => {
+            Box::new(ClaudeBackend::new(s.anthropic_api_key, s.claude_model))
+        }
+        TranslationBackend::Openai => {
+            Box::new(OpenAIBackend::new(s.openai_api_key, s.openai_model))
+        }
+        TranslationBackend::Gemini => {
+            Box::new(GeminiBackend::new(s.gemini_api_key, s.gemini_model))
+        }
     }
 }
 
@@ -196,6 +250,10 @@ impl Default for OllamaBackend {
 }
 
 impl Backend for OllamaBackend {
+    fn id(&self) -> &'static str {
+        "ollama"
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
         let body = OllamaChatRequest {
@@ -311,6 +369,10 @@ impl ClaudeBackend {
 }
 
 impl Backend for ClaudeBackend {
+    fn id(&self) -> &'static str {
+        "claude"
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body = ClaudeRequest {
@@ -419,6 +481,10 @@ impl OpenAIBackend {
 }
 
 impl Backend for OpenAIBackend {
+    fn id(&self) -> &'static str {
+        "openai"
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = OpenAiRequest {
@@ -542,6 +608,10 @@ impl GeminiBackend {
 }
 
 impl Backend for GeminiBackend {
+    fn id(&self) -> &'static str {
+        "gemini"
+    }
+
     fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!(
             "{}/v1beta/models/{}:generateContent",
@@ -854,6 +924,32 @@ mod tests {
     use std::convert::Infallible;
 
     use super::*;
+
+    #[test]
+    fn backend_factory_ids() {
+        use submate_types::TranslationBackend;
+
+        let cases = [
+            (TranslationBackend::Ollama, "ollama"),
+            (TranslationBackend::Claude, "claude"),
+            (TranslationBackend::Openai, "openai"),
+            (TranslationBackend::Gemini, "gemini"),
+        ];
+        for (backend, expected) in cases {
+            let settings = BackendSettings {
+                backend,
+                ollama_model: "m",
+                ollama_url: "http://localhost:11434",
+                anthropic_api_key: "k",
+                claude_model: "m",
+                openai_api_key: "k",
+                openai_model: "m",
+                gemini_api_key: "k",
+                gemini_model: "m",
+            };
+            assert_eq!(make_backend(&settings).id(), expected);
+        }
+    }
 
     #[test]
     fn chunk_ranges_ceildiv_boundaries() {
