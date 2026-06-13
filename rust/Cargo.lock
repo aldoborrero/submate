@@ -1424,9 +1424,7 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
- "futures-channel",
  "futures-core",
- "futures-util",
  "h2",
  "http",
  "http-body",
@@ -1818,6 +1816,7 @@ dependencies = [
 name = "submate-node"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "reqwest",
  "serde_json",
  "submate-proto",
@@ -1901,6 +1900,7 @@ dependencies = [
 name = "submate-translate"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "parity",
  "reqwest",
  "serde",
