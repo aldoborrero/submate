@@ -240,16 +240,17 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
 // B2 apply stage: bind a parsed `RegroupOp` to the regroup method it names and
 // run it against a `WhisperResult`. The split/merge apply family that parses in
 // B1 is implemented here — `clamp_max`, `split_by_length`, `split_by_duration`,
-// and `merge_all_segments` — along with the segment-split/merge helpers they
-// share. Other method codes parse fine (B1) but are not yet runnable here and
-// return `UnsupportedMethod`.
+// `split_by_gap`, `split_by_punctuation`, and `merge_all_segments` — along with
+// the segment-split/merge helpers they share. Other method codes parse fine
+// (B1) but are not yet runnable here and return `UnsupportedMethod`.
 // ---------------------------------------------------------------------------
 
 use crate::model::{Segment, WhisperResult, WordTiming};
 
 /// Error returned when [`apply_regroup_op`] is handed a method that B2 parses
 /// but does not yet execute (everything outside the split/merge family —
-/// `clamp_max`/`split_by_length`/`split_by_duration`/`merge_all_segments`).
+/// `clamp_max`/`split_by_length`/`split_by_duration`/`split_by_gap`/
+/// `split_by_punctuation`/`merge_all_segments`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedMethod(pub String);
 
@@ -319,6 +320,33 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             split_by_duration(
                 result,
                 SplitByDuration { max_dur, even_split, force_len, lock, include_lock, newline },
+            );
+            Ok(())
+        }
+        "split_by_gap" => {
+            // Defaults from `WhisperResult.split_by_gap`: max_gap=0.1, lock=False,
+            // newline=False. `max_gap` is kept as the raw coerced JSON value so the
+            // history string reproduces the DSL form (e.g. `0.5`) exactly, mirroring
+            // the `split_by_duration` arm's handling of `max_dur`.
+            let max_gap = op.kwarg_value("max_gap");
+            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
+            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            split_by_gap(result, SplitByGap { max_gap, lock, newline });
+            Ok(())
+        }
+        "split_by_punctuation" => {
+            // Defaults from `WhisperResult.split_by_punctuation`: lock=False,
+            // newline=False, min_words=None, min_chars=None, min_dur=None.
+            // `punctuation` is required upstream; absent here leaves the op a no-op.
+            let punctuation = op.kwarg_value("punctuation");
+            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
+            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            let min_words = op.kwarg_usize("min_words").unwrap_or(None);
+            let min_chars = op.kwarg_usize("min_chars").unwrap_or(None);
+            let min_dur = op.kwarg_f64("min_dur").unwrap_or(None);
+            split_by_punctuation(
+                result,
+                SplitByPunctuation { punctuation, lock, newline, min_words, min_chars, min_dur },
             );
             Ok(())
         }
@@ -608,6 +636,209 @@ fn get_duration_indices(seg: &Segment, max_dur: Option<f64>, even_split: bool, i
         }
         indices
     }
+}
+
+/// Bound parameters for [`split_by_gap`], matching the Python method's keyword
+/// arguments. `max_gap` is kept as the raw coerced JSON value so the history
+/// string reproduces the DSL form (int vs float) exactly.
+struct SplitByGap {
+    max_gap: Option<Value>,
+    lock: bool,
+    newline: bool,
+}
+
+/// Port of `WhisperResult.split_by_gap`: split (or insert line breaks in) any
+/// segment where the gap between two adjacent words exceeds `max_gap`.
+///
+/// Same shape as [`split_by_length`]/[`split_by_duration`] — it runs the shared
+/// `split_segments` driver with `get_gap_indices` as the per-segment index
+/// function, then appends the `sg=...` history entry.
+fn split_by_gap(result: &mut WhisperResult, p: SplitByGap) {
+    // Upstream default when the kwarg is absent is `0.1`; an explicit JSON null
+    // (not produced by the parser) maps to `0`, matching the `max_gap is None`
+    // branch in `Segment.get_gap_indices`.
+    let max_gap = match p.max_gap.as_ref() {
+        Some(v) => v.as_f64().unwrap_or(0.0),
+        None => 0.1,
+    };
+    split_segments(result, |seg| get_gap_indices(seg, max_gap), p.lock, p.newline);
+
+    // `sg={max_gap}+{int(lock)}+{int(newline)}` — the captured stable-ts records
+    // exactly these three fields (golden `regroup_history`: `sg=0.5+0+0`).
+    let entry = format!(
+        "sg={}+{}+{}",
+        p.max_gap.as_ref().map_or_else(|| py_float(0.1), py_number),
+        i32::from(p.lock),
+        i32::from(p.newline),
+    );
+    push_history(result, &entry);
+}
+
+/// Port of `Segment.get_gap_indices` (stable-ts 2.19.1): the word indices after
+/// which to split where the gap between word `i`'s end and word `i+1`'s start
+/// exceeds `max_gap`, excluding locked boundaries.
+fn get_gap_indices(seg: &Segment, max_gap: f64) -> Vec<usize> {
+    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    if words.len() < 2 {
+        return Vec::new();
+    }
+    let locked = get_locked_indices(words);
+    words
+        .windows(2)
+        .enumerate()
+        .filter_map(|(i, w)| {
+            let gap = w[1].start() - w[0].end();
+            (gap > max_gap && !locked.contains(&i)).then_some(i)
+        })
+        .collect()
+}
+
+/// Bound parameters for [`split_by_punctuation`], matching the Python method's
+/// keyword arguments. `punctuation` is kept as the raw coerced JSON value so the
+/// history string reproduces the DSL form exactly.
+struct SplitByPunctuation {
+    punctuation: Option<Value>,
+    lock: bool,
+    newline: bool,
+    min_words: Option<usize>,
+    min_chars: Option<usize>,
+    min_dur: Option<f64>,
+}
+
+/// One punctuation token: either a plain string (split after a word that ends
+/// with it, or before a word that starts with it) or an `(ending, beginning)`
+/// pair (split between `w0` ending with `ending` and `w1` starting with
+/// `beginning`), mirroring `str_to_valid_type`'s `/`/`*` coercion.
+enum PunctToken {
+    Plain(String),
+    Pair(String, String),
+}
+
+/// Port of `WhisperResult.split_by_punctuation`: split (or insert line breaks
+/// in) segments at words bordering `punctuation`, optionally gated so only
+/// segments meeting `min_words`/`min_chars`/`min_dur` are touched.
+fn split_by_punctuation(result: &mut WhisperResult, p: SplitByPunctuation) {
+    let Some(punct_value) = p.punctuation.as_ref() else { return };
+    let tokens = parse_punctuation(punct_value);
+
+    let gated = p.min_words.is_some() || p.min_chars.is_some() || p.min_dur.is_some();
+    let over_max = |seg: &Segment| -> bool {
+        // `min_words and len(words) >= min_words` etc.; a `0` min is falsy in
+        // Python, so it never gates (mirrored by treating `Some(0)` as off).
+        (p.min_words.is_some_and(|m| m != 0 && seg_word_count(seg) >= m))
+            || (p.min_chars.is_some_and(|m| m != 0 && seg_char_count(seg) >= m))
+            || (p.min_dur.is_some_and(|m| m != 0.0 && (seg.end() - seg.start()) >= m))
+    };
+
+    split_segments(
+        result,
+        |seg| {
+            if gated && !over_max(seg) {
+                Vec::new()
+            } else {
+                get_punctuation_indices(seg, &tokens)
+            }
+        },
+        p.lock,
+        p.newline,
+    );
+
+    // `sp={punct_str}+{int(lock)}+{int(newline)}` — the captured stable-ts
+    // records exactly these three fields (golden `regroup_history`:
+    // `sp=,* /，+0+0`); the `min_words`/`min_chars`/`min_dur` gates affect which
+    // segments split but are not part of this build's history encoding.
+    let entry = format!("sp={}+{}+{}", punct_str(&tokens), i32::from(p.lock), i32::from(p.newline));
+    push_history(result, &entry);
+}
+
+/// Coerce a parsed `punctuation` JSON value into the token list. A bare string
+/// becomes a single plain token (`isinstance(punctuation, str)` upstream); a
+/// list yields one token per element, each a plain string or a two-element
+/// `[ending, beginning]` pair from the `*`-split coercion.
+fn parse_punctuation(value: &Value) -> Vec<PunctToken> {
+    match value {
+        Value::String(s) => vec![PunctToken::Plain(s.clone())],
+        Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                Value::Array(pair) if pair.len() == 2 => PunctToken::Pair(
+                    pair[0].as_str().unwrap_or_default().to_string(),
+                    pair[1].as_str().unwrap_or_default().to_string(),
+                ),
+                other => PunctToken::Plain(other.as_str().unwrap_or_default().to_string()),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Port of `Segment.get_punctuation_indices` (stable-ts 2.19.1): the word
+/// indices after which to split given the punctuation tokens, excluding locked
+/// boundaries.
+fn get_punctuation_indices(seg: &Segment, tokens: &[PunctToken]) -> Vec<usize> {
+    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    if words.len() < 2 {
+        return Vec::new();
+    }
+    let last = words.len() - 1;
+    let mut indices: Vec<usize> = Vec::new();
+    for token in tokens {
+        match token {
+            PunctToken::Plain(p) => {
+                // `for i, s in enumerate(self.words[:-1])`.
+                for (i, w) in words[..last].iter().enumerate() {
+                    if !p.is_empty() && w.word.ends_with(p.as_str()) {
+                        indices.push(i);
+                    } else if i != 0 && !p.is_empty() && w.word.starts_with(p.as_str()) {
+                        indices.push(i - 1);
+                    }
+                }
+            }
+            PunctToken::Pair(ending, beginning) => {
+                // `zip(words[:-1], words[1:])` -> boundary i after word i.
+                for (i, pair) in words.windows(2).enumerate() {
+                    if (ending.is_empty() || pair[0].word.ends_with(ending.as_str()))
+                        && (beginning.is_empty() || pair[1].word.starts_with(beginning.as_str()))
+                    {
+                        indices.push(i);
+                    }
+                }
+            }
+        }
+    }
+    // `sorted(set(indices) - set(get_locked_indices()))`.
+    let locked = get_locked_indices(words);
+    indices.retain(|i| !locked.contains(i));
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// `len(x.words)` for the `min_words` gate (a word-bearing segment).
+fn seg_word_count(seg: &Segment) -> usize {
+    seg.words.as_ref().map_or(0, Vec::len)
+}
+
+/// `Segment.char_count()` for word-bearing segments: `sum(len(w.word))`
+/// (code-point count), else the text length.
+fn seg_char_count(seg: &Segment) -> usize {
+    match seg.words.as_ref() {
+        Some(w) if !w.is_empty() => w.iter().map(|x| x.word.chars().count()).sum(),
+        _ => seg.text().chars().count(),
+    }
+}
+
+/// Render a parsed punctuation token list back to the history string form
+/// (`'/'.join(p if str else '*'.join(p))`).
+fn punct_str(tokens: &[PunctToken]) -> String {
+    tokens
+        .iter()
+        .map(|t| match t {
+            PunctToken::Plain(s) => s.clone(),
+            PunctToken::Pair(a, b) => format!("{a}*{b}"),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Port of `WhisperResult.merge_all_segments`: collapse every segment into one.
@@ -1075,6 +1306,56 @@ mod tests {
         assert_eq!(get_duration_indices(seg, Some(10.0), true, false), Vec::<usize>::new());
         // Absent max_dur -> no split.
         assert_eq!(get_duration_indices(seg, None, true, false), Vec::<usize>::new());
+    }
+
+    /// `get_gap_indices` splits where the inter-word gap exceeds `max_gap`.
+    #[test]
+    fn gap_indices_split_on_large_gaps() {
+        // Gaps between consecutive words: 0.0 (w0->w1), 0.5 (w1->w2), 0.0 (w2->w3).
+        let raw = json!({"segments": [seg_with_words(vec![
+            (0.0, 1.0), (1.0, 2.0), (2.5, 3.0), (3.0, 4.0),
+        ])]});
+        let result = WhisperResult::from_value(&raw);
+        let seg = &result.segments[0];
+
+        // max_gap 0.1 -> only the 0.5 gap after word 1 exceeds it.
+        assert_eq!(get_gap_indices(seg, 0.1), vec![1]);
+        // max_gap 1.0 -> no gap exceeds it.
+        assert_eq!(get_gap_indices(seg, 1.0), Vec::<usize>::new());
+    }
+
+    /// `get_punctuation_indices` splits after words ending with a plain token and
+    /// after the predecessor of a word starting with one; pair tokens match the
+    /// `(ending, beginning)` boundary form.
+    #[test]
+    fn punctuation_indices_plain_and_pair() {
+        let words: Vec<Value> = ["A.", " b", " C.", " d"]
+            .iter()
+            .enumerate()
+            .map(|(i, w)| json!({"word": w, "start": i as f64, "end": i as f64 + 0.5, "probability": 0.5}))
+            .collect();
+        let result = WhisperResult::from_value(&json!({"segments": [{"words": words}]}));
+        let seg = &result.segments[0];
+
+        // Plain "." -> words[:-1] ending in "." are index 0 ("A.") and 2 ("C.");
+        // index 3 is excluded since it's the last word (words[:-1]).
+        let plain = vec![PunctToken::Plain(".".to_string())];
+        assert_eq!(get_punctuation_indices(seg, &plain), vec![0, 2]);
+
+        // Pair (".", " ") -> w0 ends "." and w1 starts " ": boundary 0 (A.|" b")
+        // and boundary 2 (C.|" d").
+        let pair = vec![PunctToken::Pair(".".to_string(), " ".to_string())];
+        assert_eq!(get_punctuation_indices(seg, &pair), vec![0, 2]);
+    }
+
+    /// `parse_punctuation` mirrors the `str_to_valid_type` coercions: a bare
+    /// string is one plain token; a list yields plain/`*`-pair tokens.
+    #[test]
+    fn parse_punctuation_coercions() {
+        let toks = parse_punctuation(&json!([[",", " "], "，"]));
+        assert_eq!(punct_str(&toks), ",* /，");
+        let toks = parse_punctuation(&json!("."));
+        assert_eq!(punct_str(&toks), ".");
     }
 
     #[test]
