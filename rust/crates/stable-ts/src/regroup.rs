@@ -832,11 +832,18 @@ fn split_segment(seg: &Segment, mut indices: Vec<usize>, lock: bool) -> Vec<Segm
         indices.push(words.len() - 1);
     }
 
+    // Clone the parent's per-segment metadata once (without its word vector),
+    // then hand each piece its own disjoint word slice. This clones each word
+    // exactly once across all pieces instead of cloning the full word vector
+    // once per piece.
+    let mut template = seg.clone();
+    let words = template.words.take().expect("checked above");
+
     let mut new_segments = Vec::with_capacity(indices.len());
     let mut prev_i = 0usize;
     for idx in indices {
         let end = idx + 1;
-        let mut piece = seg.clone();
+        let mut piece = template.clone();
         piece.words = Some(words[prev_i..end].to_vec());
         new_segments.push(piece);
         prev_i = end;
