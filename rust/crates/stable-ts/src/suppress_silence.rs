@@ -48,16 +48,19 @@ pub const TOKENS_PER_SECOND: f64 = 50.0;
 /// A near-silent clip (`threshold < 1e-5`) yields an all-zero envelope.
 pub fn audio2loudness(audio: &[f32]) -> Option<Vec<f32>> {
     let n = audio.len();
-    let abs: Vec<f32> = audio.iter().map(|x| x.abs()).collect();
+    let mut abs: Vec<f32> = audio.iter().map(|x| x.abs()).collect();
 
     // threshold = the k-th largest |sample|, k = int(n * 0.001).
     // (torch.topk(k)[-1]); for k == 0 upstream uses quantile(0.999) instead.
     let k = ((n as f64) * 0.001) as usize;
     let threshold = if k != 0 {
-        let mut sorted = abs.clone();
-        // Descending; kth largest is index k-1. NaN-free audio, so total order.
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        sorted[k - 1]
+        // Descending; kth largest sits at index k-1. NaN-free audio, so total
+        // order. Quickselect partitions `abs` at k-1 in O(n) instead of an
+        // O(n log n) sort; the element it lands there is exactly what a full
+        // descending sort would place there. `abs` is reordered in place, so
+        // `scaled` below is rebuilt from `audio` rather than read positionally.
+        let (_, kth, _) = abs.select_nth_unstable_by(k - 1, |a, b| b.partial_cmp(a).unwrap());
+        *kth
     } else {
         quantile_999(&abs)
     };
@@ -72,7 +75,9 @@ pub fn audio2loudness(audio: &[f32]) -> Option<Vec<f32>> {
 
     // audio / min(1.0, threshold * 1.75)
     let divisor = (threshold * 1.75).min(1.0);
-    let scaled: Vec<f32> = abs.iter().map(|x| x / divisor).collect();
+    // Rebuild from `audio`: `abs` was reordered by the quickselect above, and
+    // `interpolate_linear` reads its input positionally.
+    let scaled: Vec<f32> = audio.iter().map(|x| x.abs() / divisor).collect();
 
     Some(interpolate_linear(&scaled, token_count))
 }

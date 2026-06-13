@@ -422,10 +422,14 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
         if let Some(factor) = mf {
             if words.len() > 1 {
                 let mut durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
-                durations.sort_by(|a, b| a.partial_cmp(b).expect("finite durations"));
                 // Python `durations[len//2]` (raw index, not an averaged median)
-                // after an ascending sort.
-                curr_max_dur = Some(factor * durations[durations.len() / 2]);
+                // after an ascending sort. Quickselect partitions at that index
+                // in O(n); the element it lands there is exactly what a full
+                // ascending sort would place there.
+                let mid = durations.len() / 2;
+                let (_, median, _) =
+                    durations.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).expect("finite durations"));
+                curr_max_dur = Some(factor * *median);
             }
         }
         if let Some(md) = max_dur {
