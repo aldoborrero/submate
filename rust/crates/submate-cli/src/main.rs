@@ -673,8 +673,12 @@ async fn transcribe_files(
     };
 
     // `--audio` is the typed selector; `--audio-language` is a hidden deprecated
-    // alias that maps to `Lang(..)`. Prefer `--audio` when both are given.
-    let selector: Option<AudioSelector> = match (&args.audio, &args.audio_language) {
+    // alias that maps to `Lang(..)`. Prefer `--audio` when both are given. Both
+    // the selector and its wire string are mutable so the single-file picker
+    // below can pin the chosen track; the selector flows downstream as that
+    // string (`prepare_audio_for_transcription` re-parses it), while the whisper
+    // decode-language hint is resolved separately per file further down.
+    let mut selector: Option<AudioSelector> = match (&args.audio, &args.audio_language) {
         (Some(sel), _) => Some(sel.clone()),
         (None, Some(lang)) => {
             tracing::warn!("--audio-language is deprecated; use --audio <code> (or lang:<code>)");
@@ -682,11 +686,6 @@ async fn transcribe_files(
         }
         (None, None) => None,
     };
-    // The selector flows downstream as a string through the existing job
-    // plumbing; `prepare_audio_for_transcription` re-parses it to pick the
-    // track. The whisper decode-language hint is resolved separately below
-    // (per file, since the default depends on the selected track's tag).
-    let mut selector = selector;
     let mut selector_str = selector.as_ref().map(audio_selector_to_string);
 
     // Interactive track picker — single file only. Multi-file / recursive runs
