@@ -1821,6 +1821,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "submate-proto",
+ "submate-translate",
  "submate-types",
  "submate-whisper",
  "thiserror",

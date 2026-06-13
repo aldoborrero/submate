@@ -629,6 +629,10 @@ impl Default for EmbeddedNodeSettings {
 /// production this is [`submate_node::whisper_processor`] (behind the node's
 /// `model` feature); the falsifier injects a mock that returns a canned subtitle.
 ///
+/// `translation` is the optional translation post-step: when `Some`, a job
+/// carrying a `target_language` has its assembled subtitle translated before the
+/// result is reported; `None` makes the node transcription-only.
+///
 /// The returned [`JoinHandle`] runs the agent's pull-loop for the lifetime of
 /// the server; dropping it (or shutting the runtime down) stops the node. The
 /// agent reconnects with backoff if the server is briefly unreachable, so a
@@ -637,6 +641,7 @@ pub fn spawn_embedded_node<P>(
     base_url: impl Into<String>,
     settings: &EmbeddedNodeSettings,
     processor: P,
+    translation: Option<submate_node::TranslationStep>,
 ) -> Option<JoinHandle<Result<(), AgentError>>>
 where
     P: JobProcessor + 'static,
@@ -651,7 +656,10 @@ where
         tasks: settings.tasks.clone(),
     };
     let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
-    let agent = Agent::new(base_url, register, dispatcher, processor);
+    let mut agent = Agent::new(base_url, register, dispatcher, processor);
+    if let Some(step) = translation {
+        agent = agent.with_translation(step);
+    }
     Some(tokio::spawn(async move { agent.run().await }))
 }
 
@@ -1722,8 +1730,8 @@ mod tests {
             tasks: vec![TranscriptionTask::Transcribe],
         };
         let base_url = format!("http://{addr}");
-        let node =
-            spawn_embedded_node(&base_url, &settings, processor).expect("embedded node enabled");
+        let node = spawn_embedded_node(&base_url, &settings, processor, None)
+            .expect("embedded node enabled");
 
         // Park on the result; the embedded node drains the queue and posts it.
         let outcome = tokio::time::timeout(
@@ -1761,7 +1769,7 @@ mod tests {
             ..EmbeddedNodeSettings::default()
         };
         let processor = |_opts: &JobOpts, _pcm: Vec<u8>| async { Ok::<_, String>(String::new()) };
-        let handle = spawn_embedded_node("http://127.0.0.1:1", &settings, processor);
+        let handle = spawn_embedded_node("http://127.0.0.1:1", &settings, processor, None);
         assert!(handle.is_none(), "brain-only server must not spawn a node");
 
         // Nothing drains the job: it stays queued, with no registered nodes.

@@ -44,9 +44,10 @@ use std::sync::{Arc, Once};
 use std::time::Duration;
 
 use submate_proto::{
-    Heartbeat, JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, Progress, WorkRequest,
-    WorkResponse,
+    Heartbeat, JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, OutputFormat,
+    Progress, WorkRequest, WorkResponse,
 };
+use submate_translate::Backend;
 use submate_whisper::{WhisperError, WhisperResult};
 use tokio::sync::Semaphore;
 
@@ -204,6 +205,178 @@ where
     }
 }
 
+/// The optional translation post-transcription step the node applies before
+/// reporting a job's result.
+///
+/// Lives in the job layer (not in [`whisper_processor`]) so it composes with any
+/// [`JobProcessor`] and is testable without the `model` feature: a job that
+/// carries a `target_language` has its assembled subtitle translated here, while
+/// a job without one is reported byte-for-byte as the processor produced it.
+///
+/// Holds the configured translation [`Backend`] plus the chunk size from config;
+/// `translate` dispatches on the job's [`OutputFormat`] into the matching
+/// `submate-translate` entry point.
+pub struct TranslationStep {
+    backend: Box<dyn Backend + Send + Sync>,
+    chunk_size: usize,
+}
+
+impl TranslationStep {
+    /// Build a step from a configured backend and the config `chunk_size`.
+    pub fn new(backend: Box<dyn Backend + Send + Sync>, chunk_size: usize) -> Self {
+        Self {
+            backend,
+            chunk_size,
+        }
+    }
+
+    /// Translate `subtitle` for `opts`, or return it unchanged when no
+    /// translation is requested.
+    ///
+    /// Returns `subtitle` verbatim when `opts.target_language` is `None`, so the
+    /// plain-transcription path is byte-identical to a node with no translation
+    /// step. Otherwise the source language is `opts.source_language` (falling
+    /// back to `"auto"` when the decode hint was auto-detect) and the target is
+    /// the requested language; the dispatch is by `opts.output_format`:
+    ///
+    /// * [`OutputFormat::Srt`] → [`submate_translate::translate_srt_content`]
+    /// * [`OutputFormat::Vtt`] → [`submate_translate::translate_vtt_content`]
+    /// * [`OutputFormat::Ass`] → per-`Dialogue`-line
+    ///   [`submate_translate::translate_ass_dialogue`]
+    ///
+    /// [`OutputFormat::Json`] / [`OutputFormat::Txt`] carry no cue structure to
+    /// translate in place, so they pass through unchanged.
+    ///
+    /// A backend error is surfaced as the `String` error the agent reports as a
+    /// failed [`JobResult`].
+    pub fn translate(&self, opts: &JobOpts, subtitle: String) -> Result<String, String> {
+        let Some(target) = opts.target_language.as_deref() else {
+            return Ok(subtitle);
+        };
+        let source = opts.source_language.as_deref().unwrap_or("auto");
+
+        let mut complete = |prompt: &str| self.backend.complete(prompt).map_err(|e| e.to_string());
+
+        match opts.output_format {
+            OutputFormat::Srt => submate_translate::translate_srt_content(
+                &subtitle,
+                source,
+                target,
+                self.chunk_size,
+                &mut complete,
+            ),
+            OutputFormat::Vtt => submate_translate::translate_vtt_content(
+                &subtitle,
+                source,
+                target,
+                self.chunk_size,
+                &mut complete,
+            ),
+            OutputFormat::Ass => {
+                translate_ass_content(&subtitle, source, target, self.chunk_size, &mut complete)
+            }
+            // No cue structure to translate in place; leave untouched.
+            OutputFormat::Json | OutputFormat::Txt => Ok(subtitle),
+        }
+    }
+}
+
+/// Translate the dialogue text of an ASS document in place, preserving every
+/// non-`Dialogue` line, the event field layout, and the override tags.
+///
+/// The workspace has no ASS (de)serializer, so this walks the `[Events]` lines:
+/// each `Dialogue:` line's text is the 10th comma-separated field (the nine
+/// leading fields — `Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect`
+/// — never contain a comma in well-formed output, and the text field keeps any
+/// commas it contains). The text fields are translated as a batch through
+/// [`submate_translate::translate_ass_dialogue`], which drops any translation
+/// that would alter the line's `{...}` tags, then spliced back onto their lines.
+fn translate_ass_content<E>(
+    ass: &str,
+    source_lang: &str,
+    target_lang: &str,
+    chunk_size: usize,
+    complete: &mut dyn FnMut(&str) -> Result<String, E>,
+) -> Result<String, E> {
+    // Record (line index, byte offset where the text field begins) for every
+    // Dialogue line, and collect the dialogue texts to translate together.
+    let mut dialogue: Vec<(usize, usize)> = Vec::new();
+    let mut texts: Vec<String> = Vec::new();
+    for (idx, line) in ass.lines().enumerate() {
+        if let Some(rest) = line.strip_prefix("Dialogue:") {
+            // The text is everything after the 9th comma in `rest`.
+            if let Some(text_start) = nth_comma_end(rest, 9) {
+                dialogue.push((idx, "Dialogue:".len() + text_start));
+                texts.push(rest[text_start..].to_string());
+            }
+        }
+    }
+
+    if texts.is_empty() {
+        return Ok(ass.to_string());
+    }
+
+    let translated = submate_translate::translate_ass_dialogue(
+        &texts,
+        source_lang,
+        target_lang,
+        chunk_size,
+        complete,
+    )?;
+
+    // Map each translated Dialogue line by its line index, then rebuild the
+    // document line by line — swapping the text field on Dialogue lines and
+    // copying every other line verbatim. `split_inclusive('\n')` keeps each
+    // line's own newline, so the output is byte-stable apart from the swapped
+    // text (no trailing newline is invented or dropped).
+    use std::collections::HashMap;
+    let new_texts: HashMap<usize, (usize, String)> = dialogue
+        .into_iter()
+        .zip(translated)
+        .map(|((idx, offset), text)| (idx, (offset, text)))
+        .collect();
+
+    let mut out = String::with_capacity(ass.len());
+    for (idx, raw) in ass.split_inclusive('\n').enumerate() {
+        match new_texts.get(&idx) {
+            Some((text_offset, new_text)) => {
+                let (line, ending) = split_line_ending(raw);
+                out.push_str(&line[..*text_offset]);
+                out.push_str(new_text);
+                out.push_str(ending);
+            }
+            None => out.push_str(raw),
+        }
+    }
+    Ok(out)
+}
+
+/// Byte offset, within `s`, just past the `n`-th comma (so `s[offset..]` is the
+/// remainder after `n` separators). Returns `None` when fewer than `n` commas
+/// are present.
+fn nth_comma_end(s: &str, n: usize) -> Option<usize> {
+    let mut seen = 0;
+    for (i, b) in s.bytes().enumerate() {
+        if b == b',' {
+            seen += 1;
+            if seen == n {
+                return Some(i + 1);
+            }
+        }
+    }
+    None
+}
+
+/// Split a `split_inclusive('\n')` chunk into its content and trailing newline
+/// (`""` when the final chunk has none), so the content can be edited without
+/// disturbing the line ending.
+fn split_line_ending(raw: &str) -> (&str, &str) {
+    match raw.strip_suffix('\n') {
+        Some(content) => (content, "\n"),
+        None => (raw, ""),
+    }
+}
+
 /// Tuning knobs for the agent's reconnect/backoff and poll pacing.
 #[derive(Debug, Clone, Copy)]
 pub struct AgentConfig {
@@ -240,6 +413,10 @@ pub struct Agent<P, S = TokioSleeper> {
     register: NodeRegister,
     dispatcher: Dispatcher,
     processor: P,
+    /// Optional translation post-step: when present, a job carrying a
+    /// `target_language` has its assembled subtitle translated before the result
+    /// is reported. `None` means the node only transcribes.
+    translation: Option<TranslationStep>,
     config: AgentConfig,
     sleeper: S,
 }
@@ -295,9 +472,18 @@ impl<P: JobProcessor> Agent<P> {
             register,
             dispatcher,
             processor,
+            translation: None,
             config,
             sleeper: TokioSleeper,
         }
+    }
+
+    /// Attach the translation post-step: jobs carrying a `target_language` will
+    /// have their subtitle translated through `step` before the result is
+    /// reported. Jobs without a `target_language` are unaffected.
+    pub fn with_translation(mut self, step: TranslationStep) -> Self {
+        self.translation = Some(step);
+        self
     }
 }
 
@@ -311,6 +497,7 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
             register: self.register,
             dispatcher: self.dispatcher,
             processor: self.processor,
+            translation: self.translation,
             config: self.config,
             sleeper,
         }
@@ -425,7 +612,18 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
         opts: &JobOpts,
     ) -> Result<(), AgentError> {
         let pcm = self.fetch_audio(audio_url).await?;
-        let outcome = match self.processor.process(opts, pcm).await {
+        // Transcribe, then (only when a translation step is configured and the
+        // job carries a `target_language`) translate the assembled subtitle
+        // before reporting. With no `target_language` the post-step returns the
+        // processor output byte-for-byte, so plain transcription is unaffected.
+        let result = match self.processor.process(opts, pcm).await {
+            Ok(output) => match &self.translation {
+                Some(step) => step.translate(opts, output),
+                None => Ok(output),
+            },
+            Err(error) => Err(error),
+        };
+        let outcome = match result {
             Ok(output) => JobOutcome::Ok { output },
             Err(error) => {
                 tracing::warn!(job = job_id, error, "job processing failed");
@@ -819,6 +1017,102 @@ mod tests {
     #[should_panic(expected = "at least one runner")]
     async fn zero_runners_panics() {
         let _ = Dispatcher::new(0);
+    }
+}
+
+#[cfg(test)]
+mod translation_tests {
+    use super::*;
+
+    use submate_proto::OutputFormat;
+    use submate_translate::{Backend, BackendError};
+    use submate_types::{Device, WhisperModel};
+
+    /// A stub backend that deterministically transforms the prompt: it returns
+    /// every line of the prompt after the `Text to translate:` / `Subtitles to
+    /// translate:` marker, uppercased and re-joined with the batch separator —
+    /// so a translated cue is its source text uppercased, with no network.
+    struct UpperBackend;
+
+    impl Backend for UpperBackend {
+        fn id(&self) -> &'static str {
+            "upper"
+        }
+
+        fn complete(&self, prompt: &str) -> Result<String, BackendError> {
+            // The chunking layer joins cues with a separator token and embeds
+            // them after the prompt's marker; echo the joined batch back
+            // uppercased so the per-cue split realigns 1:1.
+            let marker = prompt
+                .rfind("translate:\n")
+                .map(|i| i + "translate:\n".len())
+                .unwrap_or(0);
+            Ok(prompt[marker..].to_uppercase())
+        }
+    }
+
+    fn job(target: Option<&str>, format: OutputFormat) -> JobOpts {
+        JobOpts {
+            model: WhisperModel::Medium,
+            device: Device::Cpu,
+            source_language: Some("en".into()),
+            target_language: target.map(str::to_string),
+            translation_backend: None,
+            output_format: format,
+        }
+    }
+
+    const FIXED_SRT: &str =
+        "1\n00:00:00,000 --> 00:00:01,000\nhello\n\n2\n00:00:01,000 --> 00:00:02,000\nworld\n\n";
+
+    /// Falsifier: the job-layer translation post-step transforms cue text when a
+    /// `target_language` is set and is a no-op otherwise — driven with a stub
+    /// backend that uppercases each batch, no `model` feature, no network.
+    #[test]
+    fn translate_post_step() {
+        let step = TranslationStep::new(Box::new(UpperBackend), 50);
+
+        // target_language = Some -> cue text is transformed, timing preserved.
+        let translated = step
+            .translate(&job(Some("es"), OutputFormat::Srt), FIXED_SRT.to_string())
+            .expect("translation succeeds");
+        assert!(
+            translated.contains("HELLO") && translated.contains("WORLD"),
+            "cue text was not transformed: {translated:?}",
+        );
+        assert!(
+            translated.contains("00:00:00,000 --> 00:00:01,000"),
+            "timing was not preserved: {translated:?}",
+        );
+
+        // target_language = None -> the fixed SRT is returned byte-for-byte.
+        let untouched = step
+            .translate(&job(None, OutputFormat::Srt), FIXED_SRT.to_string())
+            .expect("no-op translation succeeds");
+        assert_eq!(
+            untouched, FIXED_SRT,
+            "no target language must leave the subtitle unchanged",
+        );
+    }
+
+    /// The ASS dispatch translates each `Dialogue:` line's text field while
+    /// preserving every other line and the event field layout.
+    #[test]
+    fn translate_post_step_ass_preserves_layout() {
+        let ass = "[Events]\n\
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+            Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,hello\n\
+            Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,world\n";
+        let step = TranslationStep::new(Box::new(UpperBackend), 50);
+        let out = step
+            .translate(&job(Some("es"), OutputFormat::Ass), ass.to_string())
+            .expect("ass translation succeeds");
+
+        // Header lines and the field prefix are untouched; only the text changes.
+        assert!(out.contains("[Events]"));
+        assert!(out.contains("Format: Layer, Start, End"));
+        assert!(out.contains("Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,HELLO"));
+        assert!(out.contains("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,WORLD"));
     }
 }
 

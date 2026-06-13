@@ -119,13 +119,15 @@ pub struct BackendSettings<'a> {
 ///
 /// Single source of truth for the `TranslationBackend` → `Box<dyn Backend>`
 /// mapping, shared by the CLI and the node so neither duplicates the match.
-pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend> {
+///
+/// The boxed backend is `Send + Sync` so the node's pull-loop can hold it as a
+/// field across `.await` points (the four backends are stateless apart from a
+/// `reqwest::blocking::Client`, itself `Send + Sync`).
+pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
 
     match s.backend {
-        TranslationBackend::Ollama => {
-            Box::new(OllamaBackend::new(s.ollama_model, s.ollama_url))
-        }
+        TranslationBackend::Ollama => Box::new(OllamaBackend::new(s.ollama_model, s.ollama_url)),
         TranslationBackend::Claude => {
             Box::new(ClaudeBackend::new(s.anthropic_api_key, s.claude_model))
         }
@@ -966,14 +968,20 @@ mod tests {
     #[test]
     fn join_uses_newline_wrapped_token() {
         let texts = ["a", "b", "c"];
-        assert_eq!(join_batch(&texts, "---BREAK---"), "a\n---BREAK---\nb\n---BREAK---\nc");
+        assert_eq!(
+            join_batch(&texts, "---BREAK---"),
+            "a\n---BREAK---\nb\n---BREAK---\nc"
+        );
     }
 
     #[test]
     fn split_strips_parts_on_match() {
         let originals = vec!["x".to_string(), "y".to_string()];
         let reply = "  hola  ---BREAK---  mundo  ";
-        assert_eq!(split_batch(reply, "---BREAK---", &originals), vec!["hola", "mundo"]);
+        assert_eq!(
+            split_batch(reply, "---BREAK---", &originals),
+            vec!["hola", "mundo"]
+        );
     }
 
     #[test]
@@ -1019,7 +1027,10 @@ mod tests {
         let out = translate_ass_dialogue(&texts, "en", "es", 50, &mut complete).unwrap();
         // First cue's tags preserved -> translation kept; second mismatched ->
         // original kept.
-        assert_eq!(out, vec!["{\\i1}Hola".to_string(), "{\\b1}World".to_string()]);
+        assert_eq!(
+            out,
+            vec!["{\\i1}Hola".to_string(), "{\\b1}World".to_string()]
+        );
     }
 
     #[test]
@@ -1068,7 +1079,8 @@ mod tests {
             Mock::given(method("POST"))
                 .and(path("/api/chat"))
                 .respond_with(move |req: &Request| {
-                    tx.send(req.body_json::<serde_json::Value>().unwrap()).unwrap();
+                    tx.send(req.body_json::<serde_json::Value>().unwrap())
+                        .unwrap();
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({
                         "message": {"role": "assistant", "content": "  hola  "},
                     }))
@@ -1171,7 +1183,11 @@ mod tests {
                 .unwrap();
 
                 let (body, headers) = rx.recv().unwrap();
-                Captured { body, headers, reply }
+                Captured {
+                    body,
+                    headers,
+                    reply,
+                }
             })
         }
 
