@@ -24,6 +24,7 @@ suppress_silence=True, word_timestamps=True, min_word_duration=0.1.
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 from pathlib import Path
 
@@ -58,6 +59,13 @@ def main() -> None:
     raw = model.transcribe_stable(str(clip), regroup=False, suppress_silence=False, word_timestamps=True)
     raw_dict = raw.to_dict()
     write_json(f"{base}/00_raw.json", raw_dict)
+
+    # --- output.ass / output.json: ASS + JSON output goldens -----------------
+    # Derived from the SAME raw result (so a Rust test re-parses 00_raw.json as
+    # input). ASS is segment-level / word_level=False — the analogue of 03.srt;
+    # JSON is json.dumps(to_dict()), matching the Python OutputFormat.JSON path.
+    write_text(f"{base}/output.ass", raw.to_ass(filepath=None, segment_level=True, word_level=False))
+    write_text(f"{base}/output.json", json.dumps(raw_dict))
 
     # --- regroup_parse: the parsed op list for REGROUP ---------------------
     # parse_regroup_algo returns (callable, kwargs, msg) per op; record name+kwargs.
