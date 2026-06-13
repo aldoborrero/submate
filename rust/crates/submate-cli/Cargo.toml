@@ -24,6 +24,7 @@ submate-config = { path = "../submate-config" }
 submate-types = { path = "../submate-types" }
 submate-proto = { path = "../submate-proto" }
 submate-queue = { path = "../submate-queue" }
+submate-media = { path = "../submate-media" }
 submate-server = { path = "../submate-server" }
 submate-node = { path = "../submate-node" }
 submate-paths = { path = "../submate-paths" }
