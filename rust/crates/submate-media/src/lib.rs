@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use submate_lang::LanguageCode;
 
 /// Default language code used when a stream carries no `language` tag.
 ///
@@ -129,18 +130,34 @@ pub fn parse_audio_tracks(json: &str) -> Result<Vec<AudioTrack>, ProbeError> {
     Ok(tracks)
 }
 
-/// Find an audio track by language code (case-insensitive).
+/// Whether a track's language tag matches a requested code once both are
+/// normalized through the ISO 639 table.
+///
+/// `requested` is the canonical [`LanguageCode`] the caller already parsed (so
+/// it is computed once per query, not per track). Both `ja`↔`jpn`, `en`↔`eng`,
+/// language names and case fold to the same enum. Two untagged sides
+/// ([`LanguageCode::None`], i.e. `und`/`unknown`/unrecognized) never match: an
+/// untagged track must not satisfy an arbitrary requested code.
+fn track_language_matches(track_language: &str, requested: LanguageCode) -> bool {
+    if requested == LanguageCode::None {
+        return false;
+    }
+    LanguageCode::from_string(Some(track_language)) == requested
+}
+
+/// Find an audio track by language code, normalizing ISO 639 codes.
 ///
 /// Ports `get_audio_track_by_language` in `submate/media.py`: returns the first
-/// track whose language matches, or `None`.
+/// track whose language matches, or `None`. Matching is done on the canonical
+/// [`LanguageCode`] (so `ja` matches a `jpn`-tagged track), not raw strings.
 pub fn get_audio_track_by_language<'a>(
     tracks: &'a [AudioTrack],
     language: &str,
 ) -> Option<&'a AudioTrack> {
-    let language = language.to_lowercase();
+    let requested = LanguageCode::from_string(Some(language));
     tracks
         .iter()
-        .find(|track| track.language.to_lowercase() == language)
+        .find(|track| track_language_matches(&track.language, requested))
 }
 
 /// A typed audio-track selector parsed from the CLI `-a`/`--audio` value.
@@ -251,10 +268,10 @@ pub fn resolve_audio_selector(
 
     match sel {
         AudioSelector::Lang(code) => {
-            let wanted = code.to_lowercase();
+            let wanted = LanguageCode::from_string(Some(code));
             tracks
                 .iter()
-                .find(|t| t.language.to_lowercase() == wanted)
+                .find(|t| track_language_matches(&t.language, wanted))
                 .map(|t| t.index)
                 .ok_or_else(|| SelectError::NoLanguageMatch {
                     requested: code.clone(),
@@ -298,10 +315,10 @@ fn default_or_first(tracks: &[AudioTrack]) -> usize {
 pub fn lang_match_is_ambiguous(tracks: &[AudioTrack], sel: &AudioSelector) -> bool {
     match sel {
         AudioSelector::Lang(code) => {
-            let wanted = code.to_lowercase();
+            let wanted = LanguageCode::from_string(Some(code));
             tracks
                 .iter()
-                .filter(|t| t.language.to_lowercase() == wanted)
+                .filter(|t| track_language_matches(&t.language, wanted))
                 .count()
                 > 1
         }
@@ -681,6 +698,43 @@ mod parity {
         assert!(get_audio_track_by_language(&tracks, "spa").is_none());
     }
 
+    /// A 639-1 request (`ja`, `en`) resolves the 639-2-tagged track (`jpn`,
+    /// `eng`) — the anime-dub headline case — while the native 639-2 code still
+    /// works, an untagged (`und`) track is never returned for a specific code,
+    /// and a genuinely absent language yields `None`.
+    #[test]
+    fn audio_track_language_normalizes() {
+        let tracks = [
+            track(0, "jpn", false),
+            track(1, "eng", false),
+            track(2, "und", false),
+        ];
+
+        // 639-1 → 639-2 normalization.
+        assert_eq!(
+            get_audio_track_by_language(&tracks, "ja").map(|t| t.index),
+            Some(0),
+        );
+        assert_eq!(
+            get_audio_track_by_language(&tracks, "en").map(|t| t.index),
+            Some(1),
+        );
+
+        // The native 639-2 code still resolves.
+        assert_eq!(
+            get_audio_track_by_language(&tracks, "jpn").map(|t| t.index),
+            Some(0),
+        );
+
+        // An untagged track is not returned for any specific requested code,
+        // including a request that itself normalizes to "no language".
+        assert!(get_audio_track_by_language(&tracks, "und").is_none());
+        assert!(get_audio_track_by_language(&tracks, "").is_none());
+
+        // No track carries this language.
+        assert!(get_audio_track_by_language(&tracks, "spa").is_none());
+    }
+
     /// `disposition.default` and `tags.title` flow through to [`AudioTrack`]
     /// without disturbing the existing index/language/codec mapping.
     #[test]
@@ -781,12 +835,10 @@ mod parity {
             track(1, "jpn", false),
             track(2, "jpn", true),
         ];
+        // The 639-1 `ja` normalizes to the `jpn`-tagged tracks; the first wins.
         let sel = AudioSelector::Lang("ja".to_string());
-        // No "ja" track; "jpn" is the real tag, so this should error.
-        assert!(matches!(
-            resolve_audio_selector(&tracks, &sel),
-            Err(SelectError::NoLanguageMatch { .. }),
-        ));
+        assert_eq!(resolve_audio_selector(&tracks, &sel).unwrap(), 1);
+        assert!(lang_match_is_ambiguous(&tracks, &sel));
 
         let sel = AudioSelector::Lang("JPN".to_string());
         assert_eq!(resolve_audio_selector(&tracks, &sel).unwrap(), 1);
