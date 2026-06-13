@@ -53,7 +53,7 @@ submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 // EXCLUSIVE CLI-UX focus: work ONLY items whose slug starts with these prefixes;
 // do NOT fill leftover implementer slots with other product items. When no
 // matching item is ready, the round runs no implementers and the run dries out.
-const FOCUS = ['port-translate-backend-factory', 'port-translate-end-to-end']
+const FOCUS = ['port-translate-async-trait', 'port-translate-async-openai']
 const FOCUS_EXCLUSIVE = true
 
 const CONFIG = {
