@@ -72,3 +72,30 @@ is pure-data — it fits the documented capture pre-pass rule in
 unparked the same round. Next capture pre-pass should author the
 `rust/fixtures/translate/ass_tags.*` golden (both a tag-preserving and a
 tag-dropping cue) before dispatch. Do NOT re-park to `needs-human/`.
+
+**PARITY note (round 1, 2026-06-13):** the *implementation* half of this item
+has now LANDED in `rust/crates/submate-translate/src/lib.rs` —
+`validate_ass_tags`, the `ASS_TRANSLATION_PROMPT` const (byte-for-byte the
+de-escaped Python template, separator `|||SUBTITLE_BREAK|||`), and the
+keep-original-on-mismatch branch inside `translate_ass_dialogue` (lib.rs ~888,
+guarded by `if validate_ass_tags(original, &new_text)`). The node now drives it
+via `submate_node::translate_ass_content` → `submate_translate::translate_ass_dialogue`
+(rust/crates/submate-node/src/lib.rs ~280). HOWEVER the parity falsifier is
+still UNSATISFIED:
+- `rust/fixtures/translate/ass_tags.{in.ass,mock_llm.json,out.ass}` — still MISSING
+  (`fd ass_tags rust/fixtures/` returns nothing).
+- `cargo test -p submate-translate parity::ass_apply` — still MISSING (no
+  `ass_apply` symbol anywhere under `rust/crates/`).
+Current coverage is only inline `#[test]`s in lib.rs (the `validate_ass_tags`
+edge-case table at ~1000 and a stub-backend `translate_ass_dialogue` roundtrip at
+~1029) — these assert hand-written expectations, NOT Python-generated golden
+output, so a divergence in prompt bytes, chunk-batching of dialogue events, or
+the to_string("ass") round-trip would pass undetected. Contrast SRT, which IS
+golden-pinned (`sampleA.{in,out}.srt` + `chunking.json` + `mock_llm.json` via
+`parity::apply`/`parity::chunking`). This item stays OPEN; the only remaining
+work is the **capture pre-pass** (author the `ass_tags.*` golden by running
+Python `translate_ass_content` with mocked replies covering one tag-preserving
+and one tag-dropping cue) followed by wiring `parity::ass_apply`. Now unblocked:
+`port-subtitle-ass-tags` is no longer a hard prerequisite since the Rust path
+parses ASS line-wise (node `translate_ass_content`) rather than via the subtitle
+crate's ASS model.
