@@ -1,23 +1,23 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/submate-types",
-    "crates/submate-lang",
-    "crates/submate-config",
-    "crates/submate-proto",
-    "crates/stable-ts",
-    "crates/submate-subtitle",
-    "crates/submate-paths",
-    "crates/submate-media",
-    "crates/submate-whisper",
-    "crates/submate-node",
-    "crates/submate-translate",
-    "crates/submate-jellyfin",
-    "crates/submate-bazarr",
-    "crates/submate-queue",
-    "crates/submate-server",
-    "crates/submate-cli",
-    "crates/parity",
+  "crates/submate-types",
+  "crates/submate-lang",
+  "crates/submate-config",
+  "crates/submate-proto",
+  "crates/stable-ts",
+  "crates/submate-subtitle",
+  "crates/submate-paths",
+  "crates/submate-media",
+  "crates/submate-whisper",
+  "crates/submate-node",
+  "crates/submate-translate",
+  "crates/submate-jellyfin",
+  "crates/submate-bazarr",
+  "crates/submate-queue",
+  "crates/submate-server",
+  "crates/submate-cli",
+  "crates/parity",
 ]
 
 [workspace.package]
@@ -38,7 +38,10 @@ async-trait = "0.1"
 # OpenAI-compatible chat client (covers OpenAI + Ollama + Gemini via base_url).
 # Only the chat-completions surface is needed; `default-features = false` drops
 # the rest of the API. `rustls` matches the workspace's TLS backend.
-async-openai = { version = "0.41", default-features = false, features = ["chat-completion", "rustls"] }
+async-openai = { version = "0.41", default-features = false, features = [
+  "chat-completion",
+  "rustls",
+] }
 # serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -48,7 +51,12 @@ strum = { version = "0.26", features = ["derive"] }
 figment = { version = "0.10", features = ["env", "json"] }
 # http
 axum = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+  "charset",
+  "http2",
+] }
 tower = "0.5"
 # cli + logging
 clap = { version = "4", features = ["derive"] }
@@ -65,7 +73,7 @@ camino = "1"
 thiserror = "2"
 anyhow = "1"
 # whisper (added by the port-whisper-rs-wire backlog item, not the stub)
-whisper-rs = "0.12"
+whisper-rs = "0.16"
 # test-only
 float-cmp = "0.10"
 pretty_assertions = "1"

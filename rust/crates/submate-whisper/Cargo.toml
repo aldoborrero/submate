@@ -20,6 +20,8 @@ model = ["dep:whisper-rs", "dep:submate-media"]
 cuda = ["model", "whisper-rs/cuda"]
 metal = ["model", "whisper-rs/metal"]
 hipblas = ["model", "whisper-rs/hipblas"]
+vulkan = ["model", "whisper-rs/vulkan"]
+intel-sycl = ["model", "whisper-rs/intel-sycl"]
 
 [dependencies]
 serde = { workspace = true }

@@ -23,6 +23,8 @@ model = ["submate-node/model"]
 cuda = ["submate-node/cuda"]
 metal = ["submate-node/metal"]
 hipblas = ["submate-node/hipblas"]
+vulkan = ["submate-node/vulkan"]
+intel-sycl = ["submate-node/intel-sycl"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }

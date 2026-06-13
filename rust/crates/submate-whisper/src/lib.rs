@@ -225,31 +225,29 @@ mod inference {
             .full(params, pcm)
             .map_err(|e| WhisperError::Inference(e.to_string()))?;
 
-        let n_segments = state
-            .full_n_segments()
-            .map_err(|e| WhisperError::Inference(e.to_string()))?;
+        let n_segments = state.full_n_segments();
 
         let mut segments = Vec::with_capacity(n_segments.max(0) as usize);
         let mut full_text = String::new();
 
         for seg in 0..n_segments {
-            // `_lossy`: the full segment's bytes reassemble into valid UTF-8
-            // (whisper.cpp's byte-fallback tokens combine at the segment level),
-            // but use the lossy reader so a rare malformed segment degrades to
+            let Some(segment) = state.get_segment(seg) else {
+                continue;
+            };
+            // `to_str_lossy`: the full segment's bytes reassemble into valid
+            // UTF-8 (whisper.cpp's byte-fallback tokens combine at the segment
+            // level), but the lossy reader degrades a rare malformed segment to
             // `U+FFFD` instead of failing the whole transcription.
-            let seg_text = state
-                .full_get_segment_text_lossy(seg)
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
-            let seg_t0 = state
-                .full_get_segment_t0(seg)
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
-            let seg_t1 = state
-                .full_get_segment_t1(seg)
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
+            let seg_text = segment
+                .to_str_lossy()
+                .map_err(|e| WhisperError::Inference(e.to_string()))?
+                .into_owned();
+            let seg_t0 = segment.start_timestamp();
+            let seg_t1 = segment.end_timestamp();
 
             full_text.push_str(&seg_text);
 
-            let words = collect_words(&state, seg)?;
+            let words = collect_words(&segment)?;
             segments.push(WhisperSegment {
                 text: seg_text,
                 start: centiseconds_to_seconds(seg_t0),
@@ -271,12 +269,9 @@ mod inference {
     /// text begins with a space (whisper's word boundary marker) and accumulate
     /// each word's span and mean probability from its constituent tokens.
     fn collect_words(
-        state: &whisper_rs::WhisperState,
-        seg: i32,
+        segment: &whisper_rs::WhisperSegment<'_>,
     ) -> Result<Vec<WhisperWord>, WhisperError> {
-        let n_tokens = state
-            .full_n_tokens(seg)
-            .map_err(|e| WhisperError::Inference(e.to_string()))?;
+        let n_tokens = segment.n_tokens();
 
         let mut words: Vec<WhisperWord> = Vec::new();
         let mut prob_sum = 0.0_f64;
@@ -294,20 +289,21 @@ mod inference {
             // then has no words and falls back to its own text downstream).
             // Latin-script transcription, whose tokens are self-contained UTF-8,
             // is unaffected.
-            let text = match state.full_get_token_text(seg, tok) {
-                Ok(t) => t,
+            let Some(token) = segment.get_token(tok) else {
+                continue;
+            };
+            let text = match token.to_str() {
+                Ok(t) => t.to_owned(),
                 Err(_) => {
                     tracing::debug!(
-                        segment = seg,
+                        segment = segment.segment_index(),
                         "token text not valid UTF-8 (byte-fallback token); \
                          using segment-level text without word timings"
                     );
                     return Ok(Vec::new());
                 }
             };
-            let data = state
-                .full_get_token_data(seg, tok)
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
+            let data = token.token_data();
 
             // Special tokens (e.g. `[_BEG_]`) carry no real timing; skip them.
             if text.starts_with("[_") && text.ends_with(']') {
@@ -352,10 +348,7 @@ mod inference {
     }
 
     fn detect_language(state: &whisper_rs::WhisperState) -> String {
-        state
-            .full_lang_id_from_state()
-            .ok()
-            .and_then(whisper_rs::get_lang_str)
+        whisper_rs::get_lang_str(state.full_lang_id_from_state())
             .unwrap_or("en")
             .to_string()
     }

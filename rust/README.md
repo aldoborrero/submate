@@ -73,12 +73,13 @@ that backend's toolchain at build time):
 cargo build --manifest-path rust/Cargo.toml -p submate-cli --release --features cuda     # NVIDIA (CUDA toolkit + nvcc)
 cargo build … --features metal                                                           # Apple Silicon
 cargo build … --features hipblas                                                         # AMD ROCm
+cargo build … --features vulkan                                                          # cross-vendor (incl. Intel iGPU)
+cargo build … --features intel-sycl                                                      # Intel oneAPI
 ```
 
 A GPU feature flips whisper-rs's `use_gpu` on automatically (it defaults to
 `cfg!(feature = "_gpu")`), so a binary built with `cuda` uses the GPU with no
-runtime flag. whisper-rs 0.12 has **no Vulkan/Intel backend** — that needs the
-whisper-rs upgrade.
+runtime flag.
 
 `SUBMATE_WHISPER_THREADS` overrides the CPU inference thread count (default =
 whisper.cpp's `min(4, n_cpu)`; raising it can *regress* small models, which are

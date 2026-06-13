@@ -31,13 +31,15 @@ default = []
 model = [
   "submate-whisper/model",
   "dep:whisper-rs",
-  "whisper-rs/whisper-cpp-tracing",
+  "whisper-rs/tracing_backend",
 ]
 # GPU backends — forward to submate-whisper's backend feature (which compiles
 # whisper.cpp with that backend and enables the GPU).
 cuda = ["model", "submate-whisper/cuda"]
 metal = ["model", "submate-whisper/metal"]
 hipblas = ["model", "submate-whisper/hipblas"]
+vulkan = ["model", "submate-whisper/vulkan"]
+intel-sycl = ["model", "submate-whisper/intel-sycl"]
 
 [lints]
 workspace = true

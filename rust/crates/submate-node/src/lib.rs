@@ -813,7 +813,7 @@ static WHISPER_LOG_HOOK_INSTALLS: AtomicUsize = AtomicUsize::new(0);
 pub fn install_whisper_logging() {
     WHISPER_LOG_HOOK.call_once(|| {
         #[cfg(feature = "model")]
-        whisper_rs::install_whisper_tracing_trampoline();
+        whisper_rs::install_logging_hooks();
         WHISPER_LOG_HOOK_INSTALLS.fetch_add(1, Ordering::SeqCst);
     });
 }
