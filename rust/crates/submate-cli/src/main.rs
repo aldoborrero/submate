@@ -101,6 +101,13 @@ struct TranscribeArgs {
     #[arg(long, value_name = "CODE", hide = true)]
     audio_language: Option<String>,
 
+    /// Whisper decode-language hint, independent of `--audio` track selection.
+    /// An ISO code (e.g. `en`) forces that decode language; `auto` lets whisper
+    /// auto-detect. When omitted, defaults to the selected track's language tag
+    /// (or auto-detect if that track is untagged).
+    #[arg(short = 'l', long, value_name = "CODE")]
+    language: Option<String>,
+
     /// Translate the generated subtitles to this target language.
     #[arg(short = 't', long)]
     translate_to: Option<String>,
@@ -587,12 +594,9 @@ async fn transcribe_files(
     };
     // The selector flows downstream as a string through the existing job
     // plumbing; `prepare_audio_for_transcription` re-parses it to pick the
-    // track. A bare `Lang` also serves as whisper's language-forcing hint.
+    // track. The whisper decode-language hint is resolved separately below
+    // (per file, since the default depends on the selected track's tag).
     let selector_str = selector.as_ref().map(audio_selector_to_string);
-    let whisper_hint = match &selector {
-        Some(AudioSelector::Lang(code)) => Some(code.clone()),
-        _ => None,
-    };
 
     // In sync mode, bring up an embedded node draining only the jobs we enqueue.
     let node = if args.sync {
@@ -619,10 +623,24 @@ async fn transcribe_files(
 
     let mut failed = 0usize;
     for file in files {
+        // The decode-language hint is independent of track selection: an
+        // explicit `--language` wins; otherwise it defaults to the selected
+        // track's language tag. The default needs the file's tracks, so probe
+        // here — a probe failure degrades to auto-detect (`None`), matching the
+        // downstream `prepare_audio_for_transcription` fallback.
+        let decode_language = if args.language.is_some() {
+            submate_media::resolve_decode_language(&[], selector.as_ref(), args.language.as_deref())
+        } else {
+            let tracks = submate_media::get_audio_tracks(file)
+                .await
+                .unwrap_or_default();
+            submate_media::resolve_decode_language(&tracks, selector.as_ref(), None)
+        };
+
         let opts = JobOpts {
             model,
             device,
-            source_language: whisper_hint.clone(),
+            source_language: decode_language,
             target_language: args.translate_to.clone(),
             translation_backend: None,
         };
@@ -1183,6 +1201,154 @@ mod cli {
             let s = audio_selector_to_string(&sel);
             assert_eq!(s.parse::<AudioSelector>().unwrap(), sel);
         }
+    }
+
+    /// Parse a `transcribe` invocation and return its [`TranscribeArgs`].
+    fn transcribe_args(tokens: &[&str]) -> TranscribeArgs {
+        let mut argv = vec!["submate", "transcribe"];
+        argv.extend_from_slice(tokens);
+        argv.push("movie.mkv");
+        let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("should parse: {e}"));
+        let Command::Transcribe(args) = cli.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        args
+    }
+
+    /// A small fixed track list standing in for a probed file: index 0 tagged
+    /// `eng`, index 1 tagged `jpn`, index 2 untagged (`und`).
+    fn sample_tracks() -> Vec<AudioTrack> {
+        vec![
+            AudioTrack {
+                index: 0,
+                language: "eng".to_string(),
+                codec: "aac".to_string(),
+                default: false,
+                title: None,
+            },
+            AudioTrack {
+                index: 1,
+                language: "jpn".to_string(),
+                codec: "ac3".to_string(),
+                default: false,
+                title: None,
+            },
+            AudioTrack {
+                index: 2,
+                language: "und".to_string(),
+                codec: "dts".to_string(),
+                default: false,
+                title: None,
+            },
+        ]
+    }
+
+    /// Mirror `transcribe_files`' selector resolution: `--audio` wins, else the
+    /// deprecated `--audio-language` maps to `Lang`, else `None`.
+    fn selector_for(args: &TranscribeArgs) -> Option<AudioSelector> {
+        match (&args.audio, &args.audio_language) {
+            (Some(sel), _) => Some(sel.clone()),
+            (None, Some(lang)) => Some(AudioSelector::Lang(lang.clone())),
+            (None, None) => None,
+        }
+    }
+
+    /// `--audio track:2 --language en` → selector `Index(2)`, decode `Some("en")`:
+    /// the explicit flag is the decode hint, the selector is untouched.
+    #[test]
+    fn decode_language_resolution_explicit_flag() {
+        let args = transcribe_args(&["--audio", "track:2", "--language", "en"]);
+        let selector = selector_for(&args);
+        assert_eq!(selector, Some(AudioSelector::Index(2)));
+
+        let decode = submate_media::resolve_decode_language(
+            &sample_tracks(),
+            selector.as_ref(),
+            args.language.as_deref(),
+        );
+        assert_eq!(decode, Some("en".to_string()));
+    }
+
+    /// `--audio ja` with no `--language` → decode defaults to the selected
+    /// track's tag. (`-a jpn` selects the JA track; its tag seeds the hint.)
+    #[test]
+    fn decode_language_resolution_defaults_to_track_tag() {
+        let args = transcribe_args(&["--audio", "jpn"]);
+        let selector = selector_for(&args);
+        assert_eq!(selector, Some(AudioSelector::Lang("jpn".to_string())));
+        assert!(args.language.is_none());
+
+        let decode = submate_media::resolve_decode_language(
+            &sample_tracks(),
+            selector.as_ref(),
+            args.language.as_deref(),
+        );
+        assert_eq!(decode, Some("jpn".to_string()));
+    }
+
+    /// `--audio track:1 --language auto` → decode `None` (whisper auto-detects),
+    /// even though track 1 is tagged.
+    #[test]
+    fn decode_language_resolution_auto_flag() {
+        let args = transcribe_args(&["--audio", "track:1", "--language", "auto"]);
+        let selector = selector_for(&args);
+        assert_eq!(selector, Some(AudioSelector::Index(1)));
+
+        let decode = submate_media::resolve_decode_language(
+            &sample_tracks(),
+            selector.as_ref(),
+            args.language.as_deref(),
+        );
+        assert_eq!(decode, None);
+    }
+
+    /// Selecting an untagged track with no `--language` → decode `None`.
+    #[test]
+    fn decode_language_resolution_untagged_track() {
+        let args = transcribe_args(&["--audio", "track:2"]);
+        let selector = selector_for(&args);
+        assert_eq!(selector, Some(AudioSelector::Index(2)));
+
+        let decode = submate_media::resolve_decode_language(
+            &sample_tracks(),
+            selector.as_ref(),
+            args.language.as_deref(),
+        );
+        assert_eq!(decode, None);
+    }
+
+    /// The resolved (selector, decode-language) pair varies independently:
+    /// holding the selector fixed, the decode hint changes solely with
+    /// `--language`.
+    #[test]
+    fn decode_language_resolution_independent_of_selector() {
+        let tracks = sample_tracks();
+
+        let base = transcribe_args(&["--audio", "track:1"]);
+        let sel = selector_for(&base);
+        // Default: inherits track 1's tag.
+        assert_eq!(
+            submate_media::resolve_decode_language(&tracks, sel.as_ref(), None),
+            Some("jpn".to_string()),
+        );
+
+        let forced = transcribe_args(&["--audio", "track:1", "--language", "en"]);
+        assert_eq!(selector_for(&forced), sel);
+        assert_eq!(
+            submate_media::resolve_decode_language(
+                &tracks,
+                sel.as_ref(),
+                forced.language.as_deref()
+            ),
+            Some("en".to_string()),
+        );
+
+        let auto = transcribe_args(&["--audio", "track:1", "--language", "auto"]);
+        assert_eq!(selector_for(&auto), sel);
+        assert_eq!(
+            submate_media::resolve_decode_language(&tracks, sel.as_ref(), auto.language.as_deref()),
+            None,
+        );
     }
 
     /// The success summary formatter renders just the file names plus the cue
