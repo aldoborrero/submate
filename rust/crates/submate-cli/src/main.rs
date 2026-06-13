@@ -124,6 +124,12 @@ struct TranscribeArgs {
     #[arg(long)]
     fail_fast: bool,
 
+    /// Never prompt for an ambiguous audio-track choice; take the deterministic
+    /// rule pick (first match / track 0) instead. Implied automatically off a
+    /// TTY (pipe, batch, server), so this only matters interactively.
+    #[arg(long, visible_alias = "yes")]
+    non_interactive: bool,
+
     /// Process files immediately in-process instead of queueing them.
     #[arg(long)]
     sync: bool,
@@ -335,8 +341,7 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
             .map(|e| format!(".{}", e.to_lowercase()))
             .unwrap_or_default();
 
-        let mut complete =
-            |prompt: &str| backend.complete(prompt).map_err(anyhow::Error::from);
+        let mut complete = |prompt: &str| backend.complete(prompt).map_err(anyhow::Error::from);
         let translated = match suffix.as_str() {
             ".ass" | ".ssa" => {
                 // The portable ASS path translates extracted dialogue lines; with
@@ -551,9 +556,7 @@ async fn transcribe_files(
     use submate_node::Dispatcher;
     use submate_proto::JobOpts;
     use submate_queue::JobStore;
-    use submate_server::{
-        spawn_embedded_node, AudioSource, EmbeddedNodeSettings, NodeCoordinator,
-    };
+    use submate_server::{spawn_embedded_node, AudioSource, EmbeddedNodeSettings, NodeCoordinator};
     use submate_types::{Device, TranscriptionTask, WhisperModel};
 
     let store = if args.sync {
@@ -596,7 +599,38 @@ async fn transcribe_files(
     // plumbing; `prepare_audio_for_transcription` re-parses it to pick the
     // track. The whisper decode-language hint is resolved separately below
     // (per file, since the default depends on the selected track's tag).
-    let selector_str = selector.as_ref().map(audio_selector_to_string);
+    let mut selector = selector;
+    let mut selector_str = selector.as_ref().map(audio_selector_to_string);
+
+    // Interactive track picker — single file only. Multi-file / recursive runs
+    // always take the deterministic rule (we never block a batch on a prompt),
+    // and the prompt is further gated on stderr being a TTY. When the selection
+    // is ambiguous and a human is present, ask; otherwise fall through with the
+    // rule pick (and note it). Resolving here pins the chosen track via a
+    // `track:<n>` selector so the downstream node skips its own guess.
+    if files.len() == 1 {
+        let file = &files[0];
+        let tracks = submate_media::get_audio_tracks(file)
+            .await
+            .unwrap_or_default();
+        let is_tty = std::io::stderr().is_terminal();
+        match resolve_single_file_track(
+            &tracks,
+            selector.as_ref(),
+            file,
+            is_tty,
+            args.non_interactive,
+        ) {
+            Ok(Some(index)) => {
+                selector = Some(AudioSelector::Index(index));
+                selector_str = selector.as_ref().map(audio_selector_to_string);
+            }
+            // No tracks / unresolved-but-non-fatal: leave the selector as-is and
+            // let the downstream resolver handle it (it degrades to auto-detect).
+            Ok(None) => {}
+            Err(e) => return Err(e),
+        }
+    }
 
     // In sync mode, bring up an embedded node draining only the jobs we enqueue.
     let node = if args.sync {
@@ -690,8 +724,9 @@ async fn transcribe_files(
                     // produces a file today.)
                     let out_path = file.with_extension("srt");
                     let cue_count = submate_subtitle::cue::parse_srt(&output).len();
-                    std::fs::write(&out_path, output)
-                        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out_path.display()))?;
+                    std::fs::write(&out_path, output).map_err(|e| {
+                        anyhow::anyhow!("failed to write {}: {e}", out_path.display())
+                    })?;
                     println!("{}", result_summary(file, &out_path, cue_count));
                 }
                 other => {
@@ -732,11 +767,7 @@ fn result_summary(input: &Path, output: &Path, cue_count: usize) -> String {
             .unwrap_or_else(|| p.display().to_string())
     };
     let noun = if cue_count == 1 { "cue" } else { "cues" };
-    format!(
-        "✓ {} → {} ({cue_count} {noun})",
-        name(input),
-        name(output)
-    )
+    format!("✓ {} → {} ({cue_count} {noun})", name(input), name(output))
 }
 
 /// Live progress display for a single `transcribe --sync` job.
@@ -883,16 +914,15 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
         let node_settings = EmbeddedNodeSettings::from_server(&config.server);
         let _node = if node_settings.enabled {
             let base_url = format!("http://{addr}");
-            let dispatcher =
-                submate_node::Dispatcher::new(node_settings.runners.max(1) as usize);
+            let dispatcher = submate_node::Dispatcher::new(node_settings.runners.max(1) as usize);
             let processor = make_processor(dispatcher, &config.whisper.model);
             spawn_embedded_node(base_url, &node_settings, processor)
         } else {
             None
         };
 
-        let router = app(AppState::with_coordinator(coord)
-            .with_server_settings(config.server.clone()));
+        let router =
+            app(AppState::with_coordinator(coord).with_server_settings(config.server.clone()));
         axum::serve(listener, router).await?;
         Ok::<(), anyhow::Error>(())
     })
@@ -982,6 +1012,200 @@ fn render_track_table(tracks: &[AudioTrack], path: &Path) -> String {
     out
 }
 
+/// The outcome of classifying an audio-track selection for a single file.
+///
+/// Produced by the pure [`decide_track`]; the IO layer turns each variant into
+/// the right behaviour — `Resolved` runs straight through, `Prompt` renders the
+/// candidates and reads a numbered choice, `Error` aborts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrackDecision {
+    /// The selection is unambiguous (or was forced by the rule): use this
+    /// [`AudioTrack::index`].
+    Resolved(usize),
+    /// The selection is ambiguous and a human can answer: prompt them to pick
+    /// among these candidate [`AudioTrack::index`]es.
+    Prompt(Vec<usize>),
+    /// The selector could not be resolved at all (e.g. no language match, index
+    /// out of range, no tracks). Carries a user-facing message.
+    Error(String),
+}
+
+/// Decide which audio track to transcribe, as a pure function of the inputs.
+///
+/// The stdin read / table render is thin IO layered around this; keeping the
+/// decision pure makes the "three contexts, one mental model" contract directly
+/// unit-testable:
+/// - An unambiguously resolving selector (a single track, `Auto`/`Default` with
+///   a clear pick, an `Index`, or a `Lang` matching exactly one track) →
+///   [`TrackDecision::Resolved`], regardless of `is_tty`.
+/// - Ambiguous **and** `is_tty` **and** `!non_interactive` →
+///   [`TrackDecision::Prompt`] with the candidate indices.
+/// - Ambiguous **and** (off a TTY **or** `--non-interactive`) →
+///   [`TrackDecision::Resolved`] with the deterministic rule pick (first match /
+///   track 0). Callers note the pick and how to override; this never blocks.
+///
+/// "Ambiguous" means either a `Lang` selector matched more than one track, or no
+/// selector was given and there are several tracks with no default disposition.
+/// The candidate tracks a human would choose among when the selection is
+/// ambiguous, as their [`AudioTrack::index`]es. Empty means *unambiguous*.
+///
+/// Ambiguity is exactly the spec's two cases: a `Lang` selector that matched
+/// more than one track (→ the tracks of that language), or no selector with
+/// several tracks and no default disposition (→ every track). Every other
+/// selector — `Index`, `Default`, `Auto`, a single-track file, a `Lang` with a
+/// unique match — is unambiguous and yields an empty set.
+fn ambiguous_candidates(tracks: &[AudioTrack], sel: Option<&AudioSelector>) -> Vec<usize> {
+    use submate_media::{lang_match_is_ambiguous, AudioSelector};
+
+    match sel {
+        Some(s @ AudioSelector::Lang(code)) if lang_match_is_ambiguous(tracks, s) => {
+            let wanted = code.to_lowercase();
+            tracks
+                .iter()
+                .filter(|t| t.language.to_lowercase() == wanted)
+                .map(|t| t.index)
+                .collect()
+        }
+        None if tracks.len() > 1 && !tracks.iter().any(|t| t.default) => {
+            tracks.iter().map(|t| t.index).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn decide_track(
+    tracks: &[AudioTrack],
+    sel: Option<&AudioSelector>,
+    is_tty: bool,
+    non_interactive: bool,
+) -> TrackDecision {
+    use submate_media::{resolve_audio_selector, AudioSelector};
+
+    if tracks.is_empty() {
+        return TrackDecision::Error("no audio tracks available".to_string());
+    }
+
+    let candidates = ambiguous_candidates(tracks, sel);
+
+    if candidates.is_empty() {
+        // Unambiguous: resolve through the shared selector rules. A `None`
+        // selector with no ambiguity behaves like `Auto` (single track, or a
+        // clear default).
+        let owned;
+        let resolved = match sel {
+            Some(s) => s,
+            None => {
+                owned = AudioSelector::Auto;
+                &owned
+            }
+        };
+        return match resolve_audio_selector(tracks, resolved) {
+            Ok(index) => TrackDecision::Resolved(index),
+            Err(e) => TrackDecision::Error(e.to_string()),
+        };
+    }
+
+    // Ambiguous. Prompt only when a human can actually answer.
+    if is_tty && !non_interactive {
+        TrackDecision::Prompt(candidates)
+    } else {
+        // Deterministic rule pick: the first candidate (first language match, or
+        // track 0 when there is no selector).
+        TrackDecision::Resolved(candidates[0])
+    }
+}
+
+/// Thin IO around [`decide_track`] for the single-file transcribe path.
+///
+/// Returns the chosen [`AudioTrack::index`] to pin (`Some`), or `None` when the
+/// selector can resolve downstream on its own (no tracks probed, or nothing to
+/// override). `Err` only on a hard selector failure (e.g. an out-of-range index
+/// or an unmatched language), which should abort the run.
+///
+/// On `Prompt` it renders the candidate tracks via [`render_track_table`] and
+/// reads a numbered choice from stdin; on the rule path it logs a one-line note
+/// naming the pick and how to override.
+fn resolve_single_file_track(
+    tracks: &[AudioTrack],
+    sel: Option<&AudioSelector>,
+    path: &Path,
+    is_tty: bool,
+    non_interactive: bool,
+) -> anyhow::Result<Option<usize>> {
+    // A probe failure (or a track-less file) leaves the downstream resolver to
+    // degrade to auto-detect; nothing to pin here.
+    if tracks.is_empty() {
+        return Ok(None);
+    }
+
+    match decide_track(tracks, sel, is_tty, non_interactive) {
+        TrackDecision::Resolved(index) => {
+            // When the selection was ambiguous but we took the rule path (off a
+            // TTY or `--non-interactive`), say which track we picked and how to
+            // override, so the choice is never silent.
+            if !ambiguous_candidates(tracks, sel).is_empty() {
+                let lang = tracks
+                    .iter()
+                    .find(|t| t.index == index)
+                    .map(|t| t.language.as_str())
+                    .unwrap_or("unknown");
+                eprintln!(
+                    "Ambiguous audio selection; using track #{index} ({lang}). \
+                     Override with -a track:<n> (or -a <lang>), or run interactively \
+                     without --non-interactive."
+                );
+            }
+            Ok(Some(index))
+        }
+        TrackDecision::Prompt(candidates) => prompt_for_track(tracks, &candidates, path),
+        TrackDecision::Error(msg) => Err(anyhow::anyhow!(msg)),
+    }
+}
+
+/// Render the candidate tracks and read a 0-based track index from stdin.
+///
+/// Split from [`resolve_single_file_track`] so the decision stays pure; this is
+/// the only part that touches stdin/stderr. An EOF or unreadable choice (e.g.
+/// stdin closed mid-prompt) falls back to the first candidate rather than
+/// aborting, so a half-interactive pipe still makes progress.
+fn prompt_for_track(
+    tracks: &[AudioTrack],
+    candidates: &[usize],
+    path: &Path,
+) -> anyhow::Result<Option<usize>> {
+    use std::io::Write;
+
+    let shown: Vec<AudioTrack> = tracks
+        .iter()
+        .filter(|t| candidates.contains(&t.index))
+        .cloned()
+        .collect();
+
+    eprintln!("Multiple audio tracks match; pick one:");
+    eprintln!("{}", render_track_table(&shown, path));
+    eprint!("Track index [{}]: ", candidates[0]);
+    let _ = std::io::stderr().flush();
+
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line)?;
+    let choice = line.trim();
+    if read == 0 || choice.is_empty() {
+        // EOF or empty input → accept the default (first candidate).
+        return Ok(Some(candidates[0]));
+    }
+    match choice.parse::<usize>() {
+        Ok(index) if candidates.contains(&index) => Ok(Some(index)),
+        _ => anyhow::bail!(
+            "'{choice}' is not one of the offered track indices ({})",
+            candidates
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// Build the node's [`JobProcessor`].
 ///
 /// With the `model` feature it forwards to the real whisper.cpp pipeline via
@@ -1037,7 +1261,14 @@ mod cli {
         let cmd = Cli::command();
         let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
 
-        for expected in ["transcribe", "translate", "server", "node", "probe", "config"] {
+        for expected in [
+            "transcribe",
+            "translate",
+            "server",
+            "node",
+            "probe",
+            "config",
+        ] {
             assert!(names.contains(&expected), "missing subcommand `{expected}`");
         }
         assert!(
@@ -1109,8 +1340,8 @@ mod cli {
 
         // The flag is the highest-priority source and is returned verbatim,
         // without touching the filesystem or the environment.
-        let resolved = resolve_model(args.model.as_deref(), "medium")
-            .expect("--model should resolve");
+        let resolved =
+            resolve_model(args.model.as_deref(), "medium").expect("--model should resolve");
         assert_eq!(resolved, PathBuf::from("/models/ggml-base.en.bin"));
 
         // With no flag, a non-path config value, and no env var, the resolver
@@ -1151,14 +1382,16 @@ mod cli {
     #[test]
     fn audio_selector_flag_parses_grammar() {
         assert_eq!(parse_audio("ja"), AudioSelector::Lang("ja".to_string()));
-        assert_eq!(parse_audio("lang:ja"), AudioSelector::Lang("ja".to_string()));
+        assert_eq!(
+            parse_audio("lang:ja"),
+            AudioSelector::Lang("ja".to_string())
+        );
         assert_eq!(parse_audio("track:2"), AudioSelector::Index(2));
         assert_eq!(parse_audio("default"), AudioSelector::Default);
         assert_eq!(parse_audio("auto"), AudioSelector::Auto);
 
         assert!(
-            Cli::try_parse_from(["submate", "transcribe", "-a", "track:abc", "movie.mkv"])
-                .is_err(),
+            Cli::try_parse_from(["submate", "transcribe", "-a", "track:abc", "movie.mkv"]).is_err(),
             "a malformed selector must be rejected at parse time"
         );
     }
@@ -1404,7 +1637,10 @@ mod cli {
         let out = render_track_table(&tracks, Path::new("/media/movie.mkv"));
 
         // Header reports the count and the bare file name.
-        assert!(out.contains("3 audio tracks in movie.mkv:"), "header: {out}");
+        assert!(
+            out.contains("3 audio tracks in movie.mkv:"),
+            "header: {out}"
+        );
 
         // Each track's index, language and codec is listed.
         for track in &tracks {
@@ -1450,6 +1686,188 @@ mod cli {
         // An empty track list degrades to a single no-tracks line.
         let empty = render_track_table(&[], Path::new("clip.mp4"));
         assert_eq!(empty, "No audio tracks in clip.mp4");
+    }
+
+    /// `--non-interactive` parses and carries its `--yes` visible alias.
+    #[test]
+    fn transcribe_non_interactive_flag() {
+        let cmd = Cli::command();
+        let sub = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "transcribe")
+            .expect("transcribe subcommand");
+        let arg = sub
+            .get_arguments()
+            .find(|a| a.get_long() == Some("non-interactive"))
+            .expect("--non-interactive flag");
+        let aliases = arg.get_visible_aliases().unwrap_or_default();
+        assert!(aliases.contains(&"yes"), "missing --yes alias: {aliases:?}");
+
+        for flag in ["--non-interactive", "--yes"] {
+            let args = transcribe_args(&[flag]);
+            assert!(args.non_interactive, "`{flag}` must set non_interactive");
+        }
+        // Default is off.
+        assert!(!transcribe_args(&[]).non_interactive);
+    }
+
+    /// Two `eng` tracks + one `jpn`, none default — a `Lang("eng")` selector is
+    /// ambiguous; the no-selector case is ambiguous too (no default flagged).
+    fn ambiguous_tracks() -> Vec<AudioTrack> {
+        vec![
+            AudioTrack {
+                index: 0,
+                language: "eng".to_string(),
+                codec: "aac".to_string(),
+                default: false,
+                title: Some("Main".to_string()),
+            },
+            AudioTrack {
+                index: 1,
+                language: "eng".to_string(),
+                codec: "ac3".to_string(),
+                default: false,
+                title: Some("Commentary".to_string()),
+            },
+            AudioTrack {
+                index: 2,
+                language: "jpn".to_string(),
+                codec: "dts".to_string(),
+                default: false,
+                title: None,
+            },
+        ]
+    }
+
+    /// An unambiguous selector resolves to the same index regardless of `is_tty`
+    /// or `--non-interactive`: a single-language `Lang`, an `Index`, `Default`,
+    /// and a single-track `Auto` all go straight to `Resolved`.
+    #[test]
+    fn decide_track_unambiguous_resolves_regardless_of_tty() {
+        let tracks = sample_tracks(); // eng / jpn / und, all unique langs.
+
+        let cases: &[(Option<AudioSelector>, usize)] = &[
+            (Some(AudioSelector::Lang("jpn".into())), 1),
+            (Some(AudioSelector::Index(2)), 2),
+            (Some(AudioSelector::Auto), 0),
+            (Some(AudioSelector::Default), 0),
+        ];
+
+        for (sel, expected) in cases {
+            for is_tty in [false, true] {
+                for non_interactive in [false, true] {
+                    assert_eq!(
+                        decide_track(&tracks, sel.as_ref(), is_tty, non_interactive),
+                        TrackDecision::Resolved(*expected),
+                        "sel={sel:?} is_tty={is_tty} non_interactive={non_interactive}",
+                    );
+                }
+            }
+        }
+
+        // A lone track is unambiguous even with no selector.
+        let one = vec![sample_tracks().remove(0)];
+        for is_tty in [false, true] {
+            assert_eq!(
+                decide_track(&one, None, is_tty, false),
+                TrackDecision::Resolved(0),
+            );
+        }
+    }
+
+    /// Ambiguous + TTY + interactive → `Prompt` with the candidate indices, for
+    /// both ambiguity flavours (a multi-match `Lang`, and no selector with no
+    /// default track).
+    #[test]
+    fn decide_track_ambiguous_tty_interactive_prompts() {
+        let tracks = ambiguous_tracks();
+
+        // `Lang("eng")` matches tracks 0 and 1.
+        assert_eq!(
+            decide_track(
+                &tracks,
+                Some(&AudioSelector::Lang("eng".into())),
+                true,
+                false
+            ),
+            TrackDecision::Prompt(vec![0, 1]),
+        );
+
+        // No selector, several tracks, no default → every track is a candidate.
+        assert_eq!(
+            decide_track(&tracks, None, true, false),
+            TrackDecision::Prompt(vec![0, 1, 2]),
+        );
+    }
+
+    /// Ambiguous but off a TTY → the deterministic rule pick (first match /
+    /// track 0), never a prompt, even when interactive would have asked.
+    #[test]
+    fn decide_track_ambiguous_off_tty_takes_rule() {
+        let tracks = ambiguous_tracks();
+
+        assert_eq!(
+            decide_track(
+                &tracks,
+                Some(&AudioSelector::Lang("eng".into())),
+                false,
+                false
+            ),
+            TrackDecision::Resolved(0),
+        );
+        assert_eq!(
+            decide_track(&tracks, None, false, false),
+            TrackDecision::Resolved(0),
+        );
+    }
+
+    /// Ambiguous + TTY + `--non-interactive` → the rule pick, not a prompt: the
+    /// flag forces the deterministic path even with a human present.
+    #[test]
+    fn decide_track_ambiguous_non_interactive_takes_rule() {
+        let tracks = ambiguous_tracks();
+
+        assert_eq!(
+            decide_track(
+                &tracks,
+                Some(&AudioSelector::Lang("eng".into())),
+                true,
+                true
+            ),
+            TrackDecision::Resolved(0),
+        );
+        assert_eq!(
+            decide_track(&tracks, None, true, true),
+            TrackDecision::Resolved(0),
+        );
+    }
+
+    /// No tracks at all → `Error`, and an unresolvable selector (bad index /
+    /// unmatched language) also surfaces as `Error` rather than a silent pick.
+    #[test]
+    fn decide_track_error_paths() {
+        assert!(matches!(
+            decide_track(&[], None, true, false),
+            TrackDecision::Error(_)
+        ));
+        assert!(matches!(
+            decide_track(
+                &sample_tracks(),
+                Some(&AudioSelector::Index(9)),
+                true,
+                false
+            ),
+            TrackDecision::Error(_)
+        ));
+        assert!(matches!(
+            decide_track(
+                &sample_tracks(),
+                Some(&AudioSelector::Lang("zzz".into())),
+                true,
+                false
+            ),
+            TrackDecision::Error(_)
+        ));
     }
 
     /// In non-TTY mode the renderer emits plain `"<name>: NN%"` lines with no
