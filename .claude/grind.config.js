@@ -63,7 +63,7 @@ const CONFIG = {
   // Round cap. Honored even when launch args don't propagate (the earlier run
   // ignored {rounds:2} and ran unbounded). Raise this — or pass {rounds:N} at
   // launch — for a longer run; set Infinity to drain the whole backlog.
-  maxRounds: 5,
+  maxRounds: 3,
   dryLimit: 2,
   rotation: ['parity', 'porter-scout', 'aligner', 'simplifier', 'curator', 'documenter'],
 
