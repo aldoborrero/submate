@@ -22,9 +22,50 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use submate_config::Config;
 use submate_media::{AudioSelector, AudioTrack};
+
+/// User-selectable subtitle output format for `submate transcribe` (`-F/--format`).
+///
+/// Mirrors [`submate_proto::OutputFormat`] for the wire/job side; kept as a
+/// separate clap `ValueEnum` so the `--help` value list and parsing live with
+/// the CLI. [`From`] converts it into the proto enum at the job build site, and
+/// [`OutputFormat::extension`] drives the `--sync` output filename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum OutputFormat {
+    /// SubRip subtitles (`.srt`).
+    #[default]
+    Srt,
+    /// WebVTT subtitles (`.vtt`).
+    Vtt,
+    /// Advanced SubStation Alpha subtitles (`.ass`).
+    Ass,
+    /// JSON dump of the full transcription result (`.json`).
+    Json,
+    /// Plain-text transcript, no timestamps (`.txt`).
+    Txt,
+}
+
+impl OutputFormat {
+    /// File extension including the leading dot (e.g. `".srt"`), used to name the
+    /// `--sync` output next to the input file.
+    fn extension(self) -> &'static str {
+        submate_proto::OutputFormat::from(self).extension()
+    }
+}
+
+impl From<OutputFormat> for submate_proto::OutputFormat {
+    fn from(f: OutputFormat) -> Self {
+        match f {
+            OutputFormat::Srt => submate_proto::OutputFormat::Srt,
+            OutputFormat::Vtt => submate_proto::OutputFormat::Vtt,
+            OutputFormat::Ass => submate_proto::OutputFormat::Ass,
+            OutputFormat::Json => submate_proto::OutputFormat::Json,
+            OutputFormat::Txt => submate_proto::OutputFormat::Txt,
+        }
+    }
+}
 
 mod config_show;
 mod translate_paths;
@@ -111,6 +152,11 @@ struct TranscribeArgs {
     /// Translate the generated subtitles to this target language.
     #[arg(short = 't', long)]
     translate_to: Option<String>,
+
+    /// Subtitle output format. Defaults to `srt` (no behavior change for
+    /// existing usage).
+    #[arg(short = 'F', long, value_enum, default_value_t = OutputFormat::Srt)]
+    format: OutputFormat,
 
     /// Overwrite existing subtitle files.
     #[arg(short = 'f', long)]
@@ -677,6 +723,7 @@ async fn transcribe_files(
             source_language: decode_language,
             target_language: args.translate_to.clone(),
             translation_backend: None,
+            output_format: args.format.into(),
         };
         let source = AudioSource::File {
             path: file.clone(),
@@ -722,8 +769,16 @@ async fn transcribe_files(
                     // port-queue-transcription-service; this writes the result the
                     // sync coordinator already returns so `transcribe --sync`
                     // produces a file today.)
-                    let out_path = file.with_extension("srt");
-                    let cue_count = submate_subtitle::cue::parse_srt(&output).len();
+                    // Extension follows the chosen format; the leading dot from
+                    // `extension()` is stripped since `with_extension` adds its own.
+                    let out_path =
+                        file.with_extension(args.format.extension().trim_start_matches('.'));
+                    // Cue counting only parses the SRT shape; other formats report 0.
+                    let cue_count = if args.format == OutputFormat::Srt {
+                        submate_subtitle::cue::parse_srt(&output).len()
+                    } else {
+                        0
+                    };
                     std::fs::write(&out_path, output).map_err(|e| {
                         anyhow::anyhow!("failed to write {}: {e}", out_path.display())
                     })?;
@@ -1366,6 +1421,64 @@ mod cli {
                 && err.contains("huggingface.co/ggerganov/whisper.cpp"),
             "error must include the download hint: {err}"
         );
+    }
+
+    /// Parse `transcribe` and return its `--format` value.
+    fn parse_format(args: &[&str]) -> OutputFormat {
+        let mut argv = vec!["submate", "transcribe"];
+        argv.extend_from_slice(args);
+        argv.push("movie.mkv");
+        let cli = Cli::try_parse_from(argv)
+            .unwrap_or_else(|e| panic!("`transcribe {args:?}` should parse: {e}"));
+        let Command::Transcribe(t) = cli.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        t.format
+    }
+
+    /// Each `OutputFormat` variant maps to its dotted file extension and to the
+    /// matching proto serializer selector (`From` conversion).
+    #[test]
+    fn output_format_extension_mapping() {
+        for (fmt, ext, proto) in [
+            (OutputFormat::Srt, ".srt", submate_proto::OutputFormat::Srt),
+            (OutputFormat::Vtt, ".vtt", submate_proto::OutputFormat::Vtt),
+            (OutputFormat::Ass, ".ass", submate_proto::OutputFormat::Ass),
+            (
+                OutputFormat::Json,
+                ".json",
+                submate_proto::OutputFormat::Json,
+            ),
+            (OutputFormat::Txt, ".txt", submate_proto::OutputFormat::Txt),
+        ] {
+            assert_eq!(fmt.extension(), ext, "wrong extension for {fmt:?}");
+            assert_eq!(
+                submate_proto::OutputFormat::from(fmt),
+                proto,
+                "wrong proto selector for {fmt:?}"
+            );
+        }
+    }
+
+    /// Omitting `--format` yields `srt`/`.srt` — no behavior change for existing
+    /// usage, matching the hardcoded SRT path it replaces.
+    #[test]
+    fn output_format_default_is_srt() {
+        let fmt = parse_format(&[]);
+        assert_eq!(fmt, OutputFormat::Srt);
+        assert_eq!(fmt.extension(), ".srt");
+    }
+
+    /// `-F`/`--format` parse to the right variant; an unknown value is rejected.
+    #[test]
+    fn output_format_parses_and_rejects_invalid() {
+        assert_eq!(parse_format(&["-F", "ass"]), OutputFormat::Ass);
+        assert_eq!(parse_format(&["--format", "json"]), OutputFormat::Json);
+        assert_eq!(parse_format(&["-F", "vtt"]), OutputFormat::Vtt);
+        assert_eq!(parse_format(&["--format", "txt"]), OutputFormat::Txt);
+
+        let err = Cli::try_parse_from(["submate", "transcribe", "-F", "bogus", "movie.mkv"]);
+        assert!(err.is_err(), "an invalid --format value must be rejected");
     }
 
     fn parse_audio(arg: &str) -> AudioSelector {
