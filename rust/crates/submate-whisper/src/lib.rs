@@ -171,8 +171,12 @@ mod inference {
         let mut full_text = String::new();
 
         for seg in 0..n_segments {
+            // `_lossy`: the full segment's bytes reassemble into valid UTF-8
+            // (whisper.cpp's byte-fallback tokens combine at the segment level),
+            // but use the lossy reader so a rare malformed segment degrades to
+            // `U+FFFD` instead of failing the whole transcription.
             let seg_text = state
-                .full_get_segment_text(seg)
+                .full_get_segment_text_lossy(seg)
                 .map_err(|e| WhisperError::Inference(e.to_string()))?;
             let seg_t0 = state
                 .full_get_segment_t0(seg)
@@ -217,9 +221,28 @@ mod inference {
         let mut prob_count = 0_u32;
 
         for tok in 0..n_tokens {
-            let text = state
-                .full_get_token_text(seg, tok)
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
+            // whisper.cpp emits byte-fallback tokens that split one multibyte
+            // UTF-8 character (e.g. CJK) across several tokens, so a single
+            // token's bytes are often not valid UTF-8 on their own. The safe
+            // API can't hand back the raw bytes to reassemble word boundaries,
+            // and decoding each token lossily would corrupt the text into
+            // `U+FFFD` runs. So when a token fails to decode we abandon
+            // word-level timing for this whole segment and let the valid,
+            // segment-level `full_get_segment_text_lossy` carry it (the segment
+            // then has no words and falls back to its own text downstream).
+            // Latin-script transcription, whose tokens are self-contained UTF-8,
+            // is unaffected.
+            let text = match state.full_get_token_text(seg, tok) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::debug!(
+                        segment = seg,
+                        "token text not valid UTF-8 (byte-fallback token); \
+                         using segment-level text without word timings"
+                    );
+                    return Ok(Vec::new());
+                }
+            };
             let data = state
                 .full_get_token_data(seg, tok)
                 .map_err(|e| WhisperError::Inference(e.to_string()))?;
