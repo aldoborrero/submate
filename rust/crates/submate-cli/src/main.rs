@@ -773,16 +773,11 @@ async fn transcribe_files(
                     // `extension()` is stripped since `with_extension` adds its own.
                     let out_path =
                         file.with_extension(args.format.extension().trim_start_matches('.'));
-                    // Cue counting only parses the SRT shape; other formats report 0.
-                    let cue_count = if args.format == OutputFormat::Srt {
-                        submate_subtitle::cue::parse_srt(&output).len()
-                    } else {
-                        0
-                    };
+                    let (count, noun) = output_count(&output, args.format);
                     std::fs::write(&out_path, output).map_err(|e| {
                         anyhow::anyhow!("failed to write {}: {e}", out_path.display())
                     })?;
-                    println!("{}", result_summary(file, &out_path, cue_count));
+                    println!("{}", result_summary(file, &out_path, count, noun));
                 }
                 other => {
                     failed += 1;
@@ -807,22 +802,56 @@ async fn transcribe_files(
     Ok(())
 }
 
+/// Count the entries in a produced output string, with the unit noun for the
+/// summary line, per format: cues for the subtitle formats (srt/vtt/ass),
+/// segments for JSON, lines for plain text. Keeps the summary honest instead of
+/// reporting `0 cues` for every non-SRT format.
+fn output_count(output: &str, format: OutputFormat) -> (usize, &'static str) {
+    match format {
+        OutputFormat::Srt => (submate_subtitle::cue::parse_srt(output).len(), "cue"),
+        OutputFormat::Vtt => (output.matches("-->").count(), "cue"),
+        OutputFormat::Ass => (
+            output.lines().filter(|l| l.starts_with("Dialogue:")).count(),
+            "cue",
+        ),
+        OutputFormat::Json => (
+            serde_json::from_str::<serde_json::Value>(output)
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get("segments"))
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+            "segment",
+        ),
+        OutputFormat::Txt => (
+            output.lines().filter(|l| !l.trim().is_empty()).count(),
+            "line",
+        ),
+    }
+}
+
 /// Format the one-line success summary for a transcribed file, e.g.
-/// `✓ movie.mkv → movie.srt (42 cues)`.
+/// `✓ movie.mkv → movie.srt (42 cues)`. `noun` is the singular unit (`cue`,
+/// `segment`, `line`), pluralized with a trailing `s` when `count != 1`.
 ///
 /// Only the file names (not full paths) are shown so the line stays readable
-/// when transcribing inside a deeply nested directory; the cue count is derived
-/// by the caller from the written SRT. A path with no final component (e.g. `/`)
-/// falls back to its `display()` form so the summary is never empty.
-fn result_summary(input: &Path, output: &Path, cue_count: usize) -> String {
+/// when transcribing inside a deeply nested directory. A path with no final
+/// component (e.g. `/`) falls back to its `display()` form so the summary is
+/// never empty.
+fn result_summary(input: &Path, output: &Path, count: usize, noun: &str) -> String {
     let name = |p: &Path| {
         p.file_name()
             .and_then(|n| n.to_str())
             .map(str::to_owned)
             .unwrap_or_else(|| p.display().to_string())
     };
-    let noun = if cue_count == 1 { "cue" } else { "cues" };
-    format!("✓ {} → {} ({cue_count} {noun})", name(input), name(output))
+    let unit = if count == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    };
+    format!("✓ {} → {} ({count} {unit})", name(input), name(output))
 }
 
 /// Live progress display for a single `transcribe --sync` job.
@@ -1697,8 +1726,9 @@ mod cli {
         );
     }
 
-    /// The success summary formatter renders just the file names plus the cue
-    /// count, pluralizing `cue`/`cues`, regardless of how deep the input path is.
+    /// The success summary formatter renders just the file names plus the
+    /// count, pluralizing the unit noun, regardless of how deep the input path
+    /// is or which format-specific noun is used.
     #[test]
     fn result_summary_format() {
         assert_eq!(
@@ -1706,17 +1736,42 @@ mod cli {
                 Path::new("/media/movies/movie.mkv"),
                 Path::new("/media/movies/movie.srt"),
                 42,
+                "cue",
             ),
             "✓ movie.mkv → movie.srt (42 cues)",
         );
         assert_eq!(
-            result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 1),
+            result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 1, "cue"),
             "✓ clip.mp4 → clip.srt (1 cue)",
         );
         assert_eq!(
-            result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 0),
-            "✓ clip.mp4 → clip.srt (0 cues)",
+            result_summary(Path::new("clip.mp4"), Path::new("clip.json"), 1, "segment"),
+            "✓ clip.mp4 → clip.json (1 segment)",
         );
+        assert_eq!(
+            result_summary(Path::new("clip.mp4"), Path::new("clip.txt"), 4, "line"),
+            "✓ clip.mp4 → clip.txt (4 lines)",
+        );
+    }
+
+    /// `output_count` reports the right entry count and unit noun per format,
+    /// instead of `0 cues` for everything that is not SRT.
+    #[test]
+    fn output_count_per_format() {
+        let srt = "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n2\n00:00:01,000 --> 00:00:02,000\nthere\n";
+        assert_eq!(output_count(srt, OutputFormat::Srt), (2, "cue"));
+
+        let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhi\n";
+        assert_eq!(output_count(vtt, OutputFormat::Vtt), (1, "cue"));
+
+        let ass = "[Events]\nDialogue: 0,0:00:0.00,0:00:1.00,Default,,0,0,0,,a\nDialogue: 0,0:00:1.00,0:00:2.00,Default,,0,0,0,,b\n";
+        assert_eq!(output_count(ass, OutputFormat::Ass), (2, "cue"));
+
+        let json = r#"{"text":"x","segments":[{"start":0.0,"end":1.0,"text":"x"}]}"#;
+        assert_eq!(output_count(json, OutputFormat::Json), (1, "segment"));
+
+        let txt = "line one\nline two\n\nline three\n";
+        assert_eq!(output_count(txt, OutputFormat::Txt), (3, "line"));
     }
 
     /// `render_track_table` lists every track's index/language/codec/title and
