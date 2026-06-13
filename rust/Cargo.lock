@@ -1844,6 +1844,7 @@ dependencies = [
  "serde_json",
  "submate-config",
  "submate-lang",
+ "submate-media",
  "submate-node",
  "submate-paths",
  "submate-proto",
