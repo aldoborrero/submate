@@ -1492,15 +1492,13 @@ mod cli {
 
         // With no flag, a non-path config value, and no env var, the resolver
         // returns an actionable error (not a panic) naming both knobs and the
-        // download hint.
-        let prev = std::env::var_os("SUBMATE__WHISPER__MODEL");
-        std::env::remove_var("SUBMATE__WHISPER__MODEL");
+        // download hint. Clear `SUBMATE__*` (incl. `SUBMATE__WHISPER__MODEL`)
+        // under the shared env lock so this never races other env-driven tests
+        // (e.g. `config_show`'s resolution); the guard restores on drop.
+        let _env = ::parity::EnvGuard::set(&[]);
         let err = resolve_model(None, "medium")
             .expect_err("missing model must be an Err, not a panic")
             .to_string();
-        if let Some(prev) = prev {
-            std::env::set_var("SUBMATE__WHISPER__MODEL", prev);
-        }
 
         assert!(err.contains("--model"), "error must name the flag: {err}");
         assert!(
