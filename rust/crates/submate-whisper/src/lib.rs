@@ -103,6 +103,159 @@ pub enum WhisperError {
 /// PCM sample rate expected by whisper.cpp: 16 kHz, mono, f32 in `-1.0..=1.0`.
 pub const SAMPLE_RATE: u32 = 16_000;
 
+/// A whisper.cpp token's raw bytes + timing — the input to word grouping.
+///
+/// `t0`/`t1` are whisper.cpp centiseconds. `bytes` are the token's raw UTF-8
+/// bytes, which for byte-fallback tokens (routine for CJK) are only a *fragment*
+/// of a multibyte character; grouping concatenates them so the character
+/// reassembles. (Gated on `model`-or-`test` so it isn't dead code in the
+/// default, model-less build.)
+#[cfg(any(feature = "model", test))]
+struct RawToken {
+    bytes: Vec<u8>,
+    t0: i64,
+    t1: i64,
+    prob: f64,
+}
+
+/// Whether `c` belongs to a CJK script (Han, kana, Hangul, CJK
+/// punctuation/fullwidth). These scripts have no inter-word spaces, so each such
+/// character is treated as its own timed "word" — otherwise a whole Japanese
+/// segment collapses into a single word that can never be split.
+#[cfg(any(feature = "model", test))]
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3000..=0x303F   // CJK symbols & punctuation (。、「」 …)
+        | 0x3040..=0x30FF // Hiragana + Katakana
+        | 0x3400..=0x4DBF // CJK Unified Ext A
+        | 0x4E00..=0x9FFF // CJK Unified Ideographs
+        | 0xF900..=0xFAFF // CJK Compatibility Ideographs
+        | 0xFF00..=0xFFEF // Halfwidth/Fullwidth forms
+        | 0xAC00..=0xD7AF // Hangul syllables
+    )
+}
+
+/// A new word starts at `cur` when it is a leading space (whisper's `" word"`
+/// tokenization), a CJK character, or the first character after a CJK one.
+#[cfg(any(feature = "model", test))]
+fn starts_new_word(cur: char, prev: char) -> bool {
+    cur.is_whitespace() || is_cjk(cur) || is_cjk(prev)
+}
+
+/// Aggregate timing/probability over the tokens whose byte span overlaps a
+/// word's byte range `[byte_start, byte_end)`. Returns `(start_s, end_s, prob)`.
+#[cfg(any(feature = "model", test))]
+fn word_timing(
+    spans: &[(usize, usize, i64, i64, f64)],
+    byte_start: usize,
+    byte_end: usize,
+) -> (f64, f64, f64) {
+    let (mut t0, mut t1): (Option<i64>, Option<i64>) = (None, None);
+    let (mut prob_sum, mut prob_count) = (0.0_f64, 0_u32);
+    for &(ts, te, tok_t0, tok_t1, prob) in spans {
+        if ts < byte_end && te > byte_start {
+            t0 = Some(t0.map_or(tok_t0, |x| x.min(tok_t0)));
+            t1 = Some(t1.map_or(tok_t1, |x| x.max(tok_t1)));
+            prob_sum += prob;
+            prob_count += 1;
+        }
+    }
+    let to_s = |cs: i64| cs as f64 / 100.0;
+    let prob = if prob_count > 0 {
+        prob_sum / f64::from(prob_count)
+    } else {
+        0.0
+    };
+    (to_s(t0.unwrap_or(0)), to_s(t1.unwrap_or(0)), prob)
+}
+
+/// Group whisper.cpp tokens into words with per-word timing.
+///
+/// whisper.cpp emits byte-fallback tokens that split one multibyte UTF-8
+/// character (e.g. a kanji) across several tokens, so tokens cannot be decoded
+/// individually. This concatenates every token's bytes, decodes the whole
+/// segment, then splits it into words — at each leading space for
+/// space-delimited scripts, and per character for CJK — and aggregates each
+/// word's timing from the tokens its bytes cover.
+#[cfg(any(feature = "model", test))]
+fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<WhisperWord> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut spans: Vec<(usize, usize, i64, i64, f64)> = Vec::with_capacity(tokens.len());
+    for t in tokens {
+        let start = buf.len();
+        buf.extend_from_slice(&t.bytes);
+        spans.push((start, buf.len(), t.t0, t.t1, t.prob));
+    }
+
+    // Byte-fallback fragments reassemble into valid UTF-8 here; a genuinely
+    // malformed run degrades to U+FFFD instead of losing every word.
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+
+    let mut words: Vec<WhisperWord> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let word_start = chars[i].0;
+        let mut j = i + 1;
+        while j < chars.len() && !starts_new_word(chars[j].1, chars[j - 1].1) {
+            j += 1;
+        }
+        let word_end = chars.get(j).map_or(buf.len(), |&(b, _)| b);
+        let (start, end, probability) = word_timing(&spans, word_start, word_end);
+        words.push(WhisperWord {
+            word: text[word_start..word_end].to_string(),
+            start,
+            end,
+            probability,
+        });
+        i = j;
+    }
+    words
+}
+
+#[cfg(test)]
+mod word_grouping_tests {
+    use super::{group_tokens_into_words, RawToken};
+
+    fn tok(bytes: &[u8], t0: i64, t1: i64) -> RawToken {
+        RawToken { bytes: bytes.to_vec(), t0, t1, prob: 1.0 }
+    }
+    fn texts(words: &[super::WhisperWord]) -> Vec<&str> {
+        words.iter().map(|w| w.word.as_str()).collect()
+    }
+
+    #[test]
+    fn latin_splits_on_leading_space() {
+        let words = group_tokens_into_words(&[tok(b" hello", 0, 50), tok(b" world", 50, 100)]);
+        assert_eq!(texts(&words), vec![" hello", " world"]);
+        assert_eq!(words[0].start, 0.0);
+        assert_eq!(words[1].end, 1.0);
+    }
+
+    #[test]
+    fn cjk_char_split_across_byte_fallback_tokens_reassembles() {
+        // 水 = E6 B0 B4, を = E3 82 92, each emitted as three byte-fallback tokens.
+        let words = group_tokens_into_words(&[
+            tok(&[0xE6], 0, 10),
+            tok(&[0xB0], 10, 20),
+            tok(&[0xB4], 20, 30),
+            tok(&[0xE3], 30, 40),
+            tok(&[0x82], 40, 50),
+            tok(&[0x92], 50, 60),
+        ]);
+        assert_eq!(texts(&words), vec!["水", "を"]);
+        assert_eq!((words[0].start, words[0].end), (0.0, 0.3));
+        assert_eq!((words[1].start, words[1].end), (0.3, 0.6));
+    }
+
+    #[test]
+    fn whole_cjk_tokens_become_per_char_words() {
+        let words =
+            group_tokens_into_words(&[tok("水".as_bytes(), 0, 30), tok("を".as_bytes(), 30, 60)]);
+        assert_eq!(texts(&words), vec!["水", "を"]);
+    }
+}
+
 #[cfg(feature = "model")]
 mod inference {
     use super::*;
@@ -265,86 +418,45 @@ mod inference {
 
     /// Fold a segment's tokens into words.
     ///
-    /// whisper.cpp emits sub-word tokens; we start a new word whenever a token's
-    /// text begins with a space (whisper's word boundary marker) and accumulate
-    /// each word's span and mean probability from its constituent tokens.
+    /// Collects each token's raw bytes + timing (skipping special tokens) and
+    /// delegates to [`group_tokens_into_words`], which reassembles byte-fallback
+    /// fragments into characters and splits into words — per leading space for
+    /// space-delimited scripts, per character for CJK. Using the raw bytes (not
+    /// the per-token text API, which errors on a multibyte fragment) is what
+    /// gives CJK real word-level timing instead of collapsing to segment level.
     fn collect_words(
         segment: &whisper_rs::WhisperSegment<'_>,
     ) -> Result<Vec<WhisperWord>, WhisperError> {
         let n_tokens = segment.n_tokens();
-
-        let mut words: Vec<WhisperWord> = Vec::new();
-        let mut prob_sum = 0.0_f64;
-        let mut prob_count = 0_u32;
+        let mut raw: Vec<RawToken> = Vec::with_capacity(n_tokens.max(0) as usize);
 
         for tok in 0..n_tokens {
-            // whisper.cpp emits byte-fallback tokens that split one multibyte
-            // UTF-8 character (e.g. CJK) across several tokens, so a single
-            // token's bytes are often not valid UTF-8 on their own. The safe
-            // API can't hand back the raw bytes to reassemble word boundaries,
-            // and decoding each token lossily would corrupt the text into
-            // `U+FFFD` runs. So when a token fails to decode we abandon
-            // word-level timing for this whole segment and let the valid,
-            // segment-level `full_get_segment_text_lossy` carry it (the segment
-            // then has no words and falls back to its own text downstream).
-            // Latin-script transcription, whose tokens are self-contained UTF-8,
-            // is unaffected.
             let Some(token) = segment.get_token(tok) else {
                 continue;
             };
-            let text = match token.to_str() {
-                Ok(t) => t.to_owned(),
-                Err(_) => {
-                    tracing::debug!(
-                        segment = segment.segment_index(),
-                        "token text not valid UTF-8 (byte-fallback token); \
-                         using segment-level text without word timings"
-                    );
-                    return Ok(Vec::new());
-                }
-            };
-            let data = token.token_data();
-
-            // Special tokens (e.g. `[_BEG_]`) carry no real timing; skip them.
-            if text.starts_with("[_") && text.ends_with(']') {
+            // Skip special tokens (`[_BEG_]`, `[_EOT_]`, …) by their decoded
+            // form. A byte-fallback fragment decodes lossily to `U+FFFD`, which
+            // never matches the `[_…]` shape, so real text tokens are kept.
+            let lossy = token
+                .to_str_lossy()
+                .map_err(|e| WhisperError::Inference(e.to_string()))?;
+            if lossy.starts_with("[_") && lossy.ends_with(']') {
                 continue;
             }
-
-            let start = centiseconds_to_seconds(data.t0);
-            let end = centiseconds_to_seconds(data.t1);
-            let prob = data.p as f64;
-
-            let begins_word = text.starts_with(' ') || words.is_empty();
-            if begins_word {
-                finalize_probability(words.last_mut(), prob_sum, prob_count);
-                prob_sum = 0.0;
-                prob_count = 0;
-                words.push(WhisperWord {
-                    word: text,
-                    start,
-                    end,
-                    probability: 0.0,
-                });
-            } else if let Some(last) = words.last_mut() {
-                last.word.push_str(&text);
-                last.end = end;
-            }
-            prob_sum += prob;
-            prob_count += 1;
+            let bytes = token
+                .to_bytes()
+                .map_err(|e| WhisperError::Inference(e.to_string()))?
+                .to_vec();
+            let data = token.token_data();
+            raw.push(RawToken {
+                bytes,
+                t0: data.t0,
+                t1: data.t1,
+                prob: f64::from(data.p),
+            });
         }
 
-        finalize_probability(words.last_mut(), prob_sum, prob_count);
-
-        Ok(words)
-    }
-
-    /// Set the mean probability on the word being completed.
-    fn finalize_probability(word: Option<&mut WhisperWord>, prob_sum: f64, prob_count: u32) {
-        if let Some(last) = word {
-            if prob_count > 0 {
-                last.probability = prob_sum / prob_count as f64;
-            }
-        }
+        Ok(group_tokens_into_words(&raw))
     }
 
     fn detect_language(state: &whisper_rs::WhisperState) -> String {
