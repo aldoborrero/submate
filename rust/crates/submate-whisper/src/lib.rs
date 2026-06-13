@@ -357,6 +357,19 @@ impl Transcription {
     pub fn to_ass(&self) -> String {
         stable_ts::output::to_ass(&self.result, false)
     }
+
+    /// Serialize the full result as a compact JSON string, matching
+    /// `OutputFormat.JSON` (`json.dumps(result.to_dict())`).
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        stable_ts::output::to_json(&self.result)
+    }
+
+    /// The plain-text transcript (no timestamps), matching `OutputFormat.TXT`.
+    #[must_use]
+    pub fn to_txt(&self) -> String {
+        stable_ts::output::to_txt(&self.result)
+    }
 }
 
 /// A segment-level timed line of the finished transcript.

@@ -290,6 +290,24 @@ pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
     format!("{ASS_HEADER}{}", blocks.join("\n"))
 }
 
+/// `OutputFormat.JSON`: serialize the full result `to_dict()` to a compact
+/// single-line JSON string, matching submate's `json.dumps(result.to_dict())`.
+///
+/// Value-parity (not byte-parity): `serde_json` emits canonical separators
+/// (`,`/`:`) and may order keys differently from Python's `json.dumps`, but the
+/// emitted string parses back to the same `Value` as the golden `to_dict()`.
+#[must_use]
+pub fn to_json(result: &WhisperResult) -> String {
+    serde_json::to_string(&result.to_dict()).expect("to_dict() Value always serializes")
+}
+
+/// `OutputFormat.TXT`: the result's full transcript text (concatenated segment
+/// text, no timestamps), matching submate's plain-text export.
+#[must_use]
+pub fn to_txt(result: &WhisperResult) -> String {
+    result.text()
+}
+
 /// Build the SRT cue list: segment-level rows, or per-word highlight rows.
 fn srt_cues(segments: &[Segment], word_level: bool) -> Vec<OutCue> {
     if word_level {
