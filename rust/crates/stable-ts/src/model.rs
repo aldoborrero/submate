@@ -332,6 +332,19 @@ impl Segment {
         self.default_end = round_timestamp(end);
     }
 
+    /// Replace the segment's words, mirroring a `copy(new_words=...)` where the
+    /// new segment derives its `start`/`end`/`text`/`tokens` from the words.
+    /// Used by `merge_all_segments` to fold every segment's words into one.
+    pub fn set_words(&mut self, words: Vec<WordTiming>) {
+        self.words = Some(words);
+    }
+
+    /// Overwrite the wordless-segment default text (the Python `_default_text`).
+    /// Only meaningful for a segment without words.
+    pub fn set_default_text(&mut self, text: String) {
+        self.default_text = text;
+    }
+
     /// `unlock_all_words`: clear both locks on every word.
     pub fn unlock_all_words(&mut self) {
         if let Some(w) = self.words.as_mut() {
