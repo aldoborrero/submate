@@ -433,7 +433,7 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
 }
 
 /// Build the translation backend selected by `config.translation.backend`.
-fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend> {
+fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend + Send + Sync> {
     let t = &config.translation;
     submate_translate::make_backend(&submate_translate::BackendSettings {
         backend: t.backend,
@@ -446,6 +446,43 @@ fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend> {
         gemini_api_key: &t.gemini_api_key,
         gemini_model: &t.gemini_model,
     })
+}
+
+/// Build the node's translation post-step from `config.translation`.
+///
+/// Pairs the configured [`build_backend`] with the config `chunk_size`, so a job
+/// carrying a `target_language` is translated through the same backend the
+/// standalone `submate translate` command uses.
+fn build_translation_step(config: &Config) -> submate_node::TranslationStep {
+    submate_node::TranslationStep::new(
+        build_backend(config),
+        config.translation.chunk_size.max(1) as usize,
+    )
+}
+
+/// Resolve where a `transcribe --sync` result is written next to its input.
+///
+/// A plain transcribe targets `<stem>.<ext>` (the format's extension replacing
+/// the media extension): `movie.mkv` + SRT → `movie.srt`. When translating, the
+/// output is language-suffixed so it never collides with a source-language
+/// subtitle: `movie.mkv` + SRT + `es` → `movie.es.srt`.
+///
+/// The extension always follows the chosen output format, not the input's
+/// extension (the input is a media file, not a subtitle).
+fn transcribe_output_path(file: &Path, format: OutputFormat, target_lang: Option<&str>) -> PathBuf {
+    let ext = format.extension().trim_start_matches('.');
+    let stem = file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    let name = match target_lang {
+        Some(lang) => format!("{stem}.{lang}.{ext}"),
+        None => format!("{stem}.{ext}"),
+    };
+    match file.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+        _ => PathBuf::from(name),
+    }
 }
 
 /// Collect subtitle files under `path` (ports `find_subtitle_files`).
@@ -686,8 +723,14 @@ async fn transcribe_files(
         let model_path = resolve_model(args.model.as_deref(), &config.whisper.model)?;
         let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
         let processor = make_processor(dispatcher, &model_path.to_string_lossy());
+        // Only attach the translation step when this run actually translates, so
+        // a plain `transcribe --sync` keeps the node transcription-only.
+        let translation = args
+            .translate_to
+            .is_some()
+            .then(|| build_translation_step(config));
         let addr = serve_loopback(coord.clone()).await?;
-        spawn_embedded_node(format!("http://{addr}"), &settings, processor)
+        spawn_embedded_node(format!("http://{addr}"), &settings, processor, translation)
     } else {
         None
     };
@@ -755,15 +798,12 @@ async fn transcribe_files(
 
             match outcome {
                 Some(submate_proto::JobOutcome::Ok { output }) => {
-                    // Persist the produced subtitle next to the input. (The full
-                    // skip-condition + language-suffixed naming lives in
-                    // port-queue-transcription-service; this writes the result the
-                    // sync coordinator already returns so `transcribe --sync`
-                    // produces a file today.)
-                    // Extension follows the chosen format; the leading dot from
-                    // `extension()` is stripped since `with_extension` adds its own.
+                    // Persist the produced subtitle next to the input. A plain
+                    // transcribe targets `movie.<ext>`; when translating, the
+                    // output is language-suffixed (`movie.<lang>.<ext>`) so the
+                    // translated subtitle never overwrites the source-language one.
                     let out_path =
-                        file.with_extension(args.format.extension().trim_start_matches('.'));
+                        transcribe_output_path(file, args.format, args.translate_to.as_deref());
                     let (count, noun) = output_count(&output, args.format);
                     std::fs::write(&out_path, output).map_err(|e| {
                         anyhow::anyhow!("failed to write {}: {e}", out_path.display())
@@ -802,7 +842,10 @@ fn output_count(output: &str, format: OutputFormat) -> (usize, &'static str) {
         OutputFormat::Srt => (submate_subtitle::cue::parse_srt(output).len(), "cue"),
         OutputFormat::Vtt => (output.matches("-->").count(), "cue"),
         OutputFormat::Ass => (
-            output.lines().filter(|l| l.starts_with("Dialogue:")).count(),
+            output
+                .lines()
+                .filter(|l| l.starts_with("Dialogue:"))
+                .count(),
             "cue",
         ),
         OutputFormat::Json => (
@@ -991,7 +1034,8 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
             let base_url = format!("http://{addr}");
             let dispatcher = submate_node::Dispatcher::new(node_settings.runners.max(1) as usize);
             let processor = make_processor(dispatcher, &config.whisper.model);
-            spawn_embedded_node(base_url, &node_settings, processor)
+            let translation = build_translation_step(&config);
+            spawn_embedded_node(base_url, &node_settings, processor, Some(translation))
         } else {
             None
         };
@@ -1022,7 +1066,11 @@ fn cmd_node(config_file: Option<&Path>, args: NodeArgs) -> anyhow::Result<()> {
     let runners = args.runners.max(1) as usize;
     let dispatcher = Dispatcher::new(runners);
     let processor = make_processor(Dispatcher::new(runners), &config.whisper.model);
-    let agent = Agent::new(args.server.clone(), register, dispatcher, processor);
+    // A standalone node may be handed translation jobs, so it builds the same
+    // translation post-step from its own config as the embedded node does.
+    let translation = build_translation_step(&config);
+    let agent = Agent::new(args.server.clone(), register, dispatcher, processor)
+        .with_translation(translation);
 
     tracing::info!("submate node pulling work from {}", args.server);
 
@@ -1321,6 +1369,29 @@ fn hostname_node_id() -> String {
 mod cli {
     use super::*;
     use clap::CommandFactory;
+
+    /// Falsifier: the `--sync` write path language-suffixes the output only when
+    /// translating. With `--translate-to es` the SRT result lands at
+    /// `movie.es.srt`; a plain transcribe still targets `movie.srt`. The
+    /// extension follows the chosen format regardless of the media extension.
+    #[test]
+    fn translate_output_path() {
+        let file = Path::new("/media/movie.mkv");
+
+        assert_eq!(
+            transcribe_output_path(file, OutputFormat::Srt, Some("es")),
+            PathBuf::from("/media/movie.es.srt"),
+        );
+        assert_eq!(
+            transcribe_output_path(file, OutputFormat::Srt, None),
+            PathBuf::from("/media/movie.srt"),
+        );
+        // The format extension wins over the input extension, suffixed per lang.
+        assert_eq!(
+            transcribe_output_path(file, OutputFormat::Vtt, Some("ja")),
+            PathBuf::from("/media/movie.ja.vtt"),
+        );
+    }
 
     /// The clap definition is internally consistent (no overlapping flags, valid
     /// arg specs). `debug_assert` is clap's own structural validator.
@@ -1749,7 +1820,8 @@ mod cli {
     /// instead of `0 cues` for everything that is not SRT.
     #[test]
     fn output_count_per_format() {
-        let srt = "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n2\n00:00:01,000 --> 00:00:02,000\nthere\n";
+        let srt =
+            "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n2\n00:00:01,000 --> 00:00:02,000\nthere\n";
         assert_eq!(output_count(srt, OutputFormat::Srt), (2, "cue"));
 
         let vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhi\n";

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 submate-proto = { path = "../submate-proto" }
+submate-translate = { path = "../submate-translate" }
 submate-whisper = { path = "../submate-whisper" }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
