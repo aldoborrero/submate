@@ -19,7 +19,7 @@
 //! they share a single [`OpenAiCompatBackend`] built on the `async-openai`
 //! crate and distinguished only by base URL: OpenAI (the default base), Ollama
 //! (`{ollama_url}/v1`) and Gemini (the Generative Language OpenAI-compat
-//! endpoint). Anthropic has no trustworthy Rust SDK, so [`ClaudeBackend`] stays
+//! endpoint). Anthropic has no trustworthy Rust SDK, so [`AnthropicBackend`] stays
 //! a hand-rolled async-[`reqwest`] backend against the messages API.
 
 use std::future::Future;
@@ -144,7 +144,7 @@ pub struct BackendSettings<'a> {
 /// (no key needed, so a placeholder is sent); OpenAI uses the crate's default
 /// base; Gemini uses the Generative Language OpenAI-compat base ending in
 /// `/openai`, so `async-openai` appends `/chat/completions`. `Claude` keeps the
-/// native [`ClaudeBackend`].
+/// native [`AnthropicBackend`].
 pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
 
@@ -171,7 +171,7 @@ pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
             GEMINI_OPENAI_BASE,
         )),
         TranslationBackend::Claude => {
-            Box::new(ClaudeBackend::new(s.anthropic_api_key, s.claude_model))
+            Box::new(AnthropicBackend::new(s.anthropic_api_key, s.claude_model))
         }
     }
 }
@@ -373,13 +373,13 @@ struct ClaudeBlock {
 /// headers, then returns the stripped text of the first content block that
 /// carries text — mirroring the Python loop over `message.content` that returns
 /// the first block with a `text` attribute.
-pub struct ClaudeBackend {
+pub struct AnthropicBackend {
     api_key: String,
     model: String,
     base_url: String,
 }
 
-impl ClaudeBackend {
+impl AnthropicBackend {
     /// Construct a Claude backend for `model` authenticating with `api_key`
     /// against the default Anthropic base URL.
     ///
@@ -404,7 +404,7 @@ impl ClaudeBackend {
 }
 
 #[async_trait::async_trait]
-impl Backend for ClaudeBackend {
+impl Backend for AnthropicBackend {
     fn id(&self) -> &'static str {
         "claude"
     }
@@ -911,7 +911,7 @@ mod tests {
         use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
         use super::super::{
-            Backend, ClaudeBackend, OpenAiCompatBackend, DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL,
+            Backend, AnthropicBackend, OpenAiCompatBackend, DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL,
         };
 
         /// Captured request: the JSON body plus the auth/version headers each
@@ -1052,7 +1052,7 @@ mod tests {
                     "content": [{"type": "text", "text": "  hola  "}],
                 }),
                 &["x-api-key", "anthropic-version"],
-                |base| ClaudeBackend::with_base_url("sk-ant-test", DEFAULT_CLAUDE_MODEL, base),
+                |base| AnthropicBackend::with_base_url("sk-ant-test", DEFAULT_CLAUDE_MODEL, base),
             )
             .await;
 
