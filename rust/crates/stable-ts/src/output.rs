@@ -172,25 +172,36 @@ fn words2segments(words: &[(String, f64, f64)], tag: (&str, &str)) -> Vec<OutCue
         }
     }
 
-    // For each filled row, the cue text is the whole row sequence with only the
-    // matching index tagged (upstream's `add_tag(i)`).
+    // Every cue is the same untagged concatenation of all rows, with exactly one
+    // row replaced by its tagged form. Build that joined base (and each row's byte
+    // span within it) once, then per cue splice only the highlighted row's tag —
+    // O(n) total work instead of rebuilding the whole string per word.
+    let mut base = String::new();
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(filled.len());
+    for (word, _, _) in &filled {
+        let start = base.len();
+        base.push_str(word);
+        spans.push((start, base.len()));
+    }
+
     let mut cues = Vec::with_capacity(filled.len());
-    for i in 0..filled.len() {
-        let text: String = filled
-            .iter()
-            .enumerate()
-            .map(|(idx, (word, _, _))| {
-                if !word.is_empty() && word != " " && idx == i {
-                    if let Some(rest) = word.strip_prefix(' ') {
-                        format!(" {}{rest}{}", tag.0, tag.1)
-                    } else {
-                        format!("{}{word}{}", tag.0, tag.1)
-                    }
-                } else {
-                    word.clone()
-                }
-            })
-            .collect();
+    for (i, (word, _, _)) in filled.iter().enumerate() {
+        let text = if word.is_empty() || word == " " {
+            // Empty/space rows are never tagged, so the cue is just the base.
+            base.clone()
+        } else {
+            let tagged = if let Some(rest) = word.strip_prefix(' ') {
+                format!(" {}{rest}{}", tag.0, tag.1)
+            } else {
+                format!("{}{word}{}", tag.0, tag.1)
+            };
+            let (lo, hi) = spans[i];
+            let mut text = String::with_capacity(base.len() - (hi - lo) + tagged.len());
+            text.push_str(&base[..lo]);
+            text.push_str(&tagged);
+            text.push_str(&base[hi..]);
+            text
+        };
         cues.push(OutCue { text, start: filled[i].1, end: filled[i].2 });
     }
     cues
@@ -408,6 +419,37 @@ mod tests {
         assert_eq!(cues[1].start, 0.5);
         assert_eq!(cues[1].end, 0.8);
         assert_eq!(cues[1].text, " Hi there");
+    }
+
+    #[test]
+    fn to_srt_vtt_word_level_emits_per_word_blocks() {
+        // End-to-end word-level SRT through `srt_cues` -> `words2segments` ->
+        // block assembly. Three words with a gap between the 2nd and 3rd: four
+        // cues (one per word plus the inserted gap), each highlighting exactly
+        // its own word and the gap cue carrying no tag.
+        use crate::model::WhisperResult;
+        let input = serde_json::json!({
+            "segments": [{
+                "words": [
+                    {"word": " Hello", "start": 0.0, "end": 0.5},
+                    {"word": " big", "start": 0.5, "end": 1.0},
+                    {"word": " world", "start": 1.2, "end": 1.6},
+                ]
+            }]
+        });
+        let result = WhisperResult::from_value(&input);
+        let srt = to_srt_vtt(&result, true, false);
+        assert_eq!(
+            srt,
+            "1\n00:00:00,000 --> 00:00:00,500\n\
+             <font color=\"#00ff00\">Hello</font> big world\n\n\
+             2\n00:00:00,500 --> 00:00:01,000\n\
+             Hello <font color=\"#00ff00\">big</font> world\n\n\
+             3\n00:00:01,000 --> 00:00:01,200\n\
+             Hello big world\n\n\
+             4\n00:00:01,200 --> 00:00:01,600\n\
+             Hello big <font color=\"#00ff00\">world</font>",
+        );
     }
 
     #[test]
