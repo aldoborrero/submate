@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use submate_config::Config;
-use submate_media::AudioSelector;
+use submate_media::{AudioSelector, AudioTrack};
 
 mod config_show;
 mod translate_paths;
@@ -75,6 +75,8 @@ enum Command {
     Server(ServerArgs),
     /// Run a processing node that pulls work from a coordinator.
     Node(NodeArgs),
+    /// List the audio tracks in a media file.
+    Probe(ProbeArgs),
     /// Inspect and manage configuration.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -182,6 +184,12 @@ struct NodeArgs {
     logging: LoggingOpts,
 }
 
+#[derive(Debug, Args)]
+struct ProbeArgs {
+    /// Media file to inspect.
+    path: PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
     /// Print the resolved configuration.
@@ -212,6 +220,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             init_logging(&args.logging.log_level, args.logging.log_file.as_deref());
             cmd_node(cli.config_file.as_deref(), args)
         }
+        Command::Probe(args) => cmd_probe(args),
     }
 }
 
@@ -900,6 +909,61 @@ fn cmd_node(config_file: Option<&Path>, args: NodeArgs) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("node agent stopped: {e}"))
 }
 
+/// `submate probe <file>` — list the file's audio tracks.
+///
+/// A thin IO wrapper: it runs `ffprobe` via [`submate_media::get_audio_tracks`]
+/// and prints whatever [`render_track_table`] formats. All the layout logic
+/// lives in that pure renderer so it is unit-testable without invoking ffprobe.
+fn cmd_probe(args: ProbeArgs) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let tracks = runtime
+        .block_on(submate_media::get_audio_tracks(&args.path))
+        .map_err(|e| anyhow::anyhow!("failed to probe {}: {e}", args.path.display()))?;
+    println!("{}", render_track_table(&tracks, &args.path));
+    Ok(())
+}
+
+/// Render the audio-track listing for a probed file as a plain multi-line
+/// string.
+///
+/// Pure function of the probed tracks (and the file name, for the header) so it
+/// is unit-testable without running ffprobe, and reusable by the future
+/// interactive picker. Each track line shows its 0-based audio-stream index,
+/// language tag, codec, and `title` when present; the container's default track
+/// is marked with a trailing `(default)`. An empty track list yields a single
+/// "no audio tracks" line.
+fn render_track_table(tracks: &[AudioTrack], path: &Path) -> String {
+    let name = display_name(path);
+
+    if tracks.is_empty() {
+        return format!("No audio tracks in {name}");
+    }
+
+    let noun = if tracks.len() == 1 { "track" } else { "tracks" };
+    let mut out = format!("{} audio {noun} in {name}:", tracks.len());
+
+    // Pad the codec column so titles line up; the language tag is already a
+    // fixed-ish width (ISO 639), so a single space there reads cleanly.
+    let codec_width = tracks.iter().map(|t| t.codec.len()).max().unwrap_or(0);
+
+    for track in tracks {
+        out.push_str(&format!(
+            "\n  #{idx}  {lang:<3}  {codec:<codec_width$}",
+            idx = track.index,
+            lang = track.language,
+            codec = track.codec,
+        ));
+        if let Some(title) = &track.title {
+            out.push_str(&format!("  {title}"));
+        }
+        if track.default {
+            out.push_str("  (default)");
+        }
+    }
+
+    out
+}
+
 /// Build the node's [`JobProcessor`].
 ///
 /// With the `model` feature it forwards to the real whisper.cpp pipeline via
@@ -955,7 +1019,7 @@ mod cli {
         let cmd = Cli::command();
         let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
 
-        for expected in ["transcribe", "translate", "server", "node", "config"] {
+        for expected in ["transcribe", "translate", "server", "node", "probe", "config"] {
             assert!(names.contains(&expected), "missing subcommand `{expected}`");
         }
         assert!(
@@ -1141,6 +1205,85 @@ mod cli {
             result_summary(Path::new("clip.mp4"), Path::new("clip.srt"), 0),
             "✓ clip.mp4 → clip.srt (0 cues)",
         );
+    }
+
+    /// `render_track_table` lists every track's index/language/codec/title and
+    /// marks exactly the default track, without invoking ffprobe.
+    #[test]
+    fn probe_table_renders_tracks() {
+        let tracks = vec![
+            AudioTrack {
+                index: 0,
+                language: "jpn".to_string(),
+                codec: "ac3".to_string(),
+                default: true,
+                title: Some("Main".to_string()),
+            },
+            AudioTrack {
+                index: 1,
+                language: "eng".to_string(),
+                codec: "aac".to_string(),
+                default: false,
+                title: None,
+            },
+            AudioTrack {
+                index: 2,
+                language: "und".to_string(),
+                codec: "ac3".to_string(),
+                default: false,
+                title: Some("Commentary".to_string()),
+            },
+        ];
+
+        let out = render_track_table(&tracks, Path::new("/media/movie.mkv"));
+
+        // Header reports the count and the bare file name.
+        assert!(out.contains("3 audio tracks in movie.mkv:"), "header: {out}");
+
+        // Each track's index, language and codec is listed.
+        for track in &tracks {
+            assert!(
+                out.contains(&format!("#{}", track.index)),
+                "missing index #{}: {out}",
+                track.index
+            );
+            assert!(
+                out.contains(&track.language),
+                "missing language {}: {out}",
+                track.language
+            );
+            assert!(
+                out.contains(&track.codec),
+                "missing codec {}: {out}",
+                track.codec
+            );
+        }
+
+        // Titles are shown when present.
+        assert!(out.contains("Main"), "missing title `Main`: {out}");
+        assert!(
+            out.contains("Commentary"),
+            "missing title `Commentary`: {out}"
+        );
+
+        // Exactly the default track (index 0) is marked.
+        assert_eq!(
+            out.matches("(default)").count(),
+            1,
+            "exactly one default marker expected: {out}"
+        );
+        let default_line = out
+            .lines()
+            .find(|l| l.contains("(default)"))
+            .expect("a line marked default");
+        assert!(
+            default_line.contains("#0"),
+            "the marked default must be track #0: {default_line}"
+        );
+
+        // An empty track list degrades to a single no-tracks line.
+        let empty = render_track_table(&[], Path::new("clip.mp4"));
+        assert_eq!(empty, "No audio tracks in clip.mp4");
     }
 
     /// In non-TTY mode the renderer emits plain `"<name>: NN%"` lines with no
