@@ -42,3 +42,16 @@ but the regex above still matches them.
 - `grep -Eq "'?porter-scout'?: \(\{" .claude/grind.config.js` → matches (key present).
 - `grep -q "'porter-scout'" .claude/grind.config.js` → present in rotation array.
 - Conclusion: no real drift; round proceeded with `stop_requested:false`.
+
+## verification round 2 (2026-06-13)
+
+Specialist `porter-scout` again tripped the literal `-F` check (`DRIFT`),
+again a false positive:
+
+- `.claude/grind.config.js:68` rotation array contains `'porter-scout'`.
+- `.claude/grind.config.js:174` prompts map has `'porter-scout': ({ … }) => …`.
+- `grep -Eq "'?porter-scout'?: \(\{"` → matches.
+
+Conclusion: no real drift; round proceeded with `stop_requested:false`. The
+fixed-string drift check should be replaced with the quote-tolerant regex
+above so this stops recurring every porter-scout round.
