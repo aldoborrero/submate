@@ -143,6 +143,172 @@ pub fn get_audio_track_by_language<'a>(
         .find(|track| track.language.to_lowercase() == language)
 }
 
+/// A typed audio-track selector parsed from the CLI `-a`/`--audio` value.
+///
+/// The grammar is deliberately closed (it is not a query language): a bare
+/// language code or `lang:<code>`, `track:<n>`, `default`, or `auto`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioSelector {
+    /// First track whose language tag matches (case-insensitive).
+    Lang(String),
+    /// The audio track at this 0-based audio-stream index.
+    Index(usize),
+    /// The container's default-disposition track (falls back to index 0).
+    Default,
+    /// Smart default: one track → it; else the default-flagged track; else 0.
+    Auto,
+}
+
+impl std::str::FromStr for AudioSelector {
+    type Err = SelectorParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        // An empty value behaves like `auto`, matching the omitted-flag default.
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
+            return Ok(AudioSelector::Auto);
+        }
+        if trimmed.eq_ignore_ascii_case("default") {
+            return Ok(AudioSelector::Default);
+        }
+        if let Some(rest) = trimmed.strip_prefix("track:") {
+            let index = rest
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| SelectorParseError(s.to_string()))?;
+            return Ok(AudioSelector::Index(index));
+        }
+        if let Some(rest) = trimmed.strip_prefix("lang:") {
+            let code = rest.trim();
+            if code.is_empty() {
+                return Err(SelectorParseError(s.to_string()));
+            }
+            return Ok(AudioSelector::Lang(code.to_string()));
+        }
+        // A bare token is treated as a language code, but reject anything that
+        // looks like a malformed `prefix:value` form so typos surface early.
+        if trimmed.contains(':') {
+            return Err(SelectorParseError(s.to_string()));
+        }
+        Ok(AudioSelector::Lang(trimmed.to_string()))
+    }
+}
+
+/// A value passed to `-a`/`--audio` that does not match the selector grammar.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "invalid audio selector '{0}'; expected a language code, 'lang:<code>', \
+     'track:<n>', 'default', or 'auto'"
+)]
+pub struct SelectorParseError(pub String);
+
+/// Reasons [`resolve_audio_selector`] could not choose a track.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SelectError {
+    /// No track carried a language tag matching the requested code.
+    #[error("no audio track for language '{requested}'; available: {available}")]
+    NoLanguageMatch {
+        /// The requested language code.
+        requested: String,
+        /// Comma-separated list of the languages actually present.
+        available: String,
+    },
+
+    /// The requested track index was outside the available range.
+    #[error("audio track index {requested} out of range; valid range is 0..={max}")]
+    IndexOutOfRange {
+        /// The requested 0-based index.
+        requested: usize,
+        /// The highest valid index (`tracks.len() - 1`).
+        max: usize,
+    },
+
+    /// There were no audio tracks at all to choose from.
+    #[error("no audio tracks available")]
+    NoTracks,
+}
+
+/// Resolve an [`AudioSelector`] against the probed `tracks`, returning the
+/// chosen [`AudioTrack::index`].
+///
+/// Pure and unit-testable: it performs no I/O. Resolution rules:
+/// - `Lang` → first case-insensitive language match; no match → error listing
+///   the available languages.
+/// - `Index` → bounds-checked against `tracks`; out of range → error naming the
+///   valid range.
+/// - `Default` → the `default == true` track; none flagged → index 0.
+/// - `Auto` → single track → it; else the default-flagged track; else index 0.
+///
+/// When a `Lang` selector matches several tracks the first is returned; callers
+/// are expected to note the ambiguity (the resolver itself stays silent).
+pub fn resolve_audio_selector(
+    tracks: &[AudioTrack],
+    sel: &AudioSelector,
+) -> Result<usize, SelectError> {
+    if tracks.is_empty() {
+        return Err(SelectError::NoTracks);
+    }
+
+    match sel {
+        AudioSelector::Lang(code) => {
+            let wanted = code.to_lowercase();
+            tracks
+                .iter()
+                .find(|t| t.language.to_lowercase() == wanted)
+                .map(|t| t.index)
+                .ok_or_else(|| SelectError::NoLanguageMatch {
+                    requested: code.clone(),
+                    available: tracks
+                        .iter()
+                        .map(|t| t.language.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })
+        }
+        AudioSelector::Index(index) => tracks
+            .iter()
+            .find(|t| t.index == *index)
+            .map(|t| t.index)
+            .ok_or(SelectError::IndexOutOfRange {
+                requested: *index,
+                max: tracks.len() - 1,
+            }),
+        AudioSelector::Default => Ok(default_or_first(tracks)),
+        AudioSelector::Auto => {
+            if tracks.len() == 1 {
+                Ok(tracks[0].index)
+            } else {
+                Ok(default_or_first(tracks))
+            }
+        }
+    }
+}
+
+/// Index of the default-flagged track, or the first track when none is flagged.
+fn default_or_first(tracks: &[AudioTrack]) -> usize {
+    tracks
+        .iter()
+        .find(|t| t.default)
+        .map(|t| t.index)
+        .unwrap_or(tracks[0].index)
+}
+
+/// Whether several tracks match a `Lang` selector — used by callers to log a
+/// one-line ambiguity note. Returns `false` for non-`Lang` selectors.
+pub fn lang_match_is_ambiguous(tracks: &[AudioTrack], sel: &AudioSelector) -> bool {
+    match sel {
+        AudioSelector::Lang(code) => {
+            let wanted = code.to_lowercase();
+            tracks
+                .iter()
+                .filter(|t| t.language.to_lowercase() == wanted)
+                .count()
+                > 1
+        }
+        _ => false,
+    }
+}
+
 /// Extract audio-track information from a media file via `ffprobe`.
 ///
 /// Ports `get_audio_tracks` in `submate/media.py`. Runs
@@ -280,7 +446,7 @@ pub enum PreparedAudio {
 /// can still proceed against the whole file.
 pub async fn prepare_audio_for_transcription(
     file_path: &Path,
-    language: Option<&str>,
+    selector: Option<&str>,
 ) -> PreparedAudio {
     let fallback = || PreparedAudio::Path(file_path.to_path_buf());
 
@@ -305,17 +471,46 @@ pub async fn prepare_audio_for_transcription(
         return fallback();
     }
 
-    // Prefer a language match; fall back to the first track otherwise.
-    let selected = language
-        .and_then(|lang| get_audio_track_by_language(&tracks, lang))
-        .unwrap_or(&tracks[0]);
+    // The selector string was validated at the CLI boundary; an unparseable
+    // value here (e.g. from a stale queued job) degrades to `Auto` rather than
+    // failing the whole transcription. `None`/empty also mean `Auto`.
+    let selector = selector
+        .and_then(|raw| match raw.parse::<AudioSelector>() {
+            Ok(sel) => Some(sel),
+            Err(err) => {
+                tracing::warn!(%err, "ignoring invalid audio selector, using auto");
+                None
+            }
+        })
+        .unwrap_or(AudioSelector::Auto);
+
+    let index = match resolve_audio_selector(&tracks, &selector) {
+        Ok(index) => index,
+        Err(err) => {
+            tracing::warn!(
+                path = %file_path.display(),
+                error = %err,
+                "audio selector did not resolve, falling back to direct path",
+            );
+            return fallback();
+        }
+    };
+
+    if lang_match_is_ambiguous(&tracks, &selector) {
+        tracing::info!(
+            path = %file_path.display(),
+            selected = index,
+            "multiple audio tracks match the requested language; using the first",
+        );
+    }
+
     tracing::debug!(
         path = %file_path.display(),
-        index = selected.index,
+        index,
         "extracting selected audio track",
     );
 
-    match extract_audio_track_to_memory(file_path, selected.index).await {
+    match extract_audio_track_to_memory(file_path, index).await {
         Ok(pcm) => PreparedAudio::Pcm(pcm),
         Err(err) => {
             tracing::warn!(
@@ -482,6 +677,167 @@ mod parity {
                 },
             ],
         );
+    }
+
+    fn track(index: usize, language: &str, default: bool) -> AudioTrack {
+        AudioTrack {
+            index,
+            language: language.to_string(),
+            codec: "aac".to_string(),
+            default,
+            title: None,
+        }
+    }
+
+    #[test]
+    fn audio_selector_parses_grammar() {
+        assert_eq!(
+            "ja".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Lang("ja".to_string()),
+        );
+        assert_eq!(
+            "lang:ja".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Lang("ja".to_string()),
+        );
+        assert_eq!(
+            "track:2".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Index(2),
+        );
+        assert_eq!(
+            "default".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Default,
+        );
+        assert_eq!("auto".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
+        assert_eq!("".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
+        // Case-insensitive keywords.
+        assert_eq!("AUTO".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
+        assert_eq!(
+            "Default".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Default,
+        );
+    }
+
+    #[test]
+    fn audio_selector_rejects_malformed() {
+        assert!("track:abc".parse::<AudioSelector>().is_err());
+        assert!("track:".parse::<AudioSelector>().is_err());
+        assert!("lang:".parse::<AudioSelector>().is_err());
+        // A bare token containing a colon is a malformed prefix, not a language.
+        assert!("foo:bar".parse::<AudioSelector>().is_err());
+    }
+
+    #[test]
+    fn audio_selector_lang_picks_first_of_several_matches() {
+        let tracks = [
+            track(0, "eng", false),
+            track(1, "jpn", false),
+            track(2, "jpn", true),
+        ];
+        let sel = AudioSelector::Lang("ja".to_string());
+        // No "ja" track; "jpn" is the real tag, so this should error.
+        assert!(matches!(
+            resolve_audio_selector(&tracks, &sel),
+            Err(SelectError::NoLanguageMatch { .. }),
+        ));
+
+        let sel = AudioSelector::Lang("JPN".to_string());
+        assert_eq!(resolve_audio_selector(&tracks, &sel).unwrap(), 1);
+        assert!(lang_match_is_ambiguous(&tracks, &sel));
+    }
+
+    #[test]
+    fn audio_selector_lang_no_match_lists_available() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        let sel = AudioSelector::Lang("spa".to_string());
+        match resolve_audio_selector(&tracks, &sel) {
+            Err(SelectError::NoLanguageMatch {
+                requested,
+                available,
+            }) => {
+                assert_eq!(requested, "spa");
+                assert_eq!(available, "eng, jpn");
+            }
+            other => panic!("expected NoLanguageMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn audio_selector_index_bounds_checked() {
+        let tracks = [
+            track(0, "eng", false),
+            track(1, "jpn", false),
+            track(2, "fra", false),
+        ];
+        assert_eq!(
+            resolve_audio_selector(&tracks, &AudioSelector::Index(2)).unwrap(),
+            2,
+        );
+        match resolve_audio_selector(&tracks, &AudioSelector::Index(9)) {
+            Err(SelectError::IndexOutOfRange { requested, max }) => {
+                assert_eq!(requested, 9);
+                assert_eq!(max, 2);
+            }
+            other => panic!("expected IndexOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn audio_selector_default_falls_back_to_index_zero() {
+        let tracks = [track(0, "eng", false), track(1, "jpn", false)];
+        assert_eq!(
+            resolve_audio_selector(&tracks, &AudioSelector::Default).unwrap(),
+            0,
+        );
+
+        let flagged = [track(0, "eng", false), track(1, "jpn", true)];
+        assert_eq!(
+            resolve_audio_selector(&flagged, &AudioSelector::Default).unwrap(),
+            1,
+        );
+    }
+
+    #[test]
+    fn audio_selector_auto_prefers_default_on_multi_track() {
+        let single = [track(0, "eng", false)];
+        assert_eq!(
+            resolve_audio_selector(&single, &AudioSelector::Auto).unwrap(),
+            0,
+        );
+
+        let multi = [
+            track(0, "eng", false),
+            track(1, "jpn", true),
+            track(2, "fra", false),
+        ];
+        assert_eq!(
+            resolve_audio_selector(&multi, &AudioSelector::Auto).unwrap(),
+            1,
+        );
+
+        let no_flag = [track(0, "eng", false), track(1, "jpn", false)];
+        assert_eq!(
+            resolve_audio_selector(&no_flag, &AudioSelector::Auto).unwrap(),
+            0,
+        );
+    }
+
+    #[test]
+    fn audio_selector_empty_tracks_errors() {
+        assert!(matches!(
+            resolve_audio_selector(&[], &AudioSelector::Auto),
+            Err(SelectError::NoTracks),
+        ));
+    }
+
+    #[test]
+    fn lang_match_ambiguity_only_for_lang() {
+        let tracks = [track(0, "jpn", false), track(1, "jpn", false)];
+        assert!(!lang_match_is_ambiguous(&tracks, &AudioSelector::Auto));
+        assert!(!lang_match_is_ambiguous(&tracks, &AudioSelector::Default));
+        assert!(lang_match_is_ambiguous(
+            &tracks,
+            &AudioSelector::Lang("jpn".to_string())
+        ));
     }
 }
 

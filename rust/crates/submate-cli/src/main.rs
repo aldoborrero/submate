@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand};
 use submate_config::Config;
+use submate_media::AudioSelector;
 
 mod config_show;
 mod translate_paths;
@@ -89,8 +90,13 @@ struct TranscribeArgs {
     #[arg(short = 'm', long, value_name = "PATH")]
     model: Option<PathBuf>,
 
-    /// Select the audio track by language code (e.g. `ja` for a Japanese dub).
-    #[arg(short = 'a', long)]
+    /// Select the audio track. Accepts a language code (e.g. `ja`),
+    /// `lang:<code>`, `track:<n>` (0-based), `default`, or `auto`.
+    #[arg(short = 'a', long, value_name = "SELECTOR")]
+    audio: Option<AudioSelector>,
+
+    /// Deprecated alias for `--audio <code>`; selects a track by language code.
+    #[arg(long, value_name = "CODE", hide = true)]
     audio_language: Option<String>,
 
     /// Translate the generated subtitles to this target language.
@@ -507,6 +513,18 @@ fn resolve_model(flag: Option<&Path>, config_model: &str) -> anyhow::Result<Path
     )
 }
 
+/// Serialize an [`AudioSelector`] back to its canonical wire string so it can
+/// flow through the existing `Option<String>` job plumbing and be re-parsed by
+/// `prepare_audio_for_transcription` on the processing node.
+fn audio_selector_to_string(sel: &AudioSelector) -> String {
+    match sel {
+        AudioSelector::Lang(code) => format!("lang:{code}"),
+        AudioSelector::Index(n) => format!("track:{n}"),
+        AudioSelector::Default => "default".to_string(),
+        AudioSelector::Auto => "auto".to_string(),
+    }
+}
+
 /// Async core of `transcribe`: enqueue every file, and in `--sync` mode run a
 /// local coordinator + embedded node and wait for each job to complete.
 async fn transcribe_files(
@@ -548,6 +566,25 @@ async fn transcribe_files(
         TranscriptionTask::Transcribe
     };
 
+    // `--audio` is the typed selector; `--audio-language` is a hidden deprecated
+    // alias that maps to `Lang(..)`. Prefer `--audio` when both are given.
+    let selector: Option<AudioSelector> = match (&args.audio, &args.audio_language) {
+        (Some(sel), _) => Some(sel.clone()),
+        (None, Some(lang)) => {
+            tracing::warn!("--audio-language is deprecated; use --audio <code> (or lang:<code>)");
+            Some(AudioSelector::Lang(lang.clone()))
+        }
+        (None, None) => None,
+    };
+    // The selector flows downstream as a string through the existing job
+    // plumbing; `prepare_audio_for_transcription` re-parses it to pick the
+    // track. A bare `Lang` also serves as whisper's language-forcing hint.
+    let selector_str = selector.as_ref().map(audio_selector_to_string);
+    let whisper_hint = match &selector {
+        Some(AudioSelector::Lang(code)) => Some(code.clone()),
+        _ => None,
+    };
+
     // In sync mode, bring up an embedded node draining only the jobs we enqueue.
     let node = if args.sync {
         let settings = EmbeddedNodeSettings {
@@ -576,13 +613,13 @@ async fn transcribe_files(
         let opts = JobOpts {
             model,
             device,
-            source_language: args.audio_language.clone(),
+            source_language: whisper_hint.clone(),
             target_language: args.translate_to.clone(),
             translation_backend: None,
         };
         let source = AudioSource::File {
             path: file.clone(),
-            language: args.audio_language.clone(),
+            language: selector_str.clone(),
         };
         let job_id = coord
             .enqueue_with_audio(task, &opts, source)
@@ -1016,6 +1053,72 @@ mod cli {
                 && err.contains("huggingface.co/ggerganov/whisper.cpp"),
             "error must include the download hint: {err}"
         );
+    }
+
+    fn parse_audio(arg: &str) -> AudioSelector {
+        let cli = Cli::try_parse_from(["submate", "transcribe", "-a", arg, "movie.mkv"])
+            .unwrap_or_else(|e| panic!("`-a {arg}` should parse: {e}"));
+        let Command::Transcribe(args) = cli.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        args.audio.expect("-a should populate `audio`")
+    }
+
+    /// `-a` parses each grammar form into the right [`AudioSelector`] via clap's
+    /// `FromStr` plumbing, and a malformed value is rejected.
+    #[test]
+    fn audio_selector_flag_parses_grammar() {
+        assert_eq!(parse_audio("ja"), AudioSelector::Lang("ja".to_string()));
+        assert_eq!(parse_audio("lang:ja"), AudioSelector::Lang("ja".to_string()));
+        assert_eq!(parse_audio("track:2"), AudioSelector::Index(2));
+        assert_eq!(parse_audio("default"), AudioSelector::Default);
+        assert_eq!(parse_audio("auto"), AudioSelector::Auto);
+
+        assert!(
+            Cli::try_parse_from(["submate", "transcribe", "-a", "track:abc", "movie.mkv"])
+                .is_err(),
+            "a malformed selector must be rejected at parse time"
+        );
+    }
+
+    /// `--audio-language` stays as a hidden deprecated alias mapping to `Lang`,
+    /// and the canonical string round-trips back through `FromStr`.
+    #[test]
+    fn audio_language_alias_and_canonical_string() {
+        let cli = Cli::try_parse_from([
+            "submate",
+            "transcribe",
+            "--audio-language",
+            "fr",
+            "movie.mkv",
+        ])
+        .expect("--audio-language alias should still parse");
+        let Command::Transcribe(args) = cli.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        assert_eq!(args.audio, None);
+        assert_eq!(args.audio_language.as_deref(), Some("fr"));
+
+        // The hidden alias is not advertised in help output.
+        let hidden = Cli::command()
+            .get_subcommands()
+            .find(|c| c.get_name() == "transcribe")
+            .expect("transcribe subcommand")
+            .get_arguments()
+            .find(|a| a.get_long() == Some("audio-language"))
+            .expect("audio-language arg exists")
+            .is_hide_set();
+        assert!(hidden, "--audio-language must be hidden");
+
+        for sel in [
+            AudioSelector::Lang("ja".to_string()),
+            AudioSelector::Index(3),
+            AudioSelector::Default,
+            AudioSelector::Auto,
+        ] {
+            let s = audio_selector_to_string(&sel);
+            assert_eq!(s.parse::<AudioSelector>().unwrap(), sel);
+        }
     }
 
     /// The success summary formatter renders just the file names plus the cue
