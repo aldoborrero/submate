@@ -266,8 +266,19 @@ impl<P: JobProcessor> Agent<P> {
     /// running jobs through `dispatcher` + `processor` with default pacing.
     ///
     /// A trailing slash on `base_url` is stripped so endpoint paths join cleanly.
-    pub fn new(base_url: impl Into<String>, register: NodeRegister, dispatcher: Dispatcher, processor: P) -> Self {
-        Self::with_config(base_url, register, dispatcher, processor, AgentConfig::default())
+    pub fn new(
+        base_url: impl Into<String>,
+        register: NodeRegister,
+        dispatcher: Dispatcher,
+        processor: P,
+    ) -> Self {
+        Self::with_config(
+            base_url,
+            register,
+            dispatcher,
+            processor,
+            AgentConfig::default(),
+        )
     }
 
     /// Like [`new`](Agent::new) but with explicit backoff/poll [`AgentConfig`].
@@ -407,7 +418,12 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
     /// Fetch audio, run the processor, and report the terminal result. A
     /// processing failure is reported as a failed [`JobResult`] (not an
     /// `AgentError`) so one bad clip never stops the node.
-    async fn run_job(&self, job_id: &str, audio_url: &str, opts: &JobOpts) -> Result<(), AgentError> {
+    async fn run_job(
+        &self,
+        job_id: &str,
+        audio_url: &str,
+        opts: &JobOpts,
+    ) -> Result<(), AgentError> {
         let pcm = self.fetch_audio(audio_url).await?;
         let outcome = match self.processor.process(opts, pcm).await {
             Ok(output) => JobOutcome::Ok { output },
@@ -512,7 +528,11 @@ impl<P: JobProcessor, S: Sleeper> Agent<P, S> {
     }
 
     /// Treat a `204` as success and any other code as a contract error.
-    async fn expect_no_content(&self, resp: reqwest::Response, endpoint: &str) -> Result<(), AgentError> {
+    async fn expect_no_content(
+        &self,
+        resp: reqwest::Response,
+        endpoint: &str,
+    ) -> Result<(), AgentError> {
         if resp.status() == reqwest::StatusCode::NO_CONTENT || resp.status().is_success() {
             Ok(())
         } else {
@@ -601,12 +621,15 @@ pub fn whisper_processor(
     dispatcher: Dispatcher,
     model_path: impl Into<String>,
 ) -> impl JobProcessor {
+    use submate_proto::OutputFormat;
+
     install_whisper_logging();
     let model_path = model_path.into();
     move |opts: &JobOpts, pcm: Vec<u8>| {
         let dispatcher = dispatcher.clone();
         let model_path = model_path.clone();
         let language = opts.source_language.clone();
+        let output_format = opts.output_format;
         async move {
             let samples = pcm_s16le_to_f32(&pcm);
             let options = submate_whisper::TranscribeOptions {
@@ -614,8 +637,9 @@ pub fn whisper_processor(
                 task: submate_whisper::Task::Transcribe,
             };
             // Decode, then run the full subtitle assembly (regroup -> suppress ->
-            // SRT formatting) so the job output is a real timestamped SRT, not raw
-            // text. The assembly stages are the stable-ts slice (already ported).
+            // output formatting) so the job output is a real assembled result, not
+            // raw text. The assembly stages are the stable-ts slice (already
+            // ported); the final serialization honors the job's requested format.
             let raw = dispatcher
                 .transcribe_pcm(model_path, samples.clone(), options)
                 .await
@@ -623,7 +647,13 @@ pub fn whisper_processor(
             let assembled =
                 submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &samples)
                     .map_err(|e| e.to_string())?;
-            Ok(assembled.to_srt_vtt(false))
+            Ok(match output_format {
+                OutputFormat::Srt => assembled.to_srt_vtt(false),
+                OutputFormat::Vtt => assembled.to_srt_vtt(true),
+                OutputFormat::Ass => assembled.to_ass(),
+                OutputFormat::Json => assembled.to_json(),
+                OutputFormat::Txt => assembled.to_txt(),
+            })
         }
     }
 }
@@ -854,6 +884,7 @@ mod agent_tests {
             source_language: None,
             target_language: None,
             translation_backend: None,
+            output_format: submate_proto::OutputFormat::default(),
         }
     }
 
@@ -882,11 +913,9 @@ mod agent_tests {
         // register → token
         Mock::given(method("POST"))
             .and(path("/nodes/register"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(NodeRegistered {
-                    token: "tok-xyz".into(),
-                }),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(NodeRegistered {
+                token: "tok-xyz".into(),
+            }))
             .mount(&server)
             .await;
 
@@ -962,7 +991,11 @@ mod agent_tests {
         assert_eq!(*seen_pcm.lock().unwrap(), audio_bytes);
 
         // The posted result carried the processor's subtitle output.
-        let result = posted_result.lock().unwrap().clone().expect("no result posted");
+        let result = posted_result
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("no result posted");
         assert_eq!(result.job_id, "job-1");
         assert!(
             matches!(result.outcome, JobOutcome::Ok { output } if output.contains("hello")),
@@ -973,7 +1006,10 @@ mod agent_tests {
         // reports no job (the "on a 204 it long-polls again" branch).
         let ran_again = agent.poll_once().await.expect("second poll failed");
         assert!(!ran_again, "204 poll should not process a job");
-        assert!(work_calls.load(Ordering::SeqCst) >= 2, "second poll never hit request-work");
+        assert!(
+            work_calls.load(Ordering::SeqCst) >= 2,
+            "second poll never hit request-work"
+        );
     }
 
     /// A processing failure is reported back as a failed `JobResult` (ok:false),
@@ -984,7 +1020,9 @@ mod agent_tests {
 
         Mock::given(method("POST"))
             .and(path("/nodes/register"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(NodeRegistered { token: "t".into() }))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(NodeRegistered { token: "t".into() }),
+            )
             .mount(&server)
             .await;
 
@@ -1052,16 +1090,25 @@ mod agent_tests {
             idle_poll_delay: Duration::from_millis(10),
         };
         let processor = |_opts: &JobOpts, _pcm: Vec<u8>| async { Ok::<_, String>(String::new()) };
-        let agent =
-            Agent::with_config(dead_url, test_register(), Dispatcher::new(1), processor, config)
-                .with_sleeper(sleeper.clone());
+        let agent = Agent::with_config(
+            dead_url,
+            test_register(),
+            Dispatcher::new(1),
+            processor,
+            config,
+        )
+        .with_sleeper(sleeper.clone());
 
         // The register retry loop never returns against a dead server, so drive
         // it under a timeout and inspect the backoff schedule it recorded.
         let _ = tokio::time::timeout(Duration::from_secs(2), agent.run()).await;
 
         let delays = sleeper.delays.lock().unwrap().clone();
-        assert!(delays.len() >= 3, "expected several backoff sleeps, got {}", delays.len());
+        assert!(
+            delays.len() >= 3,
+            "expected several backoff sleeps, got {}",
+            delays.len()
+        );
 
         // Exponential growth: base*2^attempt capped at reconnect_max, plus jitter
         // up to that capped value (so at most 2x the cap).

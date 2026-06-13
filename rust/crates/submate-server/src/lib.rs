@@ -652,9 +652,7 @@ where
     };
     let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
     let agent = Agent::new(base_url, register, dispatcher, processor);
-    Some(tokio::spawn(
-        async move { agent.run().await },
-    ))
+    Some(tokio::spawn(async move { agent.run().await }))
 }
 
 /// Build the full server [`Router`], mounting the always-on ops routes plus any
@@ -1049,10 +1047,7 @@ mod tests {
             body["detail"], "Invalid request - not from Jellyfin server",
             "FastAPI error bodies use the `detail` key, not `error`"
         );
-        assert!(
-            body.get("error").is_none(),
-            "must not use the `error` key"
-        );
+        assert!(body.get("error").is_none(), "must not use the `error` key");
     }
 
     #[cfg(feature = "jellyfin")]
@@ -1125,6 +1120,7 @@ mod tests {
             source_language: None,
             target_language: None,
             translation_backend: None,
+            output_format: submate_proto::OutputFormat::default(),
         }
     }
 
@@ -1527,13 +1523,19 @@ mod tests {
 
         // Synthesize a single-track media file (1s silence, 16k mono). Written
         // to a temp path, not a fixture.
-        let path = std::env::temp_dir().join(format!(
-            "submate-server-audio-{}.mka",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("submate-server-audio-{}.mka", std::process::id()));
         let gen = std::process::Command::new("ffmpeg")
             .args([
-                "-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "aac",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=16000:cl=mono",
+                "-t",
+                "1",
+                "-c:a",
+                "aac",
             ])
             .arg(&path)
             .output()
@@ -1720,8 +1722,8 @@ mod tests {
             tasks: vec![TranscriptionTask::Transcribe],
         };
         let base_url = format!("http://{addr}");
-        let node = spawn_embedded_node(&base_url, &settings, processor)
-            .expect("embedded node enabled");
+        let node =
+            spawn_embedded_node(&base_url, &settings, processor).expect("embedded node enabled");
 
         // Park on the result; the embedded node drains the queue and posts it.
         let outcome = tokio::time::timeout(

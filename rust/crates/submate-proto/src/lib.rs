@@ -17,6 +17,42 @@
 use serde::{Deserialize, Serialize};
 use submate_types::{Device, TranscriptionTask, TranslationBackend, WhisperModel};
 
+/// Subtitle output format a node should emit for a job.
+///
+/// Carried on [`JobOpts`] so both the synchronous and queued paths render the
+/// format the user picked at the CLI. The wire strings are the bare format
+/// names (`"srt"`, `"vtt"`, …); the field serde-defaults to [`OutputFormat::Srt`]
+/// so older payloads (and the queued path before this field existed) keep
+/// producing SRT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    /// SubRip subtitles (`.srt`).
+    #[default]
+    Srt,
+    /// WebVTT subtitles (`.vtt`).
+    Vtt,
+    /// Advanced SubStation Alpha subtitles (`.ass`).
+    Ass,
+    /// JSON dump of the full transcription result (`.json`).
+    Json,
+    /// Plain-text transcript, no timestamps (`.txt`).
+    Txt,
+}
+
+impl OutputFormat {
+    /// File extension including the leading dot (e.g. `".srt"`).
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Srt => ".srt",
+            OutputFormat::Vtt => ".vtt",
+            OutputFormat::Ass => ".ass",
+            OutputFormat::Json => ".json",
+            OutputFormat::Txt => ".txt",
+        }
+    }
+}
+
 /// Node → server: announce capabilities and claim a coordination token.
 ///
 /// Mirrors `POST /nodes/register` (`{id, gpu, runners, tasks}`). `runners` is the
@@ -99,6 +135,10 @@ pub struct JobOpts {
     /// LLM backend for translation jobs; `None` for plain transcription.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translation_backend: Option<TranslationBackend>,
+    /// Subtitle format the node should emit; defaults to [`OutputFormat::Srt`]
+    /// so payloads without this field keep producing SRT.
+    #[serde(default)]
+    pub output_format: OutputFormat,
 }
 
 /// Node → server: in-flight progress for a running job.
@@ -249,6 +289,7 @@ mod tests {
                 source_language: Some("ja".into()),
                 target_language: Some("en".into()),
                 translation_backend: Some(TranslationBackend::Claude),
+                output_format: OutputFormat::Ass,
             },
         });
     }
@@ -266,6 +307,7 @@ mod tests {
             source_language: None,
             target_language: None,
             translation_backend: None,
+            output_format: OutputFormat::default(),
         });
     }
 
@@ -321,6 +363,25 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, r#"{"job_id":"j","ok":true,"output":"x"}"#);
+    }
+
+    /// A `JobOpts` payload without `output_format` deserializes to the SRT
+    /// default, so pre-field producers (and the queued path) keep emitting SRT.
+    #[test]
+    fn job_opts_output_format_defaults_to_srt() {
+        let opts: JobOpts =
+            serde_json::from_str(r#"{"model":"medium","device":"auto"}"#).expect("deserialize");
+        assert_eq!(opts.output_format, OutputFormat::Srt);
+    }
+
+    /// Each `OutputFormat` maps to its dotted file extension.
+    #[test]
+    fn output_format_extension() {
+        assert_eq!(OutputFormat::Srt.extension(), ".srt");
+        assert_eq!(OutputFormat::Vtt.extension(), ".vtt");
+        assert_eq!(OutputFormat::Ass.extension(), ".ass");
+        assert_eq!(OutputFormat::Json.extension(), ".json");
+        assert_eq!(OutputFormat::Txt.extension(), ".txt");
     }
 
     /// `JobResult` failure carries `ok:false` with `error`.
