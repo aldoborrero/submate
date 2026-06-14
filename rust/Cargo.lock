@@ -2141,19 +2141,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "submate-jellyfin"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "submate-lang"
 version = "0.1.0"
 dependencies = [
@@ -2238,7 +2225,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "submate-config",
- "submate-jellyfin",
  "submate-media",
  "submate-node",
  "submate-proto",

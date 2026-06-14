@@ -12,7 +12,6 @@ members = [
   "crates/submate-whisper",
   "crates/submate-node",
   "crates/submate-translate",
-  "crates/submate-jellyfin",
   "crates/submate-bazarr",
   "crates/submate-queue",
   "crates/submate-server",

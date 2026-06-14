@@ -4,7 +4,6 @@
     "endpoints": {
       "bazarr_asr": "/bazarr/asr",
       "bazarr_detect_language": "/bazarr/detect-language",
-      "jellyfin": "/webhooks/jellyfin",
       "queue": "/queue",
       "status": "/status"
     },
