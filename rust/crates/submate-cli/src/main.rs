@@ -133,6 +133,12 @@ struct TranscribeArgs {
     #[arg(short = 'm', long, value_name = "PATH")]
     model: Option<PathBuf>,
 
+    /// Path to a Silero VAD model (`ggml-silero-*.bin`). Enables speech-only
+    /// transcription — skips silence/music, cutting hallucinated lines. Sets
+    /// `SUBMATE__WHISPER__VAD_MODEL` for this run.
+    #[arg(long, value_name = "PATH")]
+    vad_model: Option<PathBuf>,
+
     /// Select the audio track. Accepts a language code (e.g. `ja`),
     /// `lang:<code>`, `track:<n>` (0-based), `default`, or `auto`.
     #[arg(short = 'a', long, value_name = "SELECTOR")]
@@ -152,6 +158,11 @@ struct TranscribeArgs {
     /// Translate the generated subtitles to this target language.
     #[arg(short = 't', long)]
     translate_to: Option<String>,
+
+    /// LLM backend for `--translate-to` (overrides `translation.backend`):
+    /// `ollama`, `claude`, `openai`, or `gemini`.
+    #[arg(long, value_parser = parse_backend, value_name = "BACKEND")]
+    backend: Option<submate_types::TranslationBackend>,
 
     /// Subtitle output format. Defaults to `srt` (no behavior change for
     /// existing usage).
@@ -201,6 +212,11 @@ struct TranslateArgs {
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
 
+    /// LLM backend to translate with (overrides `translation.backend`):
+    /// `ollama`, `claude`, `openai`, or `gemini`.
+    #[arg(long, value_parser = parse_backend, value_name = "BACKEND")]
+    backend: Option<submate_types::TranslationBackend>,
+
     /// Process directories recursively.
     #[arg(short = 'r', long)]
     recursive: bool,
@@ -223,6 +239,11 @@ struct ServerArgs {
     /// Port to listen on (defaults to the configured `server.port`).
     #[arg(short = 'p', long)]
     port: Option<u16>,
+
+    /// Path to a Silero VAD model for the embedded node (sets
+    /// `SUBMATE__WHISPER__VAD_MODEL` for all transcription on this server).
+    #[arg(long, value_name = "PATH")]
+    vad_model: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -238,6 +259,10 @@ struct NodeArgs {
     /// Advertise a usable GPU to the coordinator.
     #[arg(long)]
     gpu: bool,
+
+    /// Path to a Silero VAD model (sets `SUBMATE__WHISPER__VAD_MODEL`).
+    #[arg(long, value_name = "PATH")]
+    vad_model: Option<PathBuf>,
 
     #[command(flatten)]
     logging: LoggingOpts,
@@ -320,6 +345,31 @@ fn load_config(config_file: Option<&Path>) -> anyhow::Result<Config> {
     Config::from_env(config_file).map_err(|e| anyhow::anyhow!("failed to load config: {e}"))
 }
 
+/// clap value parser for `--backend`. `TranslationBackend` lives in a pure crate
+/// with no clap dependency, so the name → variant mapping lives here.
+fn parse_backend(s: &str) -> Result<submate_types::TranslationBackend, String> {
+    use submate_types::TranslationBackend as B;
+    match s.to_lowercase().as_str() {
+        "ollama" => Ok(B::Ollama),
+        "claude" | "anthropic" => Ok(B::Claude),
+        "openai" => Ok(B::Openai),
+        "gemini" => Ok(B::Gemini),
+        other => Err(format!(
+            "unknown backend {other:?} (expected one of: ollama, claude, openai, gemini)"
+        )),
+    }
+}
+
+/// Apply a `--vad-model` flag by setting the env var the whisper crate reads
+/// (`whisper_vad_model()`), so the flag takes precedence over any inherited
+/// `SUBMATE__WHISPER__VAD_MODEL`. Called at the top of a command, before any
+/// worker thread or runtime starts, so the single-threaded `set_var` is sound.
+fn apply_vad_model(vad_model: Option<&Path>) {
+    if let Some(path) = vad_model {
+        std::env::set_var("SUBMATE__WHISPER__VAD_MODEL", path);
+    }
+}
+
 /// `submate config show` — print the resolved configuration as a table of
 /// flattened, title-cased rows.
 ///
@@ -346,7 +396,10 @@ fn cmd_config_show(config_file: Option<&Path>) -> anyhow::Result<()> {
 /// the ported pure helpers in [`translate_paths`]; the per-file IO and the
 /// backend dispatch live here.
 fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Result<()> {
-    let config = load_config(config_file)?;
+    let mut config = load_config(config_file)?;
+    if let Some(backend) = args.backend {
+        config.translation.backend = backend;
+    }
 
     let files = find_subtitle_files(&args.path, args.recursive);
     if files.is_empty() {
@@ -544,7 +597,11 @@ fn collect_files(dir: &Path, recursive: bool, visit: &mut dyn FnMut(&Path)) {
 /// embedded node, enqueues the files, and waits for each to finish before
 /// returning — the one-shot local path that needs no standalone node.
 fn cmd_transcribe(config_file: Option<&Path>, args: TranscribeArgs) -> anyhow::Result<()> {
-    let config = load_config(config_file)?;
+    apply_vad_model(args.vad_model.as_deref());
+    let mut config = load_config(config_file)?;
+    if let Some(backend) = args.backend {
+        config.translation.backend = backend;
+    }
 
     let files = collect_media_files(&args.path, args.recursive)?;
     if files.is_empty() {
@@ -1019,6 +1076,7 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
         app, spawn_embedded_node, AppState, EmbeddedNodeSettings, NodeCoordinator,
     };
 
+    apply_vad_model(args.vad_model.as_deref());
     let config = load_config(config_file)?;
     init_logging(if config.debug { "DEBUG" } else { "INFO" }, None);
 
@@ -1217,6 +1275,7 @@ fn cmd_node(config_file: Option<&Path>, args: NodeArgs) -> anyhow::Result<()> {
     use submate_proto::NodeRegister;
     use submate_types::TranscriptionTask;
 
+    apply_vad_model(args.vad_model.as_deref());
     let config = load_config(config_file)?;
 
     let register = NodeRegister {
