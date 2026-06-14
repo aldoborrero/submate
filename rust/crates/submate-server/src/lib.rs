@@ -526,11 +526,10 @@ impl NodeCoordinator {
     /// subscription so later updates short-circuit instead of re-locking.
     fn fan_out_progress(&self, id: JobId, update: Progress) {
         let mut subs = self.progress_subs.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = subs.get(&id) {
-            if tx.send(update).is_err() {
+        if let Some(tx) = subs.get(&id)
+            && tx.send(update).is_err() {
                 subs.remove(&id);
             }
-        }
     }
 
     /// Mark a job terminal from the node's [`JobResult`] and wake any synchronous
@@ -1772,7 +1771,7 @@ mod tests {
         // to a temp path, not a fixture.
         let path =
             std::env::temp_dir().join(format!("submate-server-audio-{}.mka", std::process::id()));
-        let gen = std::process::Command::new("ffmpeg")
+        let r#gen = std::process::Command::new("ffmpeg")
             .args([
                 "-y",
                 "-f",
@@ -1788,9 +1787,9 @@ mod tests {
             .output()
             .expect("ffmpeg runs");
         assert!(
-            gen.status.success(),
+            r#gen.status.success(),
             "ffmpeg failed: {}",
-            String::from_utf8_lossy(&gen.stderr)
+            String::from_utf8_lossy(&r#gen.stderr)
         );
 
         // Golden: a direct extraction of the file's only audio track.

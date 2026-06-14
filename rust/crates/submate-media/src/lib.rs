@@ -1058,16 +1058,16 @@ mod real_ffprobe {
         let path = dir.join(format!("submate-media-probe-{}.mka", std::process::id()));
 
         // 1s of silence, AAC, tagged eng. Written to a temp file, not a fixture.
-        let gen = std::process::Command::new("ffmpeg")
+        let r#gen = std::process::Command::new("ffmpeg")
             .args(["-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "aac"])
             .args(["-metadata:s:a:0", "language=eng"])
             .arg(&path)
             .output()
             .expect("ffmpeg runs");
         assert!(
-            gen.status.success(),
+            r#gen.status.success(),
             "ffmpeg failed: {}",
-            String::from_utf8_lossy(&gen.stderr)
+            String::from_utf8_lossy(&r#gen.stderr)
         );
 
         let tracks = get_audio_tracks(&path).await.expect("probe succeeds");

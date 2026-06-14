@@ -428,8 +428,8 @@ fn suppress(
 
     // start_overlaps: (keep_end is None or keep_end) and the first silence with
     // silent_starts <= start < silent_ends <= end.
-    if keep_end.is_none() || keep_end == Some(true) {
-        if let Some(i) = (0..silent_starts.len()).find(|&i| {
+    if (keep_end.is_none() || keep_end == Some(true))
+        && let Some(i) = (0..silent_starts.len()).find(|&i| {
             silent_starts[i] <= span.start && span.start < silent_ends[i] && silent_ends[i] <= span.end
         }) {
             let new_start = silent_ends[i];
@@ -438,12 +438,11 @@ fn suppress(
                 return;
             }
         }
-    }
 
     // end_overlaps: (not keep_end) and the first silence with
     // start <= silent_starts < end <= silent_ends.
-    if keep_end == Some(false) {
-        if let Some(i) = (0..silent_starts.len()).find(|&i| {
+    if keep_end == Some(false)
+        && let Some(i) = (0..silent_starts.len()).find(|&i| {
             span.start <= silent_starts[i] && silent_starts[i] < span.end && span.end <= silent_ends[i]
         }) {
             let new_end = silent_starts[i];
@@ -452,7 +451,6 @@ fn suppress(
                 return;
             }
         }
-    }
 
     if nonspeech_error == 0.0 {
         return;

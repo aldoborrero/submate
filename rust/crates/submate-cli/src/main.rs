@@ -366,7 +366,10 @@ fn parse_backend(s: &str) -> Result<submate_types::TranslationBackend, String> {
 /// worker thread or runtime starts, so the single-threaded `set_var` is sound.
 fn apply_vad_model(vad_model: Option<&Path>) {
     if let Some(path) = vad_model {
-        std::env::set_var("SUBMATE__WHISPER__VAD_MODEL", path);
+        // SAFETY: called at the very top of a command handler, before any tokio
+        // runtime or worker thread is spawned, so no other thread can be reading
+        // the environment concurrently (the soundness condition for `set_var`).
+        unsafe { std::env::set_var("SUBMATE__WHISPER__VAD_MODEL", path) };
     }
 }
 
@@ -664,11 +667,10 @@ fn resolve_model(flag: Option<&Path>, config_model: &str) -> anyhow::Result<Path
         return Ok(config_path.to_path_buf());
     }
 
-    if let Some(env_model) = std::env::var_os("SUBMATE__WHISPER__MODEL") {
-        if !env_model.is_empty() {
+    if let Some(env_model) = std::env::var_os("SUBMATE__WHISPER__MODEL")
+        && !env_model.is_empty() {
             return Ok(PathBuf::from(env_model));
         }
-    }
 
     anyhow::bail!(
         "no Whisper model configured: pass --model <PATH>, set the whisper.model \
@@ -1198,8 +1200,8 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         if let (Some(target), Some(qfmt)) = (
             opts.target_language.as_deref().filter(|t| !t.is_empty()),
             proto_to_queue_format(opts.output_format),
-        ) {
-            if target != detected {
+        )
+            && target != detected {
                 let backend = self.backend.clone();
                 let mut complete = move |prompt: String| {
                     let backend = backend.clone();
@@ -1215,7 +1217,6 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
                 )
                 .await;
             }
-        }
 
         Ok(submate_server::BazarrOutput {
             content,
@@ -1562,7 +1563,7 @@ fn prompt_for_track(
 fn make_processor(
     dispatcher: submate_node::Dispatcher,
     model: &str,
-) -> impl submate_node::JobProcessor {
+) -> impl submate_node::JobProcessor + use<> {
     submate_node::whisper_processor(dispatcher, model.to_string())
 }
 
@@ -1570,7 +1571,7 @@ fn make_processor(
 fn make_processor(
     _dispatcher: submate_node::Dispatcher,
     _model: &str,
-) -> impl submate_node::JobProcessor {
+) -> impl submate_node::JobProcessor + use<> {
     |_opts: &submate_proto::JobOpts, _pcm: Vec<u8>| async {
         Err::<String, String>(
             "model support not built in (rebuild with --features model)".to_string(),

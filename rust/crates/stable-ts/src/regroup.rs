@@ -481,8 +481,8 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
         let Some(words) = seg.words.as_mut() else { continue };
 
         let mut curr_max_dur: Option<f64> = None;
-        if let Some(factor) = mf {
-            if words.len() > 1 {
+        if let Some(factor) = mf
+            && words.len() > 1 {
                 let mut durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
                 // Python `durations[len//2]` (raw index, not an averaged median)
                 // after an ascending sort. Quickselect partitions at that index
@@ -493,12 +493,10 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
                     durations.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).expect("finite durations"));
                 curr_max_dur = Some(factor * *median);
             }
-        }
-        if let Some(md) = max_dur {
-            if curr_max_dur.is_none_or(|c| c > md) {
+        if let Some(md) = max_dur
+            && curr_max_dur.is_none_or(|c| c > md) {
                 curr_max_dur = Some(md);
             }
-        }
         let Some(cap) = curr_max_dur.filter(|&c| c != 0.0) else { continue };
 
         match clip_start {
@@ -1263,8 +1261,8 @@ fn even_length_indices(
     let mut indices: Vec<usize> = Vec::new();
     let mut exceed_words = max_words.is_some_and(|m| word_count > m);
 
-    if let Some(mc) = max_chars {
-        if char_count > mc {
+    if let Some(mc) = max_chars
+        && char_count > mc {
             // splits = ceil(char_count / max_chars).
             let splits = char_count.div_ceil(mc);
             let chars_per_split = char_count as f64 / splits as f64;
@@ -1282,7 +1280,6 @@ fn even_length_indices(
                 exceed_words = bounds.iter().zip(&ends).any(|(&i, &j)| j - i + 1 > mw);
             }
         }
-    }
 
     if exceed_words {
         let mw = max_words.expect("exceed_words implies max_words set");

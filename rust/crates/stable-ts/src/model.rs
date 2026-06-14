@@ -267,9 +267,9 @@ impl Segment {
     /// `if self.has_words and self.words[0].tokens`.
     #[must_use]
     pub fn tokens(&self) -> Vec<i64> {
-        if let Some(w) = self.words.as_ref() {
-            if let Some(first) = w.first() {
-                if first.tokens.as_ref().is_some_and(|t| !t.is_empty()) {
+        if let Some(w) = self.words.as_ref()
+            && let Some(first) = w.first()
+                && first.tokens.as_ref().is_some_and(|t| !t.is_empty()) {
                     return w
                         .iter()
                         .filter_map(|x| x.tokens.as_ref())
@@ -277,8 +277,6 @@ impl Segment {
                         .copied()
                         .collect();
                 }
-            }
-        }
         self.default_tokens.clone()
     }
 
@@ -302,20 +300,18 @@ impl Segment {
 
     /// `lock_left`: lock the first word's left edge.
     pub fn lock_left(&mut self) {
-        if let Some(w) = self.words.as_mut() {
-            if let Some(first) = w.first_mut() {
+        if let Some(w) = self.words.as_mut()
+            && let Some(first) = w.first_mut() {
                 first.lock_left();
             }
-        }
     }
 
     /// `lock_right`: lock the last word's right edge.
     pub fn lock_right(&mut self) {
-        if let Some(w) = self.words.as_mut() {
-            if let Some(last) = w.last_mut() {
+        if let Some(w) = self.words.as_mut()
+            && let Some(last) = w.last_mut() {
                 last.lock_right();
             }
-        }
     }
 
     /// `lock_both`.

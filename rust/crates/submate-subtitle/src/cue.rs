@@ -152,15 +152,14 @@ pub fn parse_srt(input: &str) -> Vec<Cue> {
         // Optional index line: a bare integer immediately before a timestamp
         // line.
         let mut index: Option<u64> = None;
-        if !lines[i].contains("-->") {
-            if let Ok(idx) = lines[i].trim().parse::<u64>() {
+        if !lines[i].contains("-->")
+            && let Ok(idx) = lines[i].trim().parse::<u64>() {
                 // Only consume it as an index if the next line is a timestamp.
                 if i + 1 < lines.len() && lines[i + 1].contains("-->") {
                     index = Some(idx);
                     i += 1;
                 }
             }
-        }
 
         if i >= lines.len() || !lines[i].contains("-->") {
             i += 1;
@@ -352,12 +351,11 @@ fn strip_html_tags(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            if let Some(close) = find_tag_close(bytes, i) {
+        if bytes[i] == b'<'
+            && let Some(close) = find_tag_close(bytes, i) {
                 i = close + 1;
                 continue;
             }
-        }
         // Copy one UTF-8 char.
         let ch_len = utf8_len(bytes[i]);
         out.push_str(&s[i..i + ch_len]);

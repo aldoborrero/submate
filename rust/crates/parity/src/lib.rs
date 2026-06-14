@@ -223,7 +223,8 @@ impl EnvGuard {
             .collect();
         for key in ambient {
             saved.push((key.clone(), std::env::var(&key).ok()));
-            std::env::remove_var(&key);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var(&key) };
         }
 
         // Apply overrides, snapshotting any key not already recorded above.
@@ -231,7 +232,8 @@ impl EnvGuard {
             if !saved.iter().any(|(k, _)| k == key) {
                 saved.push(((*key).to_string(), std::env::var(key).ok()));
             }
-            std::env::set_var(key, value);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var(key, value) };
         }
 
         Self { _lock: lock, saved }
@@ -242,8 +244,10 @@ impl Drop for EnvGuard {
     fn drop(&mut self) {
         for (key, prior) in self.saved.drain(..) {
             match prior {
-                Some(value) => std::env::set_var(&key, value),
-                None => std::env::remove_var(&key),
+                // TODO: Audit that the environment access only happens in single-threaded code.
+                Some(value) => unsafe { std::env::set_var(&key, value) },
+                // TODO: Audit that the environment access only happens in single-threaded code.
+                None => unsafe { std::env::remove_var(&key) },
             }
         }
     }
