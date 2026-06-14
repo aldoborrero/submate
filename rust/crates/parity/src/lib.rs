@@ -261,7 +261,7 @@ fn token_set_ratio(a: &str, b: &str) -> f64 {
             .map(|t| {
                 t.chars()
                     .filter(|c| c.is_alphanumeric())
-                    .flat_map(|c| c.to_lowercase())
+                    .flat_map(char::to_lowercase)
                     .collect::<String>()
             })
             .filter(|t| !t.is_empty())

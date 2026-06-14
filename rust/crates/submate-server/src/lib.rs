@@ -360,7 +360,7 @@ impl NodeCoordinator {
         // Poisoning only happens if a holder panicked mid-operation; the store
         // is a plain SQLite wrapper with no broken-invariant risk, so recover
         // the guard rather than propagating the panic to every later request.
-        self.store.lock().unwrap_or_else(|e| e.into_inner())
+        self.store.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Enqueue a job for `kind` carrying serialized [`JobOpts`], returning its
@@ -389,7 +389,7 @@ impl NodeCoordinator {
         let id = self.enqueue(kind, opts)?;
         self.audio
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, source);
         Ok(id)
     }
@@ -408,7 +408,7 @@ impl NodeCoordinator {
         let source = self
             .audio
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&id)
             .cloned()
             .ok_or_else(|| ServerError::NotFound(format!("no audio for job {id}")))?;
@@ -438,7 +438,7 @@ impl NodeCoordinator {
     /// `id`) keeps its existing token while its advertised capabilities are
     /// refreshed, so an in-flight lease keyed by `node_id` survives a re-register.
     fn register(&self, req: NodeRegister) -> NodeRegistered {
-        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let mut nodes = self.nodes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let token = nodes
             .get(&req.id).map_or_else(|| format!("tok_{}", req.id), |existing| existing.token.clone());
         nodes.insert(
@@ -467,7 +467,7 @@ impl NodeCoordinator {
         let caps = self
             .nodes
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(node_id)
             .map(|info| (info.gpu, info.runners, info.tasks.clone()));
         let Some((gpu, runners, tasks)) = caps else {
@@ -523,7 +523,7 @@ impl NodeCoordinator {
     /// A send failure (the receiver was dropped — the caller gave up) drops the
     /// subscription so later updates short-circuit instead of re-locking.
     fn fan_out_progress(&self, id: JobId, update: Progress) {
-        let mut subs = self.progress_subs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subs = self.progress_subs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(tx) = subs.get(&id)
             && tx.send(update).is_err() {
                 subs.remove(&id);
@@ -572,7 +572,7 @@ impl NodeCoordinator {
             let (tx, rx) = oneshot::channel();
             self.waiters
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(id, tx);
             rx
         };
@@ -593,7 +593,7 @@ impl NodeCoordinator {
         let (tx, rx) = mpsc::unbounded_channel();
         self.progress_subs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, tx);
         rx
     }
@@ -603,12 +603,12 @@ impl NodeCoordinator {
         // right as (or before) the terminal outcome arrives.
         self.progress_subs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
         if let Some(tx) = self
             .waiters
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id)
         {
             // A dropped receiver (caller gave up) is fine; the result is already
@@ -622,7 +622,7 @@ impl StatsSource for NodeCoordinator {
     fn stats(&self) -> QueueStats {
         let store = self.store();
         let count = |state| store.count(state).unwrap_or(0).max(0) as u64;
-        let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner()).len() as u64;
+        let nodes = self.nodes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() as u64;
         QueueStats {
             pending: count(JobState::Queued),
             running: count(JobState::Running),
@@ -1719,7 +1719,7 @@ mod tests {
 
         // 320 bytes of deterministic "PCM" (16-bit samples) standing in for the
         // Bazarr-uploaded audio; the route relays bytes opaquely.
-        let pcm: Vec<u8> = (0..320u16).flat_map(|n| n.to_le_bytes()).collect();
+        let pcm: Vec<u8> = (0..320u16).flat_map(u16::to_le_bytes).collect();
         let expected = hex::encode(Sha256::digest(&pcm));
 
         let job_id = coord

@@ -43,6 +43,10 @@ pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
 
     let block_align: u16 = CHANNELS * (BITS_PER_SAMPLE / 8);
     let byte_rate: u32 = SAMPLE_RATE * u32::from(block_align);
+    // The WAV `data` chunk size is a u32, so the container caps at 4 GiB of PCM
+    // (~37 h of 16 kHz mono s16le) by format. Bazarr clips are seconds long, so
+    // the cast never truncates in practice; truncation here would mean a clip
+    // beyond what WAV can represent at all.
     let data_len = pcm.len() as u32;
     // RIFF chunk size covers everything after the first 8 bytes: the WAVE tag,
     // the 24-byte fmt chunk, the 8-byte data chunk header, and the payload.

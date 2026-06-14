@@ -409,7 +409,7 @@ impl RegroupOp {
     /// Read a kwarg as `Option<f64>`. Outer `None` = absent; inner `None` would
     /// be an explicit JSON null (not produced by the parser, but handled).
     fn kwarg_f64(&self, name: &str) -> Option<Option<f64>> {
-        self.kwarg(name).map(|v| v.as_f64())
+        self.kwarg(name).map(serde_json::Value::as_f64)
     }
 
     /// Read a kwarg as `Option<usize>` (a non-negative integer like `max_chars`).
@@ -1122,7 +1122,7 @@ fn merge_capped(seg: &Segment, next_seg: &Segment, caps: &MergeCaps) -> bool {
 fn merge_two_segments(seg: &Segment, next_seg: &Segment, lock: bool, newline: bool) -> Segment {
     let mut merged = seg.clone();
     if seg.ori_has_words() && next_seg.ori_has_words() {
-        let mut words: Vec<WordTiming> = seg.words.as_ref().map_or_else(Vec::new, |w| w.clone());
+        let mut words: Vec<WordTiming> = seg.words.as_ref().map_or_else(Vec::new, std::clone::Clone::clone);
         let boundary = words.len();
         if let Some(next_words) = next_seg.words.as_ref() {
             words.extend(next_words.iter().cloned());

@@ -100,6 +100,7 @@ explicit_iter_loop = "warn"
 inefficient_to_string = "warn"
 implicit_clone = "warn"
 map_unwrap_or = "warn"
+redundant_closure_for_method_calls = "warn"
 
 [workspace.lints.rust]
 unused_must_use = "warn"

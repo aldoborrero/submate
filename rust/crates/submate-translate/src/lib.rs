@@ -502,7 +502,7 @@ pub fn join_batch<S: AsRef<str>>(texts: &[S], separator_token: &str) -> String {
     let separator = format!("\n{separator_token}\n");
     texts
         .iter()
-        .map(|s| s.as_ref())
+        .map(std::convert::AsRef::as_ref)
         .collect::<Vec<_>>()
         .join(&separator)
 }

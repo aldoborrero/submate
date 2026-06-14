@@ -503,7 +503,7 @@ impl JobStore {
         );
 
         let param_refs: Vec<&dyn rusqlite::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+            params.iter().map(std::convert::AsRef::as_ref).collect();
         let job = self
             .conn
             .query_row(&sql, param_refs.as_slice(), Job::from_row)
