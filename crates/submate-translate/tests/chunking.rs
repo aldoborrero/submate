@@ -7,7 +7,7 @@
 //! same cue contents, runs them through [`chunk_ranges`] + [`join_batch`], and
 //! asserts byte-for-byte equality against the golden `batches`.
 
-use submate_translate::{chunk_ranges, join_batch, SRT_SEPARATOR_TOKEN};
+use submate_translate::{SRT_SEPARATOR_TOKEN, chunk_ranges, join_batch};
 
 /// Python default `chunk_size` (`TranslationSettings.chunk_size`).
 const DEFAULT_CHUNK_SIZE: usize = 50;

@@ -13,7 +13,7 @@ use std::str::FromStr;
 
 use parity::{assert_json_eq, golden};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
 use submate_types::{

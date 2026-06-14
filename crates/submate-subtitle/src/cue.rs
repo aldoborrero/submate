@@ -153,13 +153,14 @@ pub fn parse_srt(input: &str) -> Vec<Cue> {
         // line.
         let mut index: Option<u64> = None;
         if !lines[i].contains("-->")
-            && let Ok(idx) = lines[i].trim().parse::<u64>() {
-                // Only consume it as an index if the next line is a timestamp.
-                if i + 1 < lines.len() && lines[i + 1].contains("-->") {
-                    index = Some(idx);
-                    i += 1;
-                }
+            && let Ok(idx) = lines[i].trim().parse::<u64>()
+        {
+            // Only consume it as an index if the next line is a timestamp.
+            if i + 1 < lines.len() && lines[i + 1].contains("-->") {
+                index = Some(idx);
+                i += 1;
             }
+        }
 
         if i >= lines.len() || !lines[i].contains("-->") {
             i += 1;
@@ -352,10 +353,11 @@ fn strip_html_tags(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'<'
-            && let Some(close) = find_tag_close(bytes, i) {
-                i = close + 1;
-                continue;
-            }
+            && let Some(close) = find_tag_close(bytes, i)
+        {
+            i = close + 1;
+            continue;
+        }
         // Copy one UTF-8 char.
         let ch_len = utf8_len(bytes[i]);
         out.push_str(&s[i..i + ch_len]);
@@ -599,6 +601,9 @@ mod parity {
         let cues = parse_srt(input);
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].text, "hi");
-        assert_eq!(compose_srt(&cues), "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n");
+        assert_eq!(
+            compose_srt(&cues),
+            "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n"
+        );
     }
 }

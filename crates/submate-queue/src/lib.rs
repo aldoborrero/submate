@@ -350,11 +350,7 @@ impl JobStore {
 
     /// Construct a store from an existing connection with explicit config and
     /// clock. Applies pragmas and ensures the schema exists.
-    pub fn from_conn(
-        conn: Connection,
-        config: StoreConfig,
-        clock: Box<dyn Clock>,
-    ) -> Result<Self> {
+    pub fn from_conn(conn: Connection, config: StoreConfig, clock: Box<dyn Clock>) -> Result<Self> {
         // WAL gives concurrent readers alongside a writer; busy_timeout lets a
         // writer wait out a contending writer instead of erroring with
         // SQLITE_BUSY. `journal_mode` is a no-op (returns the new mode) on
@@ -911,7 +907,12 @@ mod tests {
 
         // The CPU node sees no work: the GPU-only job is filtered out, not
         // claimed-then-released, so it stays queued.
-        assert!(store.claim_with("cpu", &NodeCapabilities::cpu()).unwrap().is_none());
+        assert!(
+            store
+                .claim_with("cpu", &NodeCapabilities::cpu())
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(store.get(gpu_id).unwrap().unwrap().state, JobState::Queued);
         assert_eq!(store.count(JobState::Queued).unwrap(), 1);
 

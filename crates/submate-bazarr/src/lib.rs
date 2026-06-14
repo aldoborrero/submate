@@ -225,9 +225,7 @@ mod parity {
         match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
             Err(_) => {
-                eprintln!(
-                    "skipping golden assertion: fixtures/bazarr/pcm/{name} is absent"
-                );
+                eprintln!("skipping golden assertion: fixtures/bazarr/pcm/{name} is absent");
                 None
             }
         }
@@ -311,10 +309,7 @@ mod parity {
     fn assert_f32_close(actual: &[f32], expected: &[f32]) {
         assert_eq!(actual.len(), expected.len(), "sample count mismatch");
         for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
-            assert!(
-                (a - e).abs() <= 1e-7,
-                "sample {i}: actual={a} expected={e}"
-            );
+            assert!((a - e).abs() <= 1e-7, "sample {i}: actual={a} expected={e}");
         }
     }
 
@@ -417,7 +412,11 @@ mod parity {
     /// 30, which is the source of truth).
     #[test]
     fn language_name_lookup_in_set() {
-        assert_eq!(LANGUAGE_NAMES.len(), 30, "table must stay the narrow en..uk set");
+        assert_eq!(
+            LANGUAGE_NAMES.len(),
+            30,
+            "table must stay the narrow en..uk set"
+        );
         assert_eq!(GOLDEN_PAIRS.len(), 30);
         for &(code, name) in GOLDEN_PAIRS {
             assert_eq!(detect_language_name(code), name, "code {code:?}");

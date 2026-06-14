@@ -190,9 +190,9 @@ fn join_parent(video_path: &str, name: &str) -> String {
         .filter(|c| !c.is_empty() && *c != ".")
         .collect();
     match (absolute, parts.is_empty()) {
-        (true, true) => format!("/{name}"),                       // parent is "/"
+        (true, true) => format!("/{name}"), // parent is "/"
         (true, false) => format!("/{}/{}", parts.join("/"), name),
-        (false, true) => name.to_string(),                        // parent ".", "", "./."
+        (false, true) => name.to_string(), // parent ".", "", "./."
         (false, false) => format!("{}/{}", parts.join("/"), name),
     }
 }
@@ -246,9 +246,18 @@ mod tests {
 
     #[test]
     fn map_path_rules() {
-        assert_eq!(map_path("/host/m.mkv", false, "/host", "/data"), "/host/m.mkv");
-        assert_eq!(map_path("/host/m.mkv", true, "/host", "/data"), "/data/m.mkv");
-        assert_eq!(map_path("/other/m.mkv", true, "/host", "/data"), "/other/m.mkv");
+        assert_eq!(
+            map_path("/host/m.mkv", false, "/host", "/data"),
+            "/host/m.mkv"
+        );
+        assert_eq!(
+            map_path("/host/m.mkv", true, "/host", "/data"),
+            "/data/m.mkv"
+        );
+        assert_eq!(
+            map_path("/other/m.mkv", true, "/host", "/data"),
+            "/other/m.mkv"
+        );
         assert_eq!(map_path("/host/m.mkv", true, "", "/data"), "/host/m.mkv");
     }
 

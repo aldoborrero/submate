@@ -117,7 +117,7 @@ mod parity {
     use super::*;
 
     use ::parity::{assert_json_eq, golden};
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// Fixture-driven parity falsifier.
     ///
@@ -137,8 +137,12 @@ mod parity {
 
         for row in rows {
             let file_str = row["file"].as_str().expect("`file` is a string");
-            let source_lang = row["source_lang"].as_str().expect("`source_lang` is a string");
-            let target_lang = row["target_lang"].as_str().expect("`target_lang` is a string");
+            let source_lang = row["source_lang"]
+                .as_str()
+                .expect("`source_lang` is a string");
+            let target_lang = row["target_lang"]
+                .as_str()
+                .expect("`target_lang` is a string");
             let file = Path::new(file_str);
 
             let output = output_path(file, target_lang);

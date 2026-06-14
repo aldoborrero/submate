@@ -33,11 +33,7 @@ fn format_value(value: &Value) -> String {
             if items.is_empty() {
                 "(none)".to_string()
             } else {
-                items
-                    .iter()
-                    .map(scalar_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                items.iter().map(scalar_str).collect::<Vec<_>>().join(", ")
             }
         }
         Value::Bool(b) => {
@@ -161,7 +157,7 @@ pub fn config_show_rows(config_json: &Value) -> Vec<(String, String)> {
 #[cfg(test)]
 mod parity {
     use super::*;
-    use ::parity::{assert_json_eq, golden, EnvGuard};
+    use ::parity::{EnvGuard, assert_json_eq, golden};
     use submate_config::Config;
 
     /// `[[setting, value], ...]` JSON, matching the goldens' shape.
@@ -169,7 +165,10 @@ mod parity {
         Value::Array(
             rows.iter()
                 .map(|(name, display)| {
-                    Value::Array(vec![Value::String(name.clone()), Value::String(display.clone())])
+                    Value::Array(vec![
+                        Value::String(name.clone()),
+                        Value::String(display.clone()),
+                    ])
                 })
                 .collect(),
         )

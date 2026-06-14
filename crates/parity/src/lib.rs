@@ -121,7 +121,11 @@ pub struct SegTol {
 
 impl Default for SegTol {
     fn default() -> Self {
-        Self { count: 1, time_ms: 200, text_ratio: 0.9 }
+        Self {
+            count: 1,
+            time_ms: 200,
+            text_ratio: 0.9,
+        }
     }
 }
 
@@ -273,11 +277,7 @@ fn token_set_ratio(a: &str, b: &str) -> f64 {
     }
     let inter = sa.intersection(&sb).count() as f64;
     let union = sa.union(&sb).count() as f64;
-    if union == 0.0 {
-        1.0
-    } else {
-        inter / union
-    }
+    if union == 0.0 { 1.0 } else { inter / union }
 }
 
 /// Best-effort pointer to the first differing JSON path (object keys / array
@@ -358,8 +358,16 @@ mod tests {
 
     #[test]
     fn segments_close_within_tolerance() {
-        let a = vec![Seg { start: 0.0, end: 1.05, text: "Hello, world".into() }];
-        let g = vec![Seg { start: 0.0, end: 1.0, text: "hello world!".into() }];
+        let a = vec![Seg {
+            start: 0.0,
+            end: 1.05,
+            text: "Hello, world".into(),
+        }];
+        let g = vec![Seg {
+            start: 0.0,
+            end: 1.0,
+            text: "hello world!".into(),
+        }];
         assert_segments_close(&a, &g, SegTol::default());
     }
 

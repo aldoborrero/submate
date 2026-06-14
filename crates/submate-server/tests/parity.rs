@@ -16,14 +16,14 @@
 //!   a node-topology shape on purpose (see `docs/architecture.md`).
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
 use parity::{assert_json_eq, golden};
 use serde_json::Value;
-use submate_server::{app, AppState};
+use submate_server::{AppState, app};
 use tower::ServiceExt;
 
 async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {

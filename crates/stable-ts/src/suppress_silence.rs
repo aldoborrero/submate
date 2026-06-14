@@ -143,7 +143,10 @@ pub fn wav2mask(audio: &[f32]) -> Option<Vec<bool>> {
 
     // quantize: mask.mul(20).round().bool()  (0 -> false, nonzero -> true)
     let q_levels = 20.0_f32;
-    let quantized: Vec<bool> = pooled.iter().map(|v| (v * q_levels).round() != 0.0).collect();
+    let quantized: Vec<bool> = pooled
+        .iter()
+        .map(|v| (v * q_levels).round() != 0.0)
+        .collect();
 
     if !quantized.iter().any(|&b| b) {
         // entirely silent: upstream returns ~mask, i.e. all-true.
@@ -307,7 +310,14 @@ pub fn suppress_silence(
                         .is_some_and(|c| APPEND_PUNCTUATIONS.contains(c));
                     let keep_end = !(ends_in_punct || i + 1 == n);
                     let mut span = WordSpan::new(word.start(), word.end());
-                    suppress(&mut span, silent_starts, silent_ends, min_word_dur, nonspeech_error, Some(keep_end));
+                    suppress(
+                        &mut span,
+                        silent_starts,
+                        silent_ends,
+                        min_word_dur,
+                        nonspeech_error,
+                        Some(keep_end),
+                    );
                     word.set_start(span.start);
                     word.set_end(span.end);
                 }
@@ -316,7 +326,14 @@ pub fn suppress_silence(
                 // Wordless segment: adjust the segment's default start/end with
                 // the upstream `keep_end=True` default.
                 let mut span = WordSpan::new(segment.start(), segment.end());
-                suppress(&mut span, silent_starts, silent_ends, min_word_dur, nonspeech_error, Some(true));
+                suppress(
+                    &mut span,
+                    silent_starts,
+                    silent_ends,
+                    min_word_dur,
+                    nonspeech_error,
+                    Some(true),
+                );
                 segment.set_default_span(span.start, span.end);
             }
         }
@@ -430,27 +447,33 @@ fn suppress(
     // silent_starts <= start < silent_ends <= end.
     if (keep_end.is_none() || keep_end == Some(true))
         && let Some(i) = (0..silent_starts.len()).find(|&i| {
-            silent_starts[i] <= span.start && span.start < silent_ends[i] && silent_ends[i] <= span.end
-        }) {
-            let new_start = silent_ends[i];
-            span.set_start(new_start.min(round3(span.end - min_word_dur)));
-            if (span.end - span.start) <= min_word_dur {
-                return;
-            }
+            silent_starts[i] <= span.start
+                && span.start < silent_ends[i]
+                && silent_ends[i] <= span.end
+        })
+    {
+        let new_start = silent_ends[i];
+        span.set_start(new_start.min(round3(span.end - min_word_dur)));
+        if (span.end - span.start) <= min_word_dur {
+            return;
         }
+    }
 
     // end_overlaps: (not keep_end) and the first silence with
     // start <= silent_starts < end <= silent_ends.
     if keep_end == Some(false)
         && let Some(i) = (0..silent_starts.len()).find(|&i| {
-            span.start <= silent_starts[i] && silent_starts[i] < span.end && span.end <= silent_ends[i]
-        }) {
-            let new_end = silent_starts[i];
-            span.set_end(new_end.max(round3(span.start + min_word_dur)));
-            if (span.end - span.start) <= min_word_dur {
-                return;
-            }
+            span.start <= silent_starts[i]
+                && silent_starts[i] < span.end
+                && span.end <= silent_ends[i]
+        })
+    {
+        let new_end = silent_starts[i];
+        span.set_end(new_end.max(round3(span.start + min_word_dur)));
+        if (span.end - span.start) <= min_word_dur {
+            return;
         }
+    }
 
     if nonspeech_error == 0.0 {
         return;

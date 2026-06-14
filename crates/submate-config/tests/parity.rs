@@ -16,7 +16,7 @@
 //! Object key ordering is irrelevant: both sides are compared as
 //! `serde_json::Value` (BTreeMap-backed).
 
-use parity::{assert_json_eq, fixture_path, golden, EnvGuard};
+use parity::{EnvGuard, assert_json_eq, fixture_path, golden};
 use submate_config::Config;
 
 #[test]

@@ -40,8 +40,8 @@ use submate_types::{Device, LanguageNamingType, TranslationBackend, WhisperImple
 use std::path::Path;
 
 use figment::{
-    providers::{Env, Format, Json, Serialized},
     Figment,
+    providers::{Env, Format, Json, Serialized},
 };
 
 /// A field that is either a string or a bool (`str | bool` in Python).

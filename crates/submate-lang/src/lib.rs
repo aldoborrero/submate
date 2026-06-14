@@ -277,11 +277,7 @@ impl LanguageCode {
     /// Language name. English name when `in_english`, otherwise the native name.
     pub fn to_name(self, in_english: bool) -> Option<&'static str> {
         let e = self.entry()?;
-        if in_english {
-            e.name_en
-        } else {
-            e.name_native
-        }
+        if in_english { e.name_en } else { e.name_native }
     }
 
     /// English name (`name_en`), or `None`.
@@ -415,9 +411,18 @@ mod tests {
 
     #[test]
     fn round_trips_and_none() {
-        assert_eq!(LanguageCode::from_iso_639_1(Some("EN ")), LanguageCode::ENGLISH);
-        assert_eq!(LanguageCode::from_iso_639_2(Some("ger")), LanguageCode::GERMAN);
-        assert_eq!(LanguageCode::from_iso_639_2(Some("deu")), LanguageCode::GERMAN);
+        assert_eq!(
+            LanguageCode::from_iso_639_1(Some("EN ")),
+            LanguageCode::ENGLISH
+        );
+        assert_eq!(
+            LanguageCode::from_iso_639_2(Some("ger")),
+            LanguageCode::GERMAN
+        );
+        assert_eq!(
+            LanguageCode::from_iso_639_2(Some("deu")),
+            LanguageCode::GERMAN
+        );
         assert_eq!(LanguageCode::from_string(Some("und")), LanguageCode::None);
         assert_eq!(LanguageCode::from_string(None), LanguageCode::None);
         assert_eq!(LanguageCode::None.display_name(), "Unknown");

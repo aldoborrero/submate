@@ -10,8 +10,8 @@
 
 use parity::{assert_f32_close, assert_json_eq, assert_str_eq, fixture_path, golden, load_f32};
 use stable_ts::{
-    apply_regroup_op, audio2timings, ops_to_value, parse_regroup_algo, set_current_as_orig,
-    suppress_silence, update_nonspeech_sections, WhisperResult, DEFAULT_MIN_WORD_DUR,
+    DEFAULT_MIN_WORD_DUR, WhisperResult, apply_regroup_op, audio2timings, ops_to_value,
+    parse_regroup_algo, set_current_as_orig, suppress_silence, update_nonspeech_sections,
 };
 
 /// The submate config regroup string.
@@ -306,7 +306,9 @@ fn output_json() {
 #[test]
 fn output_txt() {
     let raw = golden("stablets/clipA/00_raw.json");
-    let expected = raw["text"].as_str().expect("00_raw.json has a string `text`");
+    let expected = raw["text"]
+        .as_str()
+        .expect("00_raw.json has a string `text`");
     let result = WhisperResult::from_value(&raw);
 
     assert_str_eq(&stable_ts::output::to_txt(&result), expected);

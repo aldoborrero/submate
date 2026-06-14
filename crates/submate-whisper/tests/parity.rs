@@ -40,9 +40,9 @@
 // literally named `parity` (the falsifier is invoked as `parity::transcribe`)
 // without shadowing the `parity` *crate* import.
 use ::parity as harness;
-use harness::{assert_segments_close, golden, load_f32, segs_from_json, Seg, SegTol};
+use harness::{Seg, SegTol, assert_segments_close, golden, load_f32, segs_from_json};
 use submate_whisper::{
-    assemble_result, WhisperResult, WhisperSegment, WhisperWord, DEFAULT_REGROUP,
+    DEFAULT_REGROUP, WhisperResult, WhisperSegment, WhisperWord, assemble_result,
 };
 
 /// Parse the captured raw transcription (`00_raw.json`, a stable-ts `to_dict()`
@@ -95,100 +95,128 @@ fn raw_from_golden(rel: &str) -> WhisperResult {
 mod parity {
     use super::*;
 
-/// Real end-to-end structural falsifier: decode `clipA.wav` with whisper.cpp,
-/// run the full pipeline, and assert the segments are structurally close to the
-/// faster-whisper golden. Skipped (no-op) without the `model` feature + a model.
-#[cfg(feature = "model")]
-#[tokio::test]
-async fn transcribe_real_decode() {
-    let Ok(model_path) = std::env::var("SUBMATE_WHISPER_MODEL") else {
-        eprintln!("skipping transcribe: set SUBMATE_WHISPER_MODEL to a whisper model file");
-        return;
-    };
-    let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/clips/clipA.wav");
-    if !clip.is_file() {
-        eprintln!("skipping transcribe: clip fixture {} missing", clip.display());
-        return;
-    }
+    /// Real end-to-end structural falsifier: decode `clipA.wav` with whisper.cpp,
+    /// run the full pipeline, and assert the segments are structurally close to the
+    /// faster-whisper golden. Skipped (no-op) without the `model` feature + a model.
+    #[cfg(feature = "model")]
+    #[tokio::test]
+    async fn transcribe_real_decode() {
+        let Ok(model_path) = std::env::var("SUBMATE_WHISPER_MODEL") else {
+            eprintln!("skipping transcribe: set SUBMATE_WHISPER_MODEL to a whisper model file");
+            return;
+        };
+        let clip =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/clips/clipA.wav");
+        if !clip.is_file() {
+            eprintln!(
+                "skipping transcribe: clip fixture {} missing",
+                clip.display()
+            );
+            return;
+        }
 
-    let transcription = submate_whisper::transcribe(
-        model_path,
-        &clip,
-        DEFAULT_REGROUP,
-        submate_whisper::TranscribeOptions::default(),
-    )
-    .await
-    .expect("real whisper.cpp pipeline succeeds");
+        let transcription = submate_whisper::transcribe(
+            model_path,
+            &clip,
+            DEFAULT_REGROUP,
+            submate_whisper::TranscribeOptions::default(),
+        )
+        .await
+        .expect("real whisper.cpp pipeline succeeds");
 
-    let actual: Vec<Seg> = transcription
-        .segments()
-        .into_iter()
-        .map(|s| Seg { start: s.start, end: s.end, text: s.text })
-        .collect();
-    let golden_segs = segs_from_json(&golden("transcribe/clipA.segments.json"));
+        let actual: Vec<Seg> = transcription
+            .segments()
+            .into_iter()
+            .map(|s| Seg {
+                start: s.start,
+                end: s.end,
+                text: s.text,
+            })
+            .collect();
+        let golden_segs = segs_from_json(&golden("transcribe/clipA.segments.json"));
 
-    // Cross-engine sanity check. The golden is a faster-whisper decode; this
-    // runs whisper.cpp. The two engines place segment BOUNDARIES differently
-    // (drift up to ~700ms), so per-segment timing parity across engines is not
-    // a meaningful assertion. What IS meaningful: a close segment count and an
-    // overall transcription that matches. So we check count (±1) and the
-    // concatenated-text similarity, not per-segment timing.
-    assert!(
-        (actual.len() as i64 - golden_segs.len() as i64).abs() <= 1,
-        "segment count {} not within 1 of golden {}",
-        actual.len(),
-        golden_segs.len(),
-    );
-    let join = |v: &[Seg]| v.iter().map(|s| s.text.trim()).collect::<Vec<_>>().join(" ");
-    assert_segments_close(
-        &[Seg { start: 0.0, end: 0.0, text: join(&actual) }],
-        &[Seg { start: 0.0, end: 0.0, text: join(&golden_segs) }],
-        SegTol { count: 0, time_ms: 0, text_ratio: 0.75 },
-    );
-}
-
-/// Structural pipeline falsifier (no model needed): the post-decode stages turn
-/// the captured raw transcription into the golden's segment *structure* — same
-/// count, same per-segment timing, same text for the segments the two
-/// independent faster-whisper decodes agree on.
-#[test]
-fn transcribe() {
-    let raw = raw_from_golden("stablets/clipA/00_raw.json");
-    let audio = load_f32("stablets/clipA/audio.f32");
-
-    let transcription = assemble_result(&raw, DEFAULT_REGROUP, &audio)
-        .expect("pipeline stages apply with the submate-default regroup string");
-
-    let actual: Vec<Seg> = transcription
-        .segments()
-        .into_iter()
-        .map(|s| Seg { start: s.start, end: s.end, text: s.text })
-        .collect();
-    let golden_segs = segs_from_json(&golden("transcribe/clipA.segments.json"));
-
-    // Count + per-segment timing match the golden exactly (regroup re-splits the
-    // 2 raw segments into the golden's 3 lines at the same boundaries).
-    assert_eq!(
-        actual.len(),
-        golden_segs.len(),
-        "regroup+suppress must yield the golden's segment count"
-    );
-    let tol = SegTol::default();
-    for (i, (a, g)) in actual.iter().zip(&golden_segs).enumerate() {
-        let ds = ((a.start - g.start).abs() * 1000.0) as u64;
-        let de = ((a.end - g.end).abs() * 1000.0) as u64;
+        // Cross-engine sanity check. The golden is a faster-whisper decode; this
+        // runs whisper.cpp. The two engines place segment BOUNDARIES differently
+        // (drift up to ~700ms), so per-segment timing parity across engines is not
+        // a meaningful assertion. What IS meaningful: a close segment count and an
+        // overall transcription that matches. So we check count (±1) and the
+        // concatenated-text similarity, not per-segment timing.
         assert!(
-            ds <= tol.time_ms && de <= tol.time_ms,
-            "segment {i} timing drift start={ds}ms end={de}ms > {}ms",
-            tol.time_ms
+            (actual.len() as i64 - golden_segs.len() as i64).abs() <= 1,
+            "segment count {} not within 1 of golden {}",
+            actual.len(),
+            golden_segs.len(),
+        );
+        let join = |v: &[Seg]| {
+            v.iter()
+                .map(|s| s.text.trim())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_segments_close(
+            &[Seg {
+                start: 0.0,
+                end: 0.0,
+                text: join(&actual),
+            }],
+            &[Seg {
+                start: 0.0,
+                end: 0.0,
+                text: join(&golden_segs),
+            }],
+            SegTol {
+                count: 0,
+                time_ms: 0,
+                text_ratio: 0.75,
+            },
         );
     }
 
-    // The two leading segments are identical across the two decodes; assert
-    // their text structurally. The trailing segment differs by one cross-run
-    // word swap (own two ⇄ old into) — that full-text check is the job of the
-    // model-gated `transcribe_real_decode` falsifier against a single decode.
-    assert_segments_close(&actual[..2], &golden_segs[..2], tol);
-}
+    /// Structural pipeline falsifier (no model needed): the post-decode stages turn
+    /// the captured raw transcription into the golden's segment *structure* — same
+    /// count, same per-segment timing, same text for the segments the two
+    /// independent faster-whisper decodes agree on.
+    #[test]
+    fn transcribe() {
+        let raw = raw_from_golden("stablets/clipA/00_raw.json");
+        let audio = load_f32("stablets/clipA/audio.f32");
+
+        let transcription = assemble_result(&raw, DEFAULT_REGROUP, &audio)
+            .expect("pipeline stages apply with the submate-default regroup string");
+
+        let actual: Vec<Seg> = transcription
+            .segments()
+            .into_iter()
+            .map(|s| Seg {
+                start: s.start,
+                end: s.end,
+                text: s.text,
+            })
+            .collect();
+        let golden_segs = segs_from_json(&golden("transcribe/clipA.segments.json"));
+
+        // Count + per-segment timing match the golden exactly (regroup re-splits the
+        // 2 raw segments into the golden's 3 lines at the same boundaries).
+        assert_eq!(
+            actual.len(),
+            golden_segs.len(),
+            "regroup+suppress must yield the golden's segment count"
+        );
+        let tol = SegTol::default();
+        for (i, (a, g)) in actual.iter().zip(&golden_segs).enumerate() {
+            let ds = ((a.start - g.start).abs() * 1000.0) as u64;
+            let de = ((a.end - g.end).abs() * 1000.0) as u64;
+            assert!(
+                ds <= tol.time_ms && de <= tol.time_ms,
+                "segment {i} timing drift start={ds}ms end={de}ms > {}ms",
+                tol.time_ms
+            );
+        }
+
+        // The two leading segments are identical across the two decodes; assert
+        // their text structurally. The trailing segment differs by one cross-run
+        // word swap (own two ⇄ old into) — that full-text check is the job of the
+        // model-gated `transcribe_real_decode` falsifier against a single decode.
+        assert_segments_close(&actual[..2], &golden_segs[..2], tol);
+    }
 }

@@ -107,7 +107,11 @@ Style: Default,Arial,24,&H00ff00,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10
 /// line would otherwise corrupt the event).
 fn dialogue_line(layer: usize, start: f64, end: f64, text: &str) -> String {
     let body = finalize_text(text).replace('\n', "\\N");
-    format!("Dialogue: {layer},{},{},Default,,0,0,0,,{body}", sec2ass(start), sec2ass(end))
+    format!(
+        "Dialogue: {layer},{},{},Default,,0,0,0,,{body}",
+        sec2ass(start),
+        sec2ass(end)
+    )
 }
 
 /// `finalize_text` with `strip=True` (the only mode submate uses):
@@ -130,7 +134,12 @@ fn segment2srtblock(start: f64, end: f64, text: &str, idx: usize) -> String {
 /// One VTT block: `segment2vttblock(segment)` —
 /// `"{start} --> {end}\n{finalize_text(text)}"`.
 fn segment2vttblock(start: f64, end: f64, text: &str) -> String {
-    format!("{} --> {}\n{}", sec2vtt(start), sec2vtt(end), finalize_text(text))
+    format!(
+        "{} --> {}\n{}",
+        sec2vtt(start),
+        sec2vtt(end),
+        finalize_text(text)
+    )
 }
 
 /// A flattened output cue: `start`/`end` timing plus the (already tagged) text.
@@ -201,18 +210,18 @@ fn words2segments(words: &[(String, f64, f64)], tag: (&str, &str)) -> Vec<OutCue
             text.push_str(&base[hi..]);
             text
         };
-        cues.push(OutCue { text, start: filled[i].1, end: filled[i].2 });
+        cues.push(OutCue {
+            text,
+            start: filled[i].1,
+            end: filled[i].2,
+        });
     }
     cues
 }
 
 /// `to_vtt_word_level_segments`'s `to_segment_string`: keep one cue per segment
 /// but splice cue-timing markers `<HH:MM:SS.mmm>` between words.
-fn vtt_word_level_segment(
-    seg_start: f64,
-    seg_end: f64,
-    words: &[(String, f64, f64)],
-) -> OutCue {
+fn vtt_word_level_segment(seg_start: f64, seg_end: f64, words: &[(String, f64, f64)]) -> OutCue {
     let mut s = String::new();
     let mut prev_end = 0.0_f64;
     for (i, (word, start, end)) in words.iter().enumerate() {
@@ -230,13 +239,21 @@ fn vtt_word_level_segment(
                 } else if let Some(rest) = word.strip_prefix(' ') {
                     word_text = Cow::Owned(rest.to_owned());
                 }
-                s.push_str(&format!("<{}> <{}>", sec2vtt(prev_end), sec2vtt(curr_start)));
+                s.push_str(&format!(
+                    "<{}> <{}>",
+                    sec2vtt(prev_end),
+                    sec2vtt(curr_start)
+                ));
             }
         }
         s.push_str(&word_text);
         prev_end = *end;
     }
-    OutCue { text: s, start: seg_start, end: seg_end }
+    OutCue {
+        text: s,
+        start: seg_start,
+        end: seg_end,
+    }
 }
 
 /// Round to 3 decimals half-to-even, matching Python's `round(x, 3)` for the
@@ -328,7 +345,11 @@ fn srt_cues(segments: &[Segment], word_level: bool) -> Vec<OutCue> {
     } else {
         segments
             .iter()
-            .map(|s| OutCue { text: s.text(), start: s.start(), end: s.end() })
+            .map(|s| OutCue {
+                text: s.text(),
+                start: s.start(),
+                end: s.end(),
+            })
             .collect()
     }
 }
@@ -343,7 +364,11 @@ fn vtt_cues(segments: &[Segment], word_level: bool) -> Vec<OutCue> {
     } else {
         segments
             .iter()
-            .map(|s| OutCue { text: s.text(), start: s.start(), end: s.end() })
+            .map(|s| OutCue {
+                text: s.text(),
+                start: s.start(),
+                end: s.end(),
+            })
             .collect()
     }
 }
@@ -352,7 +377,11 @@ fn vtt_cues(segments: &[Segment], word_level: bool) -> Vec<OutCue> {
 fn segment_words(seg: &Segment) -> Vec<(String, f64, f64)> {
     seg.words
         .as_ref()
-        .map(|ws| ws.iter().map(|w| (w.word.clone(), w.start(), w.end())).collect())
+        .map(|ws| {
+            ws.iter()
+                .map(|w| (w.word.clone(), w.start(), w.end()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 

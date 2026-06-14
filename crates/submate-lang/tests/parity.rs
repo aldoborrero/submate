@@ -46,11 +46,31 @@ fn lang_conversions() {
         let lang = variant_by_name(name);
 
         // Forward direction: enum -> codes/names.
-        assert_eq!(lang.to_iso_639_1(), opt_str(&row["iso_639_1"]), "{name}: iso_639_1");
-        assert_eq!(lang.to_iso_639_2_t(), opt_str(&row["iso_639_2_t"]), "{name}: iso_639_2_t");
-        assert_eq!(lang.to_iso_639_2_b(), opt_str(&row["iso_639_2_b"]), "{name}: iso_639_2_b");
-        assert_eq!(lang.to_name(true), opt_str(&row["name_en"]), "{name}: name_en");
-        assert_eq!(lang.to_name(false), opt_str(&row["name_native"]), "{name}: name_native");
+        assert_eq!(
+            lang.to_iso_639_1(),
+            opt_str(&row["iso_639_1"]),
+            "{name}: iso_639_1"
+        );
+        assert_eq!(
+            lang.to_iso_639_2_t(),
+            opt_str(&row["iso_639_2_t"]),
+            "{name}: iso_639_2_t"
+        );
+        assert_eq!(
+            lang.to_iso_639_2_b(),
+            opt_str(&row["iso_639_2_b"]),
+            "{name}: iso_639_2_b"
+        );
+        assert_eq!(
+            lang.to_name(true),
+            opt_str(&row["name_en"]),
+            "{name}: name_en"
+        );
+        assert_eq!(
+            lang.to_name(false),
+            opt_str(&row["name_native"]),
+            "{name}: name_native"
+        );
 
         // Reverse direction: each accessor string resolves back via from_string.
         let from_iso_639_1 = lang

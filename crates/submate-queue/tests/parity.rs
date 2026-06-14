@@ -74,7 +74,10 @@ fn queue_enum_values() {
         &[
             ("NOT_SKIPPED", SkipReason::NotSkipped),
             ("TARGET_SUBTITLE_EXISTS", SkipReason::TargetSubtitleExists),
-            ("EXTERNAL_SUBTITLE_EXISTS", SkipReason::ExternalSubtitleExists),
+            (
+                "EXTERNAL_SUBTITLE_EXISTS",
+                SkipReason::ExternalSubtitleExists,
+            ),
             (
                 "INTERNAL_SUBTITLE_LANGUAGE_EXISTS",
                 SkipReason::InternalSubtitleLanguageExists,
@@ -122,7 +125,10 @@ fn no_uncovered_enums_in_golden() {
 /// plus the `.extension` behavior the Python `OutputFormat` exposes.
 #[test]
 fn from_value_coercion() {
-    assert_eq!(OutputFormat::from_value(Some("vtt"), None), OutputFormat::Vtt);
+    assert_eq!(
+        OutputFormat::from_value(Some("vtt"), None),
+        OutputFormat::Vtt
+    );
     assert_eq!(
         OutputFormat::from_value(Some("json"), None),
         OutputFormat::Json

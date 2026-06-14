@@ -215,10 +215,15 @@ fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<WhisperWord> {
 
 #[cfg(test)]
 mod word_grouping_tests {
-    use super::{group_tokens_into_words, RawToken};
+    use super::{RawToken, group_tokens_into_words};
 
     fn tok(bytes: &[u8], t0: i64, t1: i64) -> RawToken {
-        RawToken { bytes: bytes.to_vec(), t0, t1, prob: 1.0 }
+        RawToken {
+            bytes: bytes.to_vec(),
+            t0,
+            t1,
+            prob: 1.0,
+        }
     }
     fn texts(words: &[super::WhisperWord]) -> Vec<&str> {
         words.iter().map(|w| w.word.as_str()).collect()
@@ -337,14 +342,22 @@ fn assemble_speech_only(
 
 #[cfg(test)]
 mod vad_remap_tests {
-    use super::{remap_seconds, VadRegion};
+    use super::{VadRegion, remap_seconds};
 
     // Original speech at [10,15) and [40,45), concatenated to filtered [0,5) and
     // [5,10) — the 25s silence between them is dropped.
     fn regions() -> Vec<VadRegion> {
         vec![
-            VadRegion { filtered_start: 0.0, orig_start: 10.0, dur: 5.0 },
-            VadRegion { filtered_start: 5.0, orig_start: 40.0, dur: 5.0 },
+            VadRegion {
+                filtered_start: 0.0,
+                orig_start: 10.0,
+                dur: 5.0,
+            },
+            VadRegion {
+                filtered_start: 5.0,
+                orig_start: 40.0,
+                dur: 5.0,
+            },
         ]
     }
 
@@ -370,7 +383,7 @@ mod vad_remap_tests {
 
 #[cfg(test)]
 mod vad_assemble_tests {
-    use super::{assemble_speech_only, remap_seconds, SAMPLE_RATE};
+    use super::{SAMPLE_RATE, assemble_speech_only, remap_seconds};
 
     // 16 kHz: 160 samples per centisecond, 16000 per second.
     #[test]
@@ -793,7 +806,11 @@ impl Transcription {
         self.result
             .segments
             .iter()
-            .map(|s| TranscriptionSegment { start: s.start(), end: s.end(), text: s.text() })
+            .map(|s| TranscriptionSegment {
+                start: s.start(),
+                end: s.end(),
+                text: s.text(),
+            })
             .collect()
     }
 
@@ -844,7 +861,7 @@ pub struct TranscriptionSegment {
 /// probability}]}`, exactly the fields whisper.cpp gives us. We emit that shape
 /// so the downstream stages operate on real word timings.
 fn raw_to_value(raw: &WhisperResult) -> serde_json::Value {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     let segments: Vec<Value> = raw
         .segments
@@ -939,12 +956,11 @@ pub async fn transcribe(
     regroup_algo: &str,
     options: TranscribeOptions,
 ) -> Result<Transcription, TranscribeError> {
-    use submate_media::{prepare_audio_for_transcription, PreparedAudio};
+    use submate_media::{PreparedAudio, prepare_audio_for_transcription};
 
     // Prepare audio: extract a track to PCM only when the file has several,
     // otherwise hand whisper the file path directly (matches the Python helper).
-    let prepared =
-        prepare_audio_for_transcription(media_path, options.language.as_deref()).await;
+    let prepared = prepare_audio_for_transcription(media_path, options.language.as_deref()).await;
     let pcm = match prepared {
         PreparedAudio::Pcm(bytes) => pcm_s16le_to_f32(&bytes),
         PreparedAudio::Path(path) => {
@@ -1060,9 +1076,15 @@ mod tests {
             .await
             .expect("transcription should succeed");
 
-        assert!(!result.text.is_empty(), "transcript text should be non-empty");
+        assert!(
+            !result.text.is_empty(),
+            "transcript text should be non-empty"
+        );
         assert!(!result.segments.is_empty(), "result should have segments");
-        assert!(result.word_count() > 0, "result should have per-word timings");
+        assert!(
+            result.word_count() > 0,
+            "result should have per-word timings"
+        );
         for seg in &result.segments {
             for word in &seg.words {
                 assert!(word.end >= word.start, "word end must not precede start");

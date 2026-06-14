@@ -100,50 +100,131 @@ const METHODS: &[(&str, &str, &[&str])] = &[
     (
         "sp",
         "split_by_punctuation",
-        &["punctuation", "lock", "newline", "min_words", "min_chars", "min_dur"],
+        &[
+            "punctuation",
+            "lock",
+            "newline",
+            "min_words",
+            "min_chars",
+            "min_dur",
+        ],
     ),
     (
         "sl",
         "split_by_length",
-        &["max_chars", "max_words", "even_split", "force_len", "lock", "include_lock", "newline"],
+        &[
+            "max_chars",
+            "max_words",
+            "even_split",
+            "force_len",
+            "lock",
+            "include_lock",
+            "newline",
+        ],
     ),
     (
         "sd",
         "split_by_duration",
-        &["max_dur", "even_split", "force_len", "lock", "include_lock", "newline"],
+        &[
+            "max_dur",
+            "even_split",
+            "force_len",
+            "lock",
+            "include_lock",
+            "newline",
+        ],
     ),
     (
         "mg",
         "merge_by_gap",
-        &["min_gap", "max_words", "max_chars", "is_sum_max", "lock", "newline"],
+        &[
+            "min_gap",
+            "max_words",
+            "max_chars",
+            "is_sum_max",
+            "lock",
+            "newline",
+        ],
     ),
     (
         "mp",
         "merge_by_punctuation",
-        &["punctuation", "max_words", "max_chars", "is_sum_max", "lock", "newline"],
+        &[
+            "punctuation",
+            "max_words",
+            "max_chars",
+            "is_sum_max",
+            "lock",
+            "newline",
+        ],
     ),
     ("ms", "merge_all_segments", &[]),
-    ("cm", "clamp_max", &["medium_factor", "max_dur", "clip_start", "verbose"]),
+    (
+        "cm",
+        "clamp_max",
+        &["medium_factor", "max_dur", "clip_start", "verbose"],
+    ),
     ("us", "unlock_all_segments", &[]),
-    ("l", "lock", &["startswith", "endswith", "right", "left", "case_sensitive", "strip"]),
+    (
+        "l",
+        "lock",
+        &[
+            "startswith",
+            "endswith",
+            "right",
+            "left",
+            "case_sensitive",
+            "strip",
+        ],
+    ),
     ("rw", "remove_word", &["word", "reassign_ids", "verbose"]),
-    ("rs", "remove_segment", &["segment", "reassign_ids", "verbose"]),
+    (
+        "rs",
+        "remove_segment",
+        &["segment", "reassign_ids", "verbose"],
+    ),
     (
         "rp",
         "remove_repetition",
-        &["max_words", "case_sensitive", "strip", "ignore_punctuations", "extend_duration", "verbose"],
+        &[
+            "max_words",
+            "case_sensitive",
+            "strip",
+            "ignore_punctuations",
+            "extend_duration",
+            "verbose",
+        ],
     ),
     (
         "rws",
         "remove_words_by_str",
-        &["words", "case_sensitive", "strip", "ignore_punctuations", "min_prob", "filters", "verbose"],
+        &[
+            "words",
+            "case_sensitive",
+            "strip",
+            "ignore_punctuations",
+            "min_prob",
+            "filters",
+            "verbose",
+        ],
     ),
     (
         "fg",
         "fill_in_gaps",
-        &["other_result", "min_gap", "case_sensitive", "strip", "ignore_punctuations", "verbose"],
+        &[
+            "other_result",
+            "min_gap",
+            "case_sensitive",
+            "strip",
+            "ignore_punctuations",
+            "verbose",
+        ],
     ),
-    ("p", "pad", &["start_pad", "end_pad", "max_dur", "max_end", "word_level"]),
+    (
+        "p",
+        "pad",
+        &["start_pad", "end_pad", "max_dur", "max_end", "word_level"],
+    ),
 ];
 
 /// Coerce one DSL argument to its value, mirroring `utils.str_to_valid_type`.
@@ -173,7 +254,9 @@ pub fn str_to_valid_type(val: &str) -> Option<Value> {
     }
     if val.contains('.') {
         if let Ok(f) = val.parse::<f64>() {
-            return Some(Number::from_f64(f).map_or_else(|| Value::String(val.to_string()), Value::Number));
+            return Some(
+                Number::from_f64(f).map_or_else(|| Value::String(val.to_string()), Value::Number),
+            );
         }
     } else if let Ok(i) = val.parse::<i64>() {
         return Some(Value::Number(Number::from(i)));
@@ -220,8 +303,11 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
             return Err(UnknownMethod(method.to_string()));
         };
 
-        let values: Vec<Option<Value>> =
-            if args.is_empty() { Vec::new() } else { args.split('+').map(str_to_valid_type).collect() };
+        let values: Vec<Option<Value>> = if args.is_empty() {
+            Vec::new()
+        } else {
+            args.split('+').map(str_to_valid_type).collect()
+        };
 
         let kwargs = params
             .iter()
@@ -229,7 +315,10 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
             .filter_map(|(name, value)| value.map(|v| ((*name).to_string(), v)))
             .collect();
 
-        operations.push(RegroupOp { method: (*name).to_string(), kwargs });
+        operations.push(RegroupOp {
+            method: (*name).to_string(),
+            kwargs,
+        });
     }
 
     Ok(operations)
@@ -257,7 +346,11 @@ pub struct UnsupportedMethod(pub String);
 
 impl std::fmt::Display for UnsupportedMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "regroup method {} is parsed but not yet applied (B2)", self.0)
+        write!(
+            f,
+            "regroup method {} is parsed but not yet applied (B2)",
+            self.0
+        )
     }
 }
 
@@ -268,7 +361,10 @@ impl std::error::Error for UnsupportedMethod {}
 /// Mirrors the loop `WhisperResult.regroup` runs over `parse_regroup_algo`'s
 /// output: each op is a method name plus the bound kwargs, called on the
 /// result in turn. Returns [`UnsupportedMethod`] for any op B2 doesn't yet run.
-pub fn apply_regroup(result: &mut WhisperResult, ops: &[RegroupOp]) -> Result<(), UnsupportedMethod> {
+pub fn apply_regroup(
+    result: &mut WhisperResult,
+    ops: &[RegroupOp],
+) -> Result<(), UnsupportedMethod> {
     for op in ops {
         apply_regroup_op(result, op)?;
     }
@@ -278,7 +374,10 @@ pub fn apply_regroup(result: &mut WhisperResult, ops: &[RegroupOp]) -> Result<()
 /// Apply a single parsed op to `result`, dispatching on its method name and
 /// reading its bound kwargs by name (absent kwargs fall back to the method's
 /// upstream default).
-pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<(), UnsupportedMethod> {
+pub fn apply_regroup_op(
+    result: &mut WhisperResult,
+    op: &RegroupOp,
+) -> Result<(), UnsupportedMethod> {
     match op.method.as_str() {
         "clamp_max" => {
             // Defaults from `WhisperResult.clamp_max`: medium_factor=2.5,
@@ -295,14 +394,37 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             // include_lock=False, newline=False.
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
-            let even_split = op.kwarg_bool("even_split").unwrap_or(Some(true)).unwrap_or(true);
-            let force_len = op.kwarg_bool("force_len").unwrap_or(Some(false)).unwrap_or(false);
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let include_lock = op.kwarg_bool("include_lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            let even_split = op
+                .kwarg_bool("even_split")
+                .unwrap_or(Some(true))
+                .unwrap_or(true);
+            let force_len = op
+                .kwarg_bool("force_len")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let include_lock = op
+                .kwarg_bool("include_lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
             split_by_length(
                 result,
-                SplitByLength { max_chars, max_words, even_split, force_len, lock, include_lock, newline },
+                SplitByLength {
+                    max_chars,
+                    max_words,
+                    even_split,
+                    force_len,
+                    lock,
+                    include_lock,
+                    newline,
+                },
             );
             Ok(())
         }
@@ -313,14 +435,36 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             // when absent the parsed `sd` op simply carries no `max_dur` kwarg,
             // mirroring the `sl` arm's optional-`max_chars` handling.
             let max_dur = op.kwarg_value("max_dur");
-            let even_split = op.kwarg_bool("even_split").unwrap_or(Some(true)).unwrap_or(true);
-            let force_len = op.kwarg_bool("force_len").unwrap_or(Some(false)).unwrap_or(false);
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let include_lock = op.kwarg_bool("include_lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            let even_split = op
+                .kwarg_bool("even_split")
+                .unwrap_or(Some(true))
+                .unwrap_or(true);
+            let force_len = op
+                .kwarg_bool("force_len")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let include_lock = op
+                .kwarg_bool("include_lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
             split_by_duration(
                 result,
-                SplitByDuration { max_dur, even_split, force_len, lock, include_lock, newline },
+                SplitByDuration {
+                    max_dur,
+                    even_split,
+                    force_len,
+                    lock,
+                    include_lock,
+                    newline,
+                },
             );
             Ok(())
         }
@@ -330,9 +474,22 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             // history string reproduces the DSL form (e.g. `0.5`) exactly, mirroring
             // the `split_by_duration` arm's handling of `max_dur`.
             let max_gap = op.kwarg_value("max_gap");
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
-            split_by_gap(result, SplitByGap { max_gap, lock, newline });
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            split_by_gap(
+                result,
+                SplitByGap {
+                    max_gap,
+                    lock,
+                    newline,
+                },
+            );
             Ok(())
         }
         "split_by_punctuation" => {
@@ -340,14 +497,27 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             // newline=False, min_words=None, min_chars=None, min_dur=None.
             // `punctuation` is required upstream; absent here leaves the op a no-op.
             let punctuation = op.kwarg_value("punctuation");
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
             let min_words = op.kwarg_usize("min_words").unwrap_or(None);
             let min_chars = op.kwarg_usize("min_chars").unwrap_or(None);
             let min_dur = op.kwarg_f64("min_dur").unwrap_or(None);
             split_by_punctuation(
                 result,
-                SplitByPunctuation { punctuation, lock, newline, min_words, min_chars, min_dur },
+                SplitByPunctuation {
+                    punctuation,
+                    lock,
+                    newline,
+                    min_words,
+                    min_chars,
+                    min_dur,
+                },
             );
             Ok(())
         }
@@ -360,10 +530,29 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             let min_gap = op.kwarg_value("min_gap");
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
-            let is_sum_max = op.kwarg_bool("is_sum_max").unwrap_or(Some(false)).unwrap_or(false);
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
-            merge_by_gap(result, MergeByGap { min_gap, max_words, max_chars, is_sum_max, lock, newline });
+            let is_sum_max = op
+                .kwarg_bool("is_sum_max")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            merge_by_gap(
+                result,
+                MergeByGap {
+                    min_gap,
+                    max_words,
+                    max_chars,
+                    is_sum_max,
+                    lock,
+                    newline,
+                },
+            );
             Ok(())
         }
         "merge_by_punctuation" => {
@@ -374,12 +563,28 @@ pub fn apply_regroup_op(result: &mut WhisperResult, op: &RegroupOp) -> Result<()
             let punctuation = op.kwarg_value("punctuation");
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
-            let is_sum_max = op.kwarg_bool("is_sum_max").unwrap_or(Some(false)).unwrap_or(false);
-            let lock = op.kwarg_bool("lock").unwrap_or(Some(false)).unwrap_or(false);
-            let newline = op.kwarg_bool("newline").unwrap_or(Some(false)).unwrap_or(false);
+            let is_sum_max = op
+                .kwarg_bool("is_sum_max")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let lock = op
+                .kwarg_bool("lock")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
+            let newline = op
+                .kwarg_bool("newline")
+                .unwrap_or(Some(false))
+                .unwrap_or(false);
             merge_by_punctuation(
                 result,
-                MergeByPunctuation { punctuation, max_words, max_chars, is_sum_max, lock, newline },
+                MergeByPunctuation {
+                    punctuation,
+                    max_words,
+                    max_chars,
+                    is_sum_max,
+                    lock,
+                    newline,
+                },
             );
             Ok(())
         }
@@ -465,7 +670,12 @@ fn result_has_words(result: &WhisperResult) -> bool {
 /// bounding by `max_dur`. With `clip_start = None` only the first word's start
 /// and the last word's end are clamped; otherwise every word is clamped on the
 /// side `clip_start` selects.
-fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Option<f64>, clip_start: Option<bool>) {
+fn clamp_max(
+    result: &mut WhisperResult,
+    medium_factor: Option<f64>,
+    max_dur: Option<f64>,
+    clip_start: Option<bool>,
+) {
     // `not (medium_factor or max_dur)` — both falsy is a ValueError upstream;
     // here the staged op always supplies medium_factor, so we just no-op.
     let mf = medium_factor.filter(|&f| f != 0.0);
@@ -477,26 +687,32 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
     }
 
     for seg in &mut result.segments {
-        let Some(words) = seg.words.as_mut() else { continue };
+        let Some(words) = seg.words.as_mut() else {
+            continue;
+        };
 
         let mut curr_max_dur: Option<f64> = None;
         if let Some(factor) = mf
-            && words.len() > 1 {
-                let mut durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
-                // Python `durations[len//2]` (raw index, not an averaged median)
-                // after an ascending sort. Quickselect partitions at that index
-                // in O(n); the element it lands there is exactly what a full
-                // ascending sort would place there.
-                let mid = durations.len() / 2;
-                let (_, median, _) =
-                    durations.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).expect("finite durations"));
-                curr_max_dur = Some(factor * *median);
-            }
+            && words.len() > 1
+        {
+            let mut durations: Vec<f64> = words.iter().map(WordTiming::duration).collect();
+            // Python `durations[len//2]` (raw index, not an averaged median)
+            // after an ascending sort. Quickselect partitions at that index
+            // in O(n); the element it lands there is exactly what a full
+            // ascending sort would place there.
+            let mid = durations.len() / 2;
+            let (_, median, _) = durations
+                .select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).expect("finite durations"));
+            curr_max_dur = Some(factor * *median);
+        }
         if let Some(md) = max_dur
-            && curr_max_dur.is_none_or(|c| c > md) {
-                curr_max_dur = Some(md);
-            }
-        let Some(cap) = curr_max_dur.filter(|&c| c != 0.0) else { continue };
+            && curr_max_dur.is_none_or(|c| c > md)
+        {
+            curr_max_dur = Some(md);
+        }
+        let Some(cap) = curr_max_dur.filter(|&c| c != 0.0) else {
+            continue;
+        };
 
         match clip_start {
             None => {
@@ -515,7 +731,9 @@ fn clamp_max(result: &mut WhisperResult, medium_factor: Option<f64>, max_dur: Op
     let entry = format!(
         "cm={}+{}+{}+{}",
         py_float(medium_factor.unwrap_or(0.0)),
-        max_dur.filter(|&d| d != 0.0).map_or(String::new(), py_float),
+        max_dur
+            .filter(|&d| d != 0.0)
+            .map_or(String::new(), py_float),
         match clip_start {
             Some(true) => "True".to_string(),
             _ => String::new(),
@@ -631,9 +849,18 @@ fn split_by_duration(result: &mut WhisperResult, p: SplitByDuration) {
 /// `get_length_indices` uses for characters); otherwise it splits greedily
 /// after the first non-locked word that pushes the running duration over
 /// `max_dur`.
-fn get_duration_indices(seg: &Segment, max_dur: Option<f64>, even_split: bool, include_lock: bool) -> Vec<usize> {
-    let Some(words) = seg.words.as_ref() else { return Vec::new() };
-    let Some(max_dur) = max_dur else { return Vec::new() };
+fn get_duration_indices(
+    seg: &Segment,
+    max_dur: Option<f64>,
+    even_split: bool,
+    include_lock: bool,
+) -> Vec<usize> {
+    let Some(words) = seg.words.as_ref() else {
+        return Vec::new();
+    };
+    let Some(max_dur) = max_dur else {
+        return Vec::new();
+    };
     if words.is_empty() {
         return Vec::new();
     }
@@ -655,7 +882,11 @@ fn get_duration_indices(seg: &Segment, max_dur: Option<f64>, even_split: bool, i
             .map(|i| argmin_abs(&cum, i as f64 * dur_per_split))
             .collect()
     } else {
-        let locked: Vec<usize> = if include_lock { get_locked_indices(words) } else { Vec::new() };
+        let locked: Vec<usize> = if include_lock {
+            get_locked_indices(words)
+        } else {
+            Vec::new()
+        };
         let mut indices = Vec::new();
         let mut curr_total_dur = 0.0;
         for (i, &dur) in durations.iter().enumerate() {
@@ -692,7 +923,12 @@ fn split_by_gap(result: &mut WhisperResult, p: SplitByGap) {
         Some(v) => v.as_f64().unwrap_or(0.0),
         None => 0.1,
     };
-    split_segments(result, |seg| get_gap_indices(seg, max_gap), p.lock, p.newline);
+    split_segments(
+        result,
+        |seg| get_gap_indices(seg, max_gap),
+        p.lock,
+        p.newline,
+    );
 
     // `sg={max_gap}+{int(lock)}+{int(newline)}` — the captured stable-ts records
     // exactly these three fields (golden `regroup_history`: `sg=0.5+0+0`).
@@ -709,7 +945,9 @@ fn split_by_gap(result: &mut WhisperResult, p: SplitByGap) {
 /// which to split where the gap between word `i`'s end and word `i+1`'s start
 /// exceeds `max_gap`, excluding locked boundaries.
 fn get_gap_indices(seg: &Segment, max_gap: f64) -> Vec<usize> {
-    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    let Some(words) = seg.words.as_ref() else {
+        return Vec::new();
+    };
     if words.len() < 2 {
         return Vec::new();
     }
@@ -749,16 +987,23 @@ enum PunctToken {
 /// in) segments at words bordering `punctuation`, optionally gated so only
 /// segments meeting `min_words`/`min_chars`/`min_dur` are touched.
 fn split_by_punctuation(result: &mut WhisperResult, p: SplitByPunctuation) {
-    let Some(punct_value) = p.punctuation.as_ref() else { return };
+    let Some(punct_value) = p.punctuation.as_ref() else {
+        return;
+    };
     let tokens = parse_punctuation(punct_value);
 
     let gated = p.min_words.is_some() || p.min_chars.is_some() || p.min_dur.is_some();
     let over_max = |seg: &Segment| -> bool {
         // `min_words and len(words) >= min_words` etc.; a `0` min is falsy in
         // Python, so it never gates (mirrored by treating `Some(0)` as off).
-        (p.min_words.is_some_and(|m| m != 0 && seg_word_count(seg) >= m))
-            || (p.min_chars.is_some_and(|m| m != 0 && seg_char_count(seg) >= m))
-            || (p.min_dur.is_some_and(|m| m != 0.0 && (seg.end() - seg.start()) >= m))
+        (p.min_words
+            .is_some_and(|m| m != 0 && seg_word_count(seg) >= m))
+            || (p
+                .min_chars
+                .is_some_and(|m| m != 0 && seg_char_count(seg) >= m))
+            || (p
+                .min_dur
+                .is_some_and(|m| m != 0.0 && (seg.end() - seg.start()) >= m))
     };
 
     split_segments(
@@ -778,7 +1023,12 @@ fn split_by_punctuation(result: &mut WhisperResult, p: SplitByPunctuation) {
     // records exactly these three fields (golden `regroup_history`:
     // `sp=,* /，+0+0`); the `min_words`/`min_chars`/`min_dur` gates affect which
     // segments split but are not part of this build's history encoding.
-    let entry = format!("sp={}+{}+{}", punct_str(&tokens), i32::from(p.lock), i32::from(p.newline));
+    let entry = format!(
+        "sp={}+{}+{}",
+        punct_str(&tokens),
+        i32::from(p.lock),
+        i32::from(p.newline)
+    );
     push_history(result, &entry);
 }
 
@@ -807,7 +1057,9 @@ fn parse_punctuation(value: &Value) -> Vec<PunctToken> {
 /// indices after which to split given the punctuation tokens, excluding locked
 /// boundaries.
 fn get_punctuation_indices(seg: &Segment, tokens: &[PunctToken]) -> Vec<usize> {
-    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    let Some(words) = seg.words.as_ref() else {
+        return Vec::new();
+    };
     if words.len() < 2 {
         return Vec::new();
     }
@@ -902,7 +1154,11 @@ fn merge_by_gap(result: &mut WhisperResult, p: MergeByGap) {
     merge_segments(
         result,
         &indices,
-        MergeCaps { max_words: p.max_words, max_chars: p.max_chars, is_sum_max: p.is_sum_max },
+        MergeCaps {
+            max_words: p.max_words,
+            max_chars: p.max_chars,
+            is_sum_max: p.is_sum_max,
+        },
         p.lock,
         p.newline,
     );
@@ -944,14 +1200,20 @@ struct MergeByPunctuation {
 /// for merging), runs the shared `merge_segments` driver, then appends the
 /// `mp=...` history entry.
 fn merge_by_punctuation(result: &mut WhisperResult, p: MergeByPunctuation) {
-    let Some(punct_value) = p.punctuation.as_ref() else { return };
+    let Some(punct_value) = p.punctuation.as_ref() else {
+        return;
+    };
     let tokens = parse_punctuation(punct_value);
 
     let indices = get_merge_punctuation_indices(result, &tokens);
     merge_segments(
         result,
         &indices,
-        MergeCaps { max_words: p.max_words, max_chars: p.max_chars, is_sum_max: p.is_sum_max },
+        MergeCaps {
+            max_words: p.max_words,
+            max_chars: p.max_chars,
+            is_sum_max: p.is_sum_max,
+        },
         p.lock,
         p.newline,
     );
@@ -975,7 +1237,8 @@ fn merge_by_punctuation(result: &mut WhisperResult, p: MergeByPunctuation) {
 /// way Python's `f'{x or ""}'` does: a present, non-zero cap renders its int; a
 /// `None` (or falsy `0`) renders empty.
 fn max_cap_str(cap: Option<usize>) -> String {
-    cap.filter(|&n| n != 0).map_or(String::new(), |n| n.to_string())
+    cap.filter(|&n| n != 0)
+        .map_or(String::new(), |n| n.to_string())
 }
 
 /// The `max_words`/`max_chars`/`is_sum_max` cap that gates each merge, mirroring
@@ -1066,7 +1329,13 @@ fn get_merge_punctuation_indices(result: &WhisperResult, tokens: &[PunctToken]) 
 /// Port of `WhisperResult._merge_segments`: for each candidate boundary index
 /// (in reverse order), fuse segment `i` into segment `i+1` unless the
 /// `max_words`/`max_chars` cap forbids it, then drop any now-wordless segments.
-fn merge_segments(result: &mut WhisperResult, indices: &[usize], caps: MergeCaps, lock: bool, newline: bool) {
+fn merge_segments(
+    result: &mut WhisperResult,
+    indices: &[usize],
+    caps: MergeCaps,
+    lock: bool,
+    newline: bool,
+) {
     if indices.is_empty() {
         return;
     }
@@ -1074,7 +1343,8 @@ fn merge_segments(result: &mut WhisperResult, indices: &[usize], caps: MergeCaps
         if merge_capped(&result.segments[i], &result.segments[i + 1], &caps) {
             continue;
         }
-        let merged = merge_two_segments(&result.segments[i], &result.segments[i + 1], lock, newline);
+        let merged =
+            merge_two_segments(&result.segments[i], &result.segments[i + 1], lock, newline);
         result.segments[i] = merged;
         result.segments.remove(i + 1);
     }
@@ -1121,7 +1391,10 @@ fn merge_capped(seg: &Segment, next_seg: &Segment, caps: &MergeCaps) -> bool {
 fn merge_two_segments(seg: &Segment, next_seg: &Segment, lock: bool, newline: bool) -> Segment {
     let mut merged = seg.clone();
     if seg.ori_has_words() && next_seg.ori_has_words() {
-        let mut words: Vec<WordTiming> = seg.words.as_ref().map_or_else(Vec::new, std::clone::Clone::clone);
+        let mut words: Vec<WordTiming> = seg
+            .words
+            .as_ref()
+            .map_or_else(Vec::new, std::clone::Clone::clone);
         let boundary = words.len();
         if let Some(next_words) = next_seg.words.as_ref() {
             words.extend(next_words.iter().cloned());
@@ -1225,7 +1498,9 @@ fn get_length_indices(
     even_split: bool,
     include_lock: bool,
 ) -> Vec<usize> {
-    let Some(words) = seg.words.as_ref() else { return Vec::new() };
+    let Some(words) = seg.words.as_ref() else {
+        return Vec::new();
+    };
     if words.is_empty() || (max_chars.is_none() && max_words.is_none()) {
         return Vec::new();
     }
@@ -1261,24 +1536,27 @@ fn even_length_indices(
     let mut exceed_words = max_words.is_some_and(|m| word_count > m);
 
     if let Some(mc) = max_chars
-        && char_count > mc {
-            // splits = ceil(char_count / max_chars).
-            let splits = char_count.div_ceil(mc);
-            let chars_per_split = char_count as f64 / splits as f64;
-            // cum_char_count over words[:-1].
-            let cum: Vec<f64> = prefix_sums_f64(&char_lens[..n_words - 1]);
-            indices = (1..splits)
-                .map(|i| argmin_abs(&cum, i as f64 * chars_per_split))
+        && char_count > mc
+    {
+        // splits = ceil(char_count / max_chars).
+        let splits = char_count.div_ceil(mc);
+        let chars_per_split = char_count as f64 / splits as f64;
+        // cum_char_count over words[:-1].
+        let cum: Vec<f64> = prefix_sums_f64(&char_lens[..n_words - 1]);
+        indices = (1..splits)
+            .map(|i| argmin_abs(&cum, i as f64 * chars_per_split))
+            .collect();
+        if let Some(mw) = max_words {
+            // exceed_words = any piece longer than max_words words.
+            let bounds: Vec<usize> = std::iter::once(0).chain(indices.iter().copied()).collect();
+            let ends: Vec<usize> = indices
+                .iter()
+                .copied()
+                .chain(std::iter::once(n_words))
                 .collect();
-            if let Some(mw) = max_words {
-                // exceed_words = any piece longer than max_words words.
-                let bounds: Vec<usize> = std::iter::once(0)
-                    .chain(indices.iter().copied())
-                    .collect();
-                let ends: Vec<usize> = indices.iter().copied().chain(std::iter::once(n_words)).collect();
-                exceed_words = bounds.iter().zip(&ends).any(|(&i, &j)| j - i + 1 > mw);
-            }
+            exceed_words = bounds.iter().zip(&ends).any(|(&i, &j)| j - i + 1 > mw);
         }
+    }
 
     if exceed_words {
         let mw = max_words.expect("exceed_words implies max_words set");
@@ -1302,7 +1580,11 @@ fn uneven_length_indices(
     max_words: Option<usize>,
     include_lock: bool,
 ) -> Vec<usize> {
-    let locked: Vec<usize> = if include_lock { get_locked_indices(words) } else { Vec::new() };
+    let locked: Vec<usize> = if include_lock {
+        get_locked_indices(words)
+    } else {
+        Vec::new()
+    };
     let mut indices = Vec::new();
     let mut curr_words = 0usize;
     let mut curr_chars = 0usize;
@@ -1352,7 +1634,9 @@ where
 /// split index (skipping the final-word index and any word that already ends in
 /// a newline), optionally locking across each break.
 fn apply_newline(seg: &mut Segment, indices: &mut Vec<usize>, lock: bool) {
-    let Some(words) = seg.words.as_mut() else { return };
+    let Some(words) = seg.words.as_mut() else {
+        return;
+    };
     let last_idx = words.len() - 1;
     // Drop a trailing split that lands on the very last word (no break needed).
     if indices.last() == Some(&last_idx) {
@@ -1375,7 +1659,10 @@ fn apply_newline(seg: &mut Segment, indices: &mut Vec<usize>, lock: bool) {
 /// Port of `Segment.split`: cut the segment's words at each split index into
 /// new word-bearing segments (cloning the parent's per-segment metadata).
 fn split_segment(seg: &Segment, mut indices: Vec<usize>, lock: bool) -> Vec<Segment> {
-    let words = seg.words.as_ref().expect("split only runs on word-bearing segments");
+    let words = seg
+        .words
+        .as_ref()
+        .expect("split only runs on word-bearing segments");
     if indices.is_empty() {
         return Vec::new();
     }
@@ -1420,7 +1707,9 @@ fn split_segment(seg: &Segment, mut indices: Vec<usize>, lock: bool) -> Vec<Segm
 /// originally had words but now has none. (`reassign_ids` is a no-op for parity
 /// since ids are not serialized.)
 fn remove_no_word_segments(result: &mut WhisperResult) {
-    result.segments.retain(|s| !s.ori_has_words() || s.has_words());
+    result
+        .segments
+        .retain(|s| !s.ori_has_words() || s.has_words());
 }
 
 /// Prefix character counts as `f64`, mirroring `np.cumsum`.
@@ -1473,7 +1762,10 @@ mod tests {
 
     #[test]
     fn unknown_method_errors() {
-        assert_eq!(parse_regroup_algo("zz").unwrap_err(), UnknownMethod("zz".to_string()));
+        assert_eq!(
+            parse_regroup_algo("zz").unwrap_err(),
+            UnknownMethod("zz".to_string())
+        );
     }
 
     #[test]
@@ -1527,7 +1819,9 @@ mod tests {
     fn seg_with_words(words: Vec<(f64, f64)>) -> Value {
         let words: Vec<Value> = words
             .into_iter()
-            .map(|(start, end)| json!({"word": "x", "start": start, "end": end, "probability": 0.5}))
+            .map(
+                |(start, end)| json!({"word": "x", "start": start, "end": end, "probability": 0.5}),
+            )
             .collect();
         json!({"words": words})
     }
@@ -1564,7 +1858,11 @@ mod tests {
 
         let three = result.segments[0].words.as_ref().unwrap();
         // Last word end clamped to start + (2.5 * median 0.2) = 0.4 + 0.5.
-        assert_eq!(three[2].end(), 0.9, "3-word last-word end must clamp under the n//2 cap");
+        assert_eq!(
+            three[2].end(),
+            0.9,
+            "3-word last-word end must clamp under the n//2 cap"
+        );
         // First word's duration (0.2) is below the cap, so its start is unchanged.
         assert_eq!(three[0].start(), 0.0);
 
@@ -1620,9 +1918,15 @@ mod tests {
         assert_eq!(indices, vec![1]);
 
         // Within max_dur -> no split.
-        assert_eq!(get_duration_indices(seg, Some(10.0), true, false), Vec::<usize>::new());
+        assert_eq!(
+            get_duration_indices(seg, Some(10.0), true, false),
+            Vec::<usize>::new()
+        );
         // Absent max_dur -> no split.
-        assert_eq!(get_duration_indices(seg, None, true, false), Vec::<usize>::new());
+        assert_eq!(
+            get_duration_indices(seg, None, true, false),
+            Vec::<usize>::new()
+        );
     }
 
     /// `get_gap_indices` splits where the inter-word gap exceeds `max_gap`.
@@ -1678,7 +1982,10 @@ mod tests {
     #[test]
     fn unsupported_method_is_rejected_by_apply() {
         let mut result = WhisperResult::from_value(&json!({"segments": []}));
-        let op = RegroupOp { method: "pad".to_string(), kwargs: Vec::new() };
+        let op = RegroupOp {
+            method: "pad".to_string(),
+            kwargs: Vec::new(),
+        };
         assert_eq!(
             apply_regroup_op(&mut result, &op).unwrap_err(),
             UnsupportedMethod("pad".to_string())

@@ -669,9 +669,10 @@ fn resolve_model(flag: Option<&Path>, config_model: &str) -> anyhow::Result<Path
     }
 
     if let Some(env_model) = std::env::var_os("SUBMATE__WHISPER__MODEL")
-        && !env_model.is_empty() {
-            return Ok(PathBuf::from(env_model));
-        }
+        && !env_model.is_empty()
+    {
+        return Ok(PathBuf::from(env_model));
+    }
 
     anyhow::bail!(
         "no Whisper model configured: pass --model <PATH>, set the whisper.model \
@@ -703,7 +704,7 @@ async fn transcribe_files(
     use submate_node::Dispatcher;
     use submate_proto::JobOpts;
     use submate_queue::JobStore;
-    use submate_server::{spawn_embedded_node, AudioSource, EmbeddedNodeSettings, NodeCoordinator};
+    use submate_server::{AudioSource, EmbeddedNodeSettings, NodeCoordinator, spawn_embedded_node};
     use submate_types::{Device, TranscriptionTask, WhisperModel};
 
     let store = if args.sync {
@@ -947,7 +948,8 @@ fn output_count(output: &str, format: OutputFormat) -> (usize, &'static str) {
 fn result_summary(input: &Path, output: &Path, count: usize, noun: &str) -> String {
     let name = |p: &Path| {
         p.file_name()
-            .and_then(|n| n.to_str()).map_or_else(|| p.display().to_string(), str::to_owned)
+            .and_then(|n| n.to_str())
+            .map_or_else(|| p.display().to_string(), str::to_owned)
     };
     let unit = if count == 1 {
         noun.to_string()
@@ -1047,7 +1049,8 @@ impl<W: std::io::Write> ProgressRenderer<W> {
 /// full `display()` form for paths with no final component).
 fn display_name(path: &Path) -> String {
     path.file_name()
-        .and_then(|n| n.to_str()).map_or_else(|| path.display().to_string(), str::to_owned)
+        .and_then(|n| n.to_str())
+        .map_or_else(|| path.display().to_string(), str::to_owned)
 }
 
 /// Bind an ephemeral loopback port and serve the coordinator's router on it,
@@ -1056,7 +1059,7 @@ fn display_name(path: &Path) -> String {
 async fn serve_loopback(
     coord: Arc<submate_server::NodeCoordinator>,
 ) -> anyhow::Result<std::net::SocketAddr> {
-    use submate_server::{app, AppState};
+    use submate_server::{AppState, app};
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
@@ -1071,7 +1074,7 @@ async fn serve_loopback(
 fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()> {
     use submate_queue::JobStore;
     use submate_server::{
-        app, spawn_embedded_node, AppState, EmbeddedNodeSettings, NodeCoordinator,
+        AppState, EmbeddedNodeSettings, NodeCoordinator, app, spawn_embedded_node,
     };
 
     apply_vad_model(args.vad_model.as_deref());
@@ -1196,23 +1199,23 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         if let (Some(target), Some(qfmt)) = (
             opts.target_language.as_deref().filter(|t| !t.is_empty()),
             proto_to_queue_format(opts.output_format),
-        )
-            && target != detected {
-                let backend = self.backend.clone();
-                let mut complete = move |prompt: String| {
-                    let backend = backend.clone();
-                    async move { backend.complete(&prompt).await }
-                };
-                content = submate_translate::translate_content(
-                    &content,
-                    &detected,
-                    target,
-                    qfmt,
-                    self.chunk_size,
-                    &mut complete,
-                )
-                .await;
-            }
+        ) && target != detected
+        {
+            let backend = self.backend.clone();
+            let mut complete = move |prompt: String| {
+                let backend = backend.clone();
+                async move { backend.complete(&prompt).await }
+            };
+            content = submate_translate::translate_content(
+                &content,
+                &detected,
+                target,
+                qfmt,
+                self.chunk_size,
+                &mut complete,
+            )
+            .await;
+        }
 
         Ok(submate_server::BazarrOutput {
             content,
@@ -1397,7 +1400,7 @@ enum TrackDecision {
 /// selector — `Index`, `Default`, `Auto`, a single-track file, a `Lang` with a
 /// unique match — is unambiguous and yields an empty set.
 fn ambiguous_candidates(tracks: &[AudioTrack], sel: Option<&AudioSelector>) -> Vec<usize> {
-    use submate_media::{lang_match_is_ambiguous, AudioSelector};
+    use submate_media::{AudioSelector, lang_match_is_ambiguous};
 
     match sel {
         Some(s @ AudioSelector::Lang(code)) if lang_match_is_ambiguous(tracks, s) => {
@@ -1421,7 +1424,7 @@ fn decide_track(
     is_tty: bool,
     non_interactive: bool,
 ) -> TrackDecision {
-    use submate_media::{resolve_audio_selector, AudioSelector};
+    use submate_media::{AudioSelector, resolve_audio_selector};
 
     if tracks.is_empty() {
         return TrackDecision::Error("no audio tracks available".to_string());

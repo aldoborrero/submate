@@ -26,12 +26,12 @@ use std::future::Future;
 use std::ops::Range;
 use std::time::Duration;
 
-use async_openai::config::{OpenAIConfig, OPENAI_API_BASE};
+use async_openai::Client;
+use async_openai::config::{OPENAI_API_BASE, OpenAIConfig};
 use async_openai::error::OpenAIError;
 use async_openai::types::chat::{
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
 };
-use async_openai::Client;
 use serde::Serialize;
 
 /// Default chunked-translation prompt template (ports `TRANSLATION_PROMPT`).
@@ -913,7 +913,8 @@ mod tests {
         assert_eq!(ollama.id(), "ollama");
         assert_eq!(ollama.base_url(), "http://localhost:11434/v1");
 
-        let gemini = OpenAiCompatBackend::new("gemini", "k", DEFAULT_GEMINI_MODEL, GEMINI_OPENAI_BASE);
+        let gemini =
+            OpenAiCompatBackend::new("gemini", "k", DEFAULT_GEMINI_MODEL, GEMINI_OPENAI_BASE);
         assert_eq!(gemini.id(), "gemini");
         assert_eq!(
             gemini.base_url(),
@@ -1047,7 +1048,7 @@ mod tests {
 
         use submate_queue::models::OutputFormat;
 
-        use super::super::{translate_content, SRT_SEPARATOR_TOKEN, VTT_SEPARATOR_TOKEN};
+        use super::super::{SRT_SEPARATOR_TOKEN, VTT_SEPARATOR_TOKEN, translate_content};
 
         const SRT_IN: &str = "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n";
         const VTT_IN: &str = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n";
@@ -1185,7 +1186,8 @@ mod tests {
         use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
         use super::super::{
-            Backend, AnthropicBackend, OpenAiCompatBackend, DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL,
+            AnthropicBackend, Backend, DEFAULT_CLAUDE_MODEL, DEFAULT_OPENAI_MODEL,
+            OpenAiCompatBackend,
         };
 
         /// Captured request: the JSON body plus the auth/version headers each

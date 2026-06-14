@@ -269,14 +269,15 @@ impl Segment {
     pub fn tokens(&self) -> Vec<i64> {
         if let Some(w) = self.words.as_ref()
             && let Some(first) = w.first()
-                && first.tokens.as_ref().is_some_and(|t| !t.is_empty()) {
-                    return w
-                        .iter()
-                        .filter_map(|x| x.tokens.as_ref())
-                        .flatten()
-                        .copied()
-                        .collect();
-                }
+            && first.tokens.as_ref().is_some_and(|t| !t.is_empty())
+        {
+            return w
+                .iter()
+                .filter_map(|x| x.tokens.as_ref())
+                .flatten()
+                .copied()
+                .collect();
+        }
         self.default_tokens.clone()
     }
 
@@ -301,17 +302,19 @@ impl Segment {
     /// `lock_left`: lock the first word's left edge.
     pub fn lock_left(&mut self) {
         if let Some(w) = self.words.as_mut()
-            && let Some(first) = w.first_mut() {
-                first.lock_left();
-            }
+            && let Some(first) = w.first_mut()
+        {
+            first.lock_left();
+        }
     }
 
     /// `lock_right`: lock the last word's right edge.
     pub fn lock_right(&mut self) {
         if let Some(w) = self.words.as_mut()
-            && let Some(last) = w.last_mut() {
-                last.lock_right();
-            }
+            && let Some(last) = w.last_mut()
+        {
+            last.lock_right();
+        }
     }
 
     /// `lock_both`.
@@ -363,7 +366,10 @@ impl Segment {
         map.insert("tokens".into(), int_array(&self.tokens()));
         map.insert("temperature".into(), opt_number(self.temperature));
         map.insert("avg_logprob".into(), opt_number(self.avg_logprob));
-        map.insert("compression_ratio".into(), opt_number(self.compression_ratio));
+        map.insert(
+            "compression_ratio".into(),
+            opt_number(self.compression_ratio),
+        );
         map.insert("no_speech_prob".into(), opt_number(self.no_speech_prob));
         if self.has_words() {
             let words = self.words.as_ref().expect("has_words implies Some");
@@ -421,7 +427,9 @@ impl From<RawSegment> for Segment {
             avg_logprob: r.avg_logprob,
             compression_ratio: r.compression_ratio,
             no_speech_prob: r.no_speech_prob,
-            words: r.words.map(|ws| ws.into_iter().map(WordTiming::from).collect()),
+            words: r
+                .words
+                .map(|ws| ws.into_iter().map(WordTiming::from).collect()),
             id: r.id,
         }
     }
@@ -485,7 +493,13 @@ impl WhisperResult {
             .map(Segment::from)
             .collect();
 
-        Self { segments, language, ori_dict, regroup_history, nonspeech_sections }
+        Self {
+            segments,
+            language,
+            ori_dict,
+            regroup_history,
+            nonspeech_sections,
+        }
     }
 
     /// Derived `text`: concatenation of every segment's text.
@@ -510,7 +524,10 @@ impl WhisperResult {
                 .map_or(Value::Null, |s| Value::String(s.clone())),
         );
         map.insert("ori_dict".into(), self.ori_dict.clone());
-        map.insert("regroup_history".into(), Value::String(self.regroup_history.clone()));
+        map.insert(
+            "regroup_history".into(),
+            Value::String(self.regroup_history.clone()),
+        );
         map.insert("nonspeech_sections".into(), self.nonspeech_sections.clone());
         Value::Object(map)
     }

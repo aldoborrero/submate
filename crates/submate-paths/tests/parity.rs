@@ -2,7 +2,7 @@
 
 use parity::{assert_str_eq, golden};
 use serde_json::Value;
-use submate_paths::{build_subtitle_path, map_path, SubtitleNaming};
+use submate_paths::{SubtitleNaming, build_subtitle_path, map_path};
 use submate_types::LanguageNamingType;
 
 fn naming_type_from(args: &Value) -> LanguageNamingType {

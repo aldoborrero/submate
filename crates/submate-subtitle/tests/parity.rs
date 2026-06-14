@@ -181,8 +181,8 @@ mod parity {
         let golden_path = fixture_path("subtitle/clipS.subs.json");
         if !clip.exists() || !golden_path.exists() {
             eprintln!(
-            "skipping internal_probe: optional fixture fixtures/subtitle/clipS.{{mkv,subs.json}} is absent"
-        );
+                "skipping internal_probe: optional fixture fixtures/subtitle/clipS.{{mkv,subs.json}} is absent"
+            );
             return;
         }
 

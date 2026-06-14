@@ -23,8 +23,9 @@ use submate_lang::LanguageCode;
 /// prefixed). Mirrors `submate.subtitle.SUBTITLE_EXTENSIONS` exactly — this is
 /// the WIDE discovery set, distinct from the narrower translate-path set in
 /// `cli/commands/translate.py`.
-pub const SUBTITLE_EXTENSIONS: &[&str] =
-    &[".srt", ".vtt", ".sub", ".ass", ".ssa", ".idx", ".sbv", ".pgs", ".ttml", ".lrc"];
+pub const SUBTITLE_EXTENSIONS: &[&str] = &[
+    ".srt", ".vtt", ".sub", ".ass", ".ssa", ".idx", ".sbv", ".pgs", ".ttml", ".lrc",
+];
 
 /// Python `PurePath.name`: the final path component as a string.
 fn path_name(path: &Path) -> &str {
@@ -337,7 +338,10 @@ mod tests {
 
     #[test]
     fn with_suffix_replaces_or_appends() {
-        assert_eq!(get_lrc_path(Path::new("song.mp3")), PathBuf::from("song.lrc"));
+        assert_eq!(
+            get_lrc_path(Path::new("song.mp3")),
+            PathBuf::from("song.lrc")
+        );
         assert_eq!(get_lrc_path(Path::new("noext")), PathBuf::from("noext.lrc"));
         assert_eq!(
             get_lrc_path(Path::new("archive.tar.gz")),
@@ -421,7 +425,11 @@ mod tests {
         }"#;
         assert_eq!(
             parse_internal_subtitle_languages(json),
-            Some(vec![LanguageCode::None, LanguageCode::None, LanguageCode::None]),
+            Some(vec![
+                LanguageCode::None,
+                LanguageCode::None,
+                LanguageCode::None
+            ]),
         );
     }
 
@@ -443,7 +451,10 @@ mod tests {
         let missing = Path::new("/nonexistent/submate-subtitle/does-not-exist.mkv");
         assert!(get_internal_subtitle_languages(missing).is_empty());
         assert!(!has_any_internal_subtitle(missing));
-        assert!(!has_internal_subtitle_language(missing, LanguageCode::ENGLISH));
+        assert!(!has_internal_subtitle_language(
+            missing,
+            LanguageCode::ENGLISH
+        ));
     }
 
     #[test]
@@ -452,7 +463,11 @@ mod tests {
         // not panic and must defer entirely to the external half. A missing
         // video also has no external subs, so both branches are false.
         let missing = Path::new("/nonexistent/submate-subtitle/clip.mkv");
-        assert!(!has_subtitle_language(missing, LanguageCode::ENGLISH, false));
+        assert!(!has_subtitle_language(
+            missing,
+            LanguageCode::ENGLISH,
+            false
+        ));
         assert!(!has_subtitle_language(missing, LanguageCode::ENGLISH, true));
     }
 }

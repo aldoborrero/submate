@@ -1179,8 +1179,8 @@ mod logging_tests {
 #[cfg(test)]
 mod agent_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use submate_types::{Device, TranscriptionTask, WhisperModel};
     use wiremock::matchers::{method, path};

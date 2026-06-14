@@ -18,17 +18,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::{
+    Json, Router,
     body::Body,
     extract::{Multipart, Path, Query, State},
-    http::{header, HeaderName, StatusCode},
+    http::{HeaderName, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use submate_config::ServerSettings;
-use submate_media::{prepare_audio_for_transcription, PreparedAudio};
+use submate_media::{PreparedAudio, prepare_audio_for_transcription};
 use submate_node::{Agent, AgentError, Dispatcher, JobProcessor};
 use submate_proto::{
     JobOpts, JobOutcome, JobResult, NodeRegister, NodeRegistered, OutputFormat, Progress,
@@ -359,7 +359,9 @@ impl NodeCoordinator {
         // Poisoning only happens if a holder panicked mid-operation; the store
         // is a plain SQLite wrapper with no broken-invariant risk, so recover
         // the guard rather than propagating the panic to every later request.
-        self.store.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Enqueue a job for `kind` carrying serialized [`JobOpts`], returning its
@@ -437,9 +439,14 @@ impl NodeCoordinator {
     /// `id`) keeps its existing token while its advertised capabilities are
     /// refreshed, so an in-flight lease keyed by `node_id` survives a re-register.
     fn register(&self, req: NodeRegister) -> NodeRegistered {
-        let mut nodes = self.nodes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let token = nodes
-            .get(&req.id).map_or_else(|| format!("tok_{}", req.id), |existing| existing.token.clone());
+        let mut nodes = self
+            .nodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = nodes.get(&req.id).map_or_else(
+            || format!("tok_{}", req.id),
+            |existing| existing.token.clone(),
+        );
         nodes.insert(
             req.id,
             NodeInfo {
@@ -522,11 +529,15 @@ impl NodeCoordinator {
     /// A send failure (the receiver was dropped — the caller gave up) drops the
     /// subscription so later updates short-circuit instead of re-locking.
     fn fan_out_progress(&self, id: JobId, update: Progress) {
-        let mut subs = self.progress_subs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut subs = self
+            .progress_subs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(tx) = subs.get(&id)
-            && tx.send(update).is_err() {
-                subs.remove(&id);
-            }
+            && tx.send(update).is_err()
+        {
+            subs.remove(&id);
+        }
     }
 
     /// Mark a job terminal from the node's [`JobResult`] and wake any synchronous
@@ -621,7 +632,11 @@ impl StatsSource for NodeCoordinator {
     fn stats(&self) -> QueueStats {
         let store = self.store();
         let count = |state| store.count(state).unwrap_or(0).max(0) as u64;
-        let nodes = self.nodes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() as u64;
+        let nodes = self
+            .nodes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len() as u64;
         QueueStats {
             pending: count(JobState::Queued),
             running: count(JobState::Running),
@@ -1906,7 +1921,13 @@ mod bazarr_routes_tests {
             .unwrap();
         let status = resp.status();
         let headers = resp.headers().clone();
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
         (status, headers, bytes)
     }
 
@@ -1923,22 +1944,31 @@ mod bazarr_routes_tests {
             headers.get("source").unwrap(),
             "Transcribed using stable-ts from Submate"
         );
-        assert!(headers
-            .get(header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("text/plain"));
+        assert!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain")
+        );
         assert_eq!(String::from_utf8(body).unwrap(), SRT);
     }
 
     #[tokio::test]
     async fn asr_failure_returns_empty_body() {
         // Transcriber error → empty body, never an error envelope.
-        let (status, _h, body) =
-            post(with_fake(true), "/bazarr/asr?output=srt&encode=false", b"\x00\x01").await;
+        let (status, _h, body) = post(
+            with_fake(true),
+            "/bazarr/asr?output=srt&encode=false",
+            b"\x00\x01",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body.is_empty(), "failure must be an empty body, got {body:?}");
+        assert!(
+            body.is_empty(),
+            "failure must be an empty body, got {body:?}"
+        );
 
         // No seam wired (brain-only server) → also an empty body.
         let (status, _h, body) =

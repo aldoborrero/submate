@@ -14,7 +14,11 @@ async fn main() {
     )
     .await
     .expect("transcribe");
-    println!("--- text ---\n{}\n--- srt ---\n{}", t.text(), t.to_srt_vtt(false));
+    println!(
+        "--- text ---\n{}\n--- srt ---\n{}",
+        t.text(),
+        t.to_srt_vtt(false)
+    );
 }
 #[cfg(not(feature = "model"))]
 fn main() {

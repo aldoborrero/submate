@@ -671,12 +671,16 @@ mod parity {
 
     #[test]
     fn probe_handles_no_audio_streams() {
-        assert!(parse_audio_tracks(r#"{ "streams": [] }"#)
-            .expect("empty streams parses")
-            .is_empty());
-        assert!(parse_audio_tracks("{}")
-            .expect("missing streams key parses")
-            .is_empty());
+        assert!(
+            parse_audio_tracks(r#"{ "streams": [] }"#)
+                .expect("empty streams parses")
+                .is_empty()
+        );
+        assert!(
+            parse_audio_tracks("{}")
+                .expect("missing streams key parses")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -808,10 +812,16 @@ mod parity {
             "default".parse::<AudioSelector>().unwrap(),
             AudioSelector::Default,
         );
-        assert_eq!("auto".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
+        assert_eq!(
+            "auto".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Auto
+        );
         assert_eq!("".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
         // Case-insensitive keywords.
-        assert_eq!("AUTO".parse::<AudioSelector>().unwrap(), AudioSelector::Auto);
+        assert_eq!(
+            "AUTO".parse::<AudioSelector>().unwrap(),
+            AudioSelector::Auto
+        );
         assert_eq!(
             "Default".parse::<AudioSelector>().unwrap(),
             AudioSelector::Default,
@@ -1057,7 +1067,17 @@ mod real_ffprobe {
 
         // 1s of silence, AAC, tagged eng. Written to a temp file, not a fixture.
         let r#gen = std::process::Command::new("ffmpeg")
-            .args(["-y", "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1", "-c:a", "aac"])
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=16000:cl=mono",
+                "-t",
+                "1",
+                "-c:a",
+                "aac",
+            ])
             .args(["-metadata:s:a:0", "language=eng"])
             .arg(&path)
             .output()
