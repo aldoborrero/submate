@@ -1,5 +1,4 @@
 {
-  lib,
   dockerTools,
   buildEnv,
   submate,
@@ -10,19 +9,25 @@
 }:
 
 let
-  # Create a merged environment with all binaries in /bin
   env = buildEnv {
     name = "submate-env";
     paths = [
-      submate
-      ffmpeg
-      cacert
+      submate # the native-Rust submate binary
+      ffmpeg # audio extraction / decode
+      cacert # TLS roots for the LLM translation backends
       busybox
-      curl
+      curl # healthcheck
     ];
-    pathsToLink = [ "/bin" "/etc" "/lib" "/share" ];
+    pathsToLink = [
+      "/bin"
+      "/etc"
+      "/lib"
+      "/share"
+    ];
   };
 in
+# CPU image of the Rust port. Mirrors the Python `docker-cpu`, but built from
+# `submate`. `docker run -p 9000:9000 submate:cpu`.
 dockerTools.buildLayeredImage {
   name = "submate";
   tag = "cpu";
@@ -47,7 +52,7 @@ dockerTools.buildLayeredImage {
     };
     Labels = {
       "org.opencontainers.image.title" = "submate";
-      "org.opencontainers.image.description" = "Subtitle generation with Whisper (CPU)";
+      "org.opencontainers.image.description" = "Subtitle generation with Whisper, Rust port (CPU)";
     };
     Healthcheck = {
       Test = [
@@ -56,8 +61,8 @@ dockerTools.buildLayeredImage {
         "-f"
         "http://localhost:9000/"
       ];
-      Interval = 30000000000; # 30s in nanoseconds
-      Timeout = 10000000000; # 10s in nanoseconds
+      Interval = 30000000000;
+      Timeout = 10000000000;
       Retries = 3;
     };
   };

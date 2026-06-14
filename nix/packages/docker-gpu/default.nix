@@ -1,5 +1,4 @@
 { pkgs, perSystem }:
 pkgs.callPackage ./package.nix {
-  submate = perSystem.self.submate;
-  inherit (pkgs) curl;
+  submate-cuda = perSystem.self.submate-cuda;
 }

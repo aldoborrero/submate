@@ -1,47 +1,14 @@
 { pkgs, perSystem }:
-let
-  pythonEnv = pkgs.python313.withPackages (
-    ps: with ps; [
-      anthropic
-      click
-      fastapi
-      faster-whisper
-      ffmpeg-python
-      google-generativeai
-      httpx
-      huey
-      mypy
-      openai
-      perSystem.self.stable-ts
-      pydantic
-      pydantic-settings
-      pytest
-      pytest-asyncio
-      pytest-cov
-      pytest-mock
-      python-daemon
-      python-multipart
-      requests
-      rich
-      srt
-      pysubs2
-      uvicorn
-    ]
-  );
-in
 perSystem.devshell.mkShell {
   packages = (
     with pkgs;
     [
-      pythonEnv
-      ffmpeg
+      ffmpeg # audio extraction / decode
       yt-dlp # fetch test videos from YouTube etc. (uses ffmpeg for muxing)
-      ruff
-      uv
       just
       perSystem.self.formatter
 
-      # Rust toolchain for the rust/ port (kept in sync within one nixpkgs rev).
+      # Rust toolchain for the submate workspace (kept in sync within one nixpkgs rev).
       cargo
       rustc
       clippy

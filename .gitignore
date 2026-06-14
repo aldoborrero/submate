@@ -47,3 +47,4 @@ samples/
 # grind runtime
 /.grind-stop
 /rust/target/
+.scratch/

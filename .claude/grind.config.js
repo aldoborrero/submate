@@ -53,7 +53,12 @@ submate-server (server/), submate-cli (cli/). parity/ is the test-helper crate.`
 // EXCLUSIVE CLI-UX focus: work ONLY items whose slug starts with these prefixes;
 // do NOT fill leftover implementer slots with other product items. When no
 // matching item is ready, the round runs no implementers and the run dries out.
-const FOCUS = ['port-stablets-regroup-', 'perf-']
+// Bazarr direct-dispatch feature (drop the queue for Bazarr; be a synchronous
+// Whisper provider). The whole chain: pcm-decode + translate-dispatch +
+// language-name leaves → direct-core (transcribe seam) → server routes →
+// provider compatibility tests. The two align-bazarr items pin the wire
+// contract. See backlog/port-bazarr-direct-core.md for the design note.
+const FOCUS = ['port-bazarr-', 'port-server-bazarr-', 'align-bazarr-']
 const FOCUS_EXCLUSIVE = true
 
 const CONFIG = {
@@ -63,7 +68,7 @@ const CONFIG = {
   // Round cap. Honored even when launch args don't propagate (the earlier run
   // ignored {rounds:2} and ran unbounded). Raise this — or pass {rounds:N} at
   // launch — for a longer run; set Infinity to drain the whole backlog.
-  maxRounds: 4,
+  maxRounds: 6,
   dryLimit: 2,
   rotation: ['parity', 'porter-scout', 'aligner', 'simplifier', 'curator', 'documenter'],
 
@@ -101,11 +106,11 @@ const CONFIG = {
     parity: `LAST=$(git log --format=%H -1 --grep='^parity r'); : "\${LAST:=$(git rev-list --max-parents=0 HEAD)}"; [ -z "$(git diff --name-only "$LAST"..HEAD -- rust/crates/)" ]`,
   },
 
-  // Implementers never hand-touch the grind, the Python spec, or golden truth.
-  // Golden fixtures change only via a deliberate capture run (a human/parity
-  // item), never as a side effect of porting code.
+  // Implementers never hand-touch the grind or the frozen golden fixtures (the
+  // Python spec was removed once the port reached parity; the committed fixtures
+  // are now Rust's own snapshots and only change via a deliberate update).
   mergeDenylist: [/^\.claude\//, /^\.git\//, /^\.github\//, /grind-base\.js$/,
-                  /^rust\/fixtures\//, /^submate\//, /\.py$/],
+                  /^rust\/fixtures\//],
 
   // Binary gate: the merged result must pass test + clippy. A port — correctness
   // only, no perf budget.
