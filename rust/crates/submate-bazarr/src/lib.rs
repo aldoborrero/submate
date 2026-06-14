@@ -69,6 +69,31 @@ pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Decode raw s16le PCM (or a canonical-WAV-wrapped clip) into mono f32 samples.
+///
+/// Bazarr posts s16le / mono / 16 kHz PCM (`encode=false`); whisper-rs's
+/// `transcribe_pcm` takes `Vec<f32>` in `-1.0..=1.0`, so this is the decode that
+/// bridges them — the only place the synchronous Bazarr path converts samples,
+/// so it must be byte-exact (token-set tolerance applies to transcription
+/// *output*, never to the sample decode feeding it).
+///
+/// Each little-endian `i16` is divided by `32768.0` — the standard s16→float
+/// scale (`i16::MIN / 32768 == -1.0`, `i16::MAX / 32768 == 32767/32768`). A
+/// trailing odd byte (an incomplete final sample) is dropped (`chunks_exact(2)`).
+/// If `bytes` begins with `b"RIFF"` — a clip run back through
+/// [`wrap_pcm_as_wav`] — the canonical 44-byte header is skipped first, so the
+/// two functions are inverses on that header.
+pub fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
+    let pcm = if bytes.starts_with(b"RIFF") && bytes.len() >= WAV_HEADER_LEN {
+        &bytes[WAV_HEADER_LEN..]
+    } else {
+        bytes
+    };
+    pcm.chunks_exact(2)
+        .map(|s| f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0)
+        .collect()
+}
+
 /// The detected-language placeholder for a missing/empty detection.
 ///
 /// Mirrors Python's `result.language or "und"`: an empty or absent Whisper
@@ -280,6 +305,73 @@ mod parity {
         assert_eq!(out.len(), WAV_HEADER_LEN);
         assert_eq!(&out[..4], b"RIFF");
         assert_eq!(&out[40..44], &[0x00, 0x00, 0x00, 0x00]); // data len = 0
+    }
+
+    #[track_caller]
+    fn assert_f32_close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len(), "sample count mismatch");
+        for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (a - e).abs() <= 1e-7,
+                "sample {i}: actual={a} expected={e}"
+            );
+        }
+    }
+
+    /// Exact s16→f32 scale (`/32768.0`): the endpoints and a few interior values
+    /// pinned so a 32767-vs-32768 divisor or endianness flip fails here.
+    #[test]
+    fn pcm_decode_scale_and_endianness() {
+        // i16 LE: 0, +32767 (max), -32768 (min), +16384 (0.5), -16384 (-0.5).
+        let bytes = [
+            0x00, 0x00, // 0
+            0xff, 0x7f, // 32767
+            0x00, 0x80, // -32768
+            0x00, 0x40, // 16384
+            0x00, 0xc0, // -16384
+        ];
+        assert_f32_close(
+            &pcm_s16le_to_f32(&bytes),
+            &[0.0, 32767.0 / 32768.0, -1.0, 0.5, -0.5],
+        );
+    }
+
+    /// A trailing odd byte (incomplete final sample) is dropped, not padded.
+    #[test]
+    fn pcm_decode_drops_trailing_odd_byte() {
+        let bytes = [0x00, 0x40, 0x7f]; // one full sample (16384) + a dangling byte
+        assert_f32_close(&pcm_s16le_to_f32(&bytes), &[0.5]);
+    }
+
+    /// wrap/decode are inverses: RIFF-prefixed input header-strips to the same
+    /// samples as the raw PCM, so a clip survives a wrap→decode round-trip.
+    #[test]
+    fn pcm_decode_riff_roundtrip() {
+        let raw = [0x01, 0x00, 0xff, 0x7f, 0x00, 0x80, 0x34, 0x12];
+        let wrapped = wrap_pcm_as_wav(&raw);
+        assert_eq!(&wrapped[..4], b"RIFF");
+        assert_f32_close(&pcm_s16le_to_f32(&wrapped), &pcm_s16le_to_f32(&raw));
+    }
+
+    /// Empty input → no samples.
+    #[test]
+    fn pcm_decode_empty() {
+        assert!(pcm_s16le_to_f32(&[]).is_empty());
+    }
+
+    /// Golden cross-check against the captured reference floats, when present.
+    /// `rust/fixtures/` is denylisted, so the f32 golden is captured separately;
+    /// until it lands this skips (same pattern as the WAV goldens above).
+    #[test]
+    fn pcm_decode_golden() {
+        let (Some(pcm), Some(f32_bytes)) = (golden("sine440.pcm"), golden("sine440.f32")) else {
+            return;
+        };
+        let expected: Vec<f32> = f32_bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_f32_close(&pcm_s16le_to_f32(&pcm), &expected);
     }
 
     /// The in-set codes and their exact Python-sourced names, pinned inline.
