@@ -64,6 +64,7 @@ fn queue_enum_values() {
         &[
             ("SRT", OutputFormat::Srt),
             ("VTT", OutputFormat::Vtt),
+            ("ASS", OutputFormat::Ass),
             ("TXT", OutputFormat::Txt),
             ("JSON", OutputFormat::Json),
         ],
@@ -121,32 +122,5 @@ fn no_uncovered_enums_in_golden() {
     assert_eq!(obj.len(), COVERED_ENUMS.len(), "enum count mismatch");
 }
 
-/// Reproduce `tests/test_queue.py::test_output_format_from_value_normalizes`
-/// plus the `.extension` behavior the Python `OutputFormat` exposes.
-#[test]
-fn from_value_coercion() {
-    assert_eq!(
-        OutputFormat::from_value(Some("vtt"), None),
-        OutputFormat::Vtt
-    );
-    assert_eq!(
-        OutputFormat::from_value(Some("json"), None),
-        OutputFormat::Json
-    );
-    assert_eq!(
-        OutputFormat::from_value(Some("nonsense"), None),
-        OutputFormat::Srt
-    );
-    assert_eq!(
-        OutputFormat::from_value(Some("nonsense"), Some(OutputFormat::Txt)),
-        OutputFormat::Txt
-    );
-    // `None` input behaves like an unknown string.
-    assert_eq!(OutputFormat::from_value(None, None), OutputFormat::Srt);
-    assert_eq!(
-        OutputFormat::from_value(None, Some(OutputFormat::Txt)),
-        OutputFormat::Txt
-    );
-
-    assert_eq!(OutputFormat::Srt.extension(), ".srt");
-}
+// `OutputFormat::from_value` / `.extension` behavior is unit-tested where the
+// enum is defined (`submate-types`), since it is now shared across crates.

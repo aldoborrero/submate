@@ -1,5 +1,6 @@
 {
   "OutputFormat": {
+    "ASS": "ass",
     "JSON": "json",
     "SRT": "srt",
     "TXT": "txt",

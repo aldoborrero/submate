@@ -20,38 +20,10 @@ use submate_types::{Device, TranscriptionTask, TranslationBackend, WhisperModel}
 /// Subtitle output format a node should emit for a job.
 ///
 /// Carried on [`JobOpts`] so both the synchronous and queued paths render the
-/// format the user picked at the CLI. The wire strings are the bare format
-/// names (`"srt"`, `"vtt"`, …); the field serde-defaults to [`OutputFormat::Srt`]
-/// so older payloads (and the queued path before this field existed) keep
-/// producing SRT.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputFormat {
-    /// SubRip subtitles (`.srt`).
-    #[default]
-    Srt,
-    /// WebVTT subtitles (`.vtt`).
-    Vtt,
-    /// Advanced SubStation Alpha subtitles (`.ass`).
-    Ass,
-    /// JSON dump of the full transcription result (`.json`).
-    Json,
-    /// Plain-text transcript, no timestamps (`.txt`).
-    Txt,
-}
-
-impl OutputFormat {
-    /// File extension including the leading dot (e.g. `".srt"`).
-    pub fn extension(self) -> &'static str {
-        match self {
-            Self::Srt => ".srt",
-            Self::Vtt => ".vtt",
-            Self::Ass => ".ass",
-            Self::Json => ".json",
-            Self::Txt => ".txt",
-        }
-    }
-}
+/// format the user picked at the CLI. The canonical enum lives in
+/// `submate-types` (one definition shared across the wire, queue and CLI
+/// layers); it is re-exported here for the wire types that reference it.
+pub use submate_types::OutputFormat;
 
 /// Node → server: announce capabilities and claim a coordination token.
 ///
@@ -372,16 +344,6 @@ mod tests {
         let opts: JobOpts =
             serde_json::from_str(r#"{"model":"medium","device":"auto"}"#).expect("deserialize");
         assert_eq!(opts.output_format, OutputFormat::Srt);
-    }
-
-    /// Each `OutputFormat` maps to its dotted file extension.
-    #[test]
-    fn output_format_extension() {
-        assert_eq!(OutputFormat::Srt.extension(), ".srt");
-        assert_eq!(OutputFormat::Vtt.extension(), ".vtt");
-        assert_eq!(OutputFormat::Ass.extension(), ".ass");
-        assert_eq!(OutputFormat::Json.extension(), ".json");
-        assert_eq!(OutputFormat::Txt.extension(), ".txt");
     }
 
     /// `JobResult` failure carries `ok:false` with `error`.

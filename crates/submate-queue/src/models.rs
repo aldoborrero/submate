@@ -12,62 +12,10 @@
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 
-/// Supported output formats for transcription (`OutputFormat` in
-/// `submate.queue.models`).
-///
-/// A plain `Enum` on the Python side — its `.value` is the lowercase format
-/// name, and `.extension` prepends a dot. Coercion from arbitrary strings goes
-/// through [`OutputFormat::from_value`], which never errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
-pub enum OutputFormat {
-    /// SubRip subtitles (`srt`).
-    #[serde(rename = "srt")]
-    Srt,
-    /// WebVTT subtitles (`vtt`).
-    #[serde(rename = "vtt")]
-    Vtt,
-    /// Plain text (`txt`).
-    #[serde(rename = "txt")]
-    Txt,
-    /// JSON segments (`json`).
-    #[serde(rename = "json")]
-    Json,
-}
-
-impl OutputFormat {
-    /// The on-the-wire `.value` string (matches Python `OutputFormat.value`).
-    pub fn value(self) -> &'static str {
-        match self {
-            Self::Srt => "srt",
-            Self::Vtt => "vtt",
-            Self::Txt => "txt",
-            Self::Json => "json",
-        }
-    }
-
-    /// File extension including the leading dot (e.g. `".srt"`).
-    ///
-    /// Mirrors Python's `OutputFormat.extension` (`f".{value}"`).
-    pub fn extension(self) -> String {
-        format!(".{}", self.value())
-    }
-
-    /// Coerce an optional string into an `OutputFormat`, never erroring.
-    ///
-    /// Ports `OutputFormat.from_value`: a known string maps to its variant; an
-    /// unknown (or `None`) string falls back to `default` if given, else
-    /// [`OutputFormat::Srt`]. (The Python overload that accepts an existing
-    /// `OutputFormat` is the identity and needs no Rust counterpart.)
-    pub fn from_value(value: Option<&str>, default: Option<Self>) -> Self {
-        match value {
-            Some("srt") => Self::Srt,
-            Some("vtt") => Self::Vtt,
-            Some("txt") => Self::Txt,
-            Some("json") => Self::Json,
-            _ => default.unwrap_or(Self::Srt),
-        }
-    }
-}
+/// Subtitle output format for a job. The canonical enum lives in `submate-types`
+/// (one definition shared across the wire, queue and CLI layers); it is
+/// re-exported here so `submate_queue::OutputFormat` keeps resolving.
+pub use submate_types::OutputFormat;
 
 /// Reasons a transcription was skipped (`SkipReason` in
 /// `submate.queue.models`).

@@ -2208,6 +2208,7 @@ dependencies = [
  "serde",
  "serde_json",
  "strum",
+ "submate-types",
  "thiserror",
 ]
 
@@ -2255,7 +2256,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "submate-queue",
  "submate-subtitle",
  "submate-types",
  "tokio",

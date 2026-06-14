@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+submate-types = { path = "../submate-types" }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 strum = { workspace = true }

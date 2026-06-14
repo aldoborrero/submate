@@ -153,3 +153,120 @@ pub enum TranslationBackend {
     #[serde(rename = "gemini")]
     Gemini,
 }
+
+/// Subtitle output format a transcription job emits.
+///
+/// The wire/value string is the bare lowercase format name (`"srt"`, `"vtt"`,
+/// …) and [`OutputFormat::extension`] prepends the dot. Defaults to
+/// [`OutputFormat::Srt`] so a payload without an explicit format produces SRT.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Display,
+    EnumString,
+    EnumIter,
+    Serialize,
+    Deserialize,
+)]
+pub enum OutputFormat {
+    /// SubRip subtitles (`srt`).
+    #[default]
+    #[strum(serialize = "srt")]
+    #[serde(rename = "srt")]
+    Srt,
+    /// WebVTT subtitles (`vtt`).
+    #[strum(serialize = "vtt")]
+    #[serde(rename = "vtt")]
+    Vtt,
+    /// Advanced SubStation Alpha subtitles (`ass`).
+    #[strum(serialize = "ass")]
+    #[serde(rename = "ass")]
+    Ass,
+    /// JSON dump of the full transcription result (`json`).
+    #[strum(serialize = "json")]
+    #[serde(rename = "json")]
+    Json,
+    /// Plain-text transcript, no timestamps (`txt`).
+    #[strum(serialize = "txt")]
+    #[serde(rename = "txt")]
+    Txt,
+}
+
+impl OutputFormat {
+    /// The on-the-wire value string (e.g. `"srt"`).
+    pub fn value(self) -> &'static str {
+        match self {
+            Self::Srt => "srt",
+            Self::Vtt => "vtt",
+            Self::Ass => "ass",
+            Self::Json => "json",
+            Self::Txt => "txt",
+        }
+    }
+
+    /// File extension including the leading dot (e.g. `".srt"`).
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Srt => ".srt",
+            Self::Vtt => ".vtt",
+            Self::Ass => ".ass",
+            Self::Json => ".json",
+            Self::Txt => ".txt",
+        }
+    }
+
+    /// Coerce an optional string into an `OutputFormat`, never erroring: a known
+    /// format name maps to its variant; anything else (or `None`) falls back to
+    /// `default` when given, otherwise [`OutputFormat::Srt`].
+    pub fn from_value(value: Option<&str>, default: Option<Self>) -> Self {
+        match value {
+            Some("srt") => Self::Srt,
+            Some("vtt") => Self::Vtt,
+            Some("ass") => Self::Ass,
+            Some("json") => Self::Json,
+            Some("txt") => Self::Txt,
+            _ => default.unwrap_or(Self::Srt),
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_format_tests {
+    use super::OutputFormat;
+
+    #[test]
+    fn value_and_extension() {
+        assert_eq!(OutputFormat::Srt.value(), "srt");
+        assert_eq!(OutputFormat::Ass.value(), "ass");
+        assert_eq!(OutputFormat::Srt.extension(), ".srt");
+        assert_eq!(OutputFormat::Ass.extension(), ".ass");
+        assert_eq!(OutputFormat::default(), OutputFormat::Srt);
+    }
+
+    #[test]
+    fn from_value_never_errors() {
+        assert_eq!(
+            OutputFormat::from_value(Some("vtt"), None),
+            OutputFormat::Vtt
+        );
+        assert_eq!(
+            OutputFormat::from_value(Some("ass"), None),
+            OutputFormat::Ass
+        );
+        // Unknown / None fall back to the given default, else Srt.
+        assert_eq!(
+            OutputFormat::from_value(Some("nope"), None),
+            OutputFormat::Srt
+        );
+        assert_eq!(
+            OutputFormat::from_value(Some("nope"), Some(OutputFormat::Txt)),
+            OutputFormat::Txt
+        );
+        assert_eq!(OutputFormat::from_value(None, None), OutputFormat::Srt);
+    }
+}

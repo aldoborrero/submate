@@ -829,7 +829,7 @@ pub async fn translate_content<E, F, Fut>(
     content: &str,
     source_lang: &str,
     target_lang: &str,
-    output_format: submate_queue::models::OutputFormat,
+    output_format: submate_types::OutputFormat,
     chunk_size: usize,
     complete: &mut F,
 ) -> String
@@ -837,7 +837,7 @@ where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<String, E>>,
 {
-    use submate_queue::models::OutputFormat;
+    use submate_types::OutputFormat;
 
     if content.is_empty() || source_lang == target_lang {
         return content.to_string();
@@ -851,9 +851,10 @@ where
             translate_vtt_content(content, source_lang, target_lang, chunk_size, complete).await
         }
         OutputFormat::Txt => translate_text(content, source_lang, target_lang, complete).await,
-        // JSON holds the full result dump; translation is unsupported, so the
-        // closure is never called and the input is returned verbatim.
-        OutputFormat::Json => return content.to_string(),
+        // JSON holds the full result dump and ASS has no content-level
+        // translation path (only the per-dialogue `translate_ass_dialogue`
+        // exists), so both are returned verbatim — the closure is never called.
+        OutputFormat::Json | OutputFormat::Ass => return content.to_string(),
     };
 
     // Translation failure must never reach the Bazarr caller: fall back to the
@@ -1046,7 +1047,7 @@ mod tests {
     mod dispatch {
         use std::convert::Infallible;
 
-        use submate_queue::models::OutputFormat;
+        use submate_types::OutputFormat;
 
         use super::super::{SRT_SEPARATOR_TOKEN, VTT_SEPARATOR_TOKEN, translate_content};
 

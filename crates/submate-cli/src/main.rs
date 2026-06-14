@@ -1126,24 +1126,6 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
     })
 }
 
-/// Map the wire [`submate_proto::OutputFormat`] to the translate layer's
-/// [`submate_queue::models::OutputFormat`] for the chunked-translate dispatch.
-/// `Ass` has no Bazarr/translate path, so it is `None` (translation skipped).
-#[cfg(feature = "model")]
-fn proto_to_queue_format(
-    format: submate_proto::OutputFormat,
-) -> Option<submate_queue::models::OutputFormat> {
-    use submate_proto::OutputFormat as P;
-    use submate_queue::models::OutputFormat as Q;
-    match format {
-        P::Srt => Some(Q::Srt),
-        P::Vtt => Some(Q::Vtt),
-        P::Txt => Some(Q::Txt),
-        P::Json => Some(Q::Json),
-        P::Ass => None,
-    }
-}
-
 /// Production [`BazarrTranscriber`]: the real whisper + translate pipeline,
 /// sharing the embedded node's [`Dispatcher`] so a Bazarr request waits for a
 /// runner under load rather than oversubscribing. Model-gated; without the
@@ -1196,10 +1178,8 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         // Translate when a target language is requested and differs from the
         // detected source; any error degrades to the untranslated content
         // (`translate_content` absorbs it, matching the Python fallback).
-        if let (Some(target), Some(qfmt)) = (
-            opts.target_language.as_deref().filter(|t| !t.is_empty()),
-            proto_to_queue_format(opts.output_format),
-        ) && target != detected
+        if let Some(target) = opts.target_language.as_deref().filter(|t| !t.is_empty())
+            && target != detected
         {
             let backend = self.backend.clone();
             let mut complete = move |prompt: String| {
@@ -1210,7 +1190,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
                 &content,
                 &detected,
                 target,
-                qfmt,
+                opts.output_format,
                 self.chunk_size,
                 &mut complete,
             )
