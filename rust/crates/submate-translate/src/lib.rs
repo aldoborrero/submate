@@ -24,6 +24,7 @@
 
 use std::future::Future;
 use std::ops::Range;
+use std::time::Duration;
 
 use async_openai::config::{OpenAIConfig, OPENAI_API_BASE};
 use async_openai::error::OpenAIError;
@@ -245,6 +246,29 @@ pub const GEMINI_OPENAI_BASE: &str = "https://generativelanguage.googleapis.com/
 /// `Authorization` header but still expects it to be present.
 const OLLAMA_PLACEHOLDER_KEY: &str = "ollama";
 
+/// Connect timeout for the LLM backends: catch an unreachable endpoint quickly
+/// instead of waiting out the whole request budget on a dead host.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Overall per-request timeout for the LLM backends. Generous enough not to cut
+/// off a legitimately slow generation (e.g. Ollama on CPU), but bounded so a
+/// hung or non-responding endpoint can't stall a worker forever — the previous
+/// code set no timeout at all, so a single stuck call blocked the whole batch.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Build the shared `reqwest::Client` for the LLM backends with connect/request
+/// timeouts. Constructed once per backend and reused across every chunk request
+/// (so connection pooling and TLS sessions are kept). A failure here means the
+/// system TLS stack is unusable — fatal, and surfaced once at construction
+/// rather than silently per request.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .expect("reqwest client (system TLS backend) must initialize")
+}
+
 /// OpenAI-compatible translation backend, shared by OpenAI, Ollama and Gemini.
 ///
 /// Wraps an `async-openai` [`Client`] configured by `base_url` + API key, so the
@@ -275,7 +299,9 @@ impl OpenAiCompatBackend {
             .with_api_base(base_url.clone());
         Self {
             id,
-            client: Client::with_config(config),
+            // Drive async-openai through our timeout-configured client so a hung
+            // provider can't block forever (its default client has no timeout).
+            client: Client::with_config(config).with_http_client(http_client()),
             model: model.into(),
             base_url,
         }
@@ -377,6 +403,7 @@ pub struct AnthropicBackend {
     api_key: String,
     model: String,
     base_url: String,
+    client: reqwest::Client,
 }
 
 impl AnthropicBackend {
@@ -399,6 +426,7 @@ impl AnthropicBackend {
             api_key: api_key.into(),
             model: model.into(),
             base_url: base_url.into(),
+            client: http_client(),
         }
     }
 }
@@ -420,7 +448,8 @@ impl Backend for AnthropicBackend {
             }],
         };
 
-        let response = reqwest::Client::new()
+        let response = self
+            .client
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
