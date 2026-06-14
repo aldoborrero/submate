@@ -2163,4 +2163,41 @@ mod bazarr_routes_tests {
         assert_eq!(v["detected_language"], "Unknown");
         assert_eq!(v["language_code"], "und");
     }
+
+    /// A seam that records the PCM it was handed, to prove the multipart
+    /// `audio_file` part reaches the transcriber byte-for-byte (raw s16le, not
+    /// WAV-wrapped or otherwise mangled).
+    struct Recorder(Arc<Mutex<Vec<u8>>>);
+
+    #[async_trait::async_trait]
+    impl BazarrTranscriber for Recorder {
+        async fn transcribe(
+            &self,
+            _opts: BazarrTranscribeOpts,
+            pcm: Vec<u8>,
+        ) -> std::result::Result<BazarrOutput, String> {
+            *self.0.lock().unwrap() = pcm;
+            Ok(BazarrOutput {
+                content: SRT.to_string(),
+                detected_language: "es".to_string(),
+            })
+        }
+
+        async fn detect(&self, _pcm: Vec<u8>) -> std::result::Result<BazarrDetected, String> {
+            Err("unused".to_string())
+        }
+    }
+
+    #[tokio::test]
+    async fn asr_passes_raw_pcm_unwrapped() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let state = AppState::default().with_bazarr(Arc::new(Recorder(seen.clone())));
+        let pcm = vec![0xde, 0xad, 0xbe, 0xef, 0x01, 0x02];
+        let _ = post(state, "/bazarr/asr?output=srt&encode=false", &pcm).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            pcm,
+            "the seam must receive the exact uploaded PCM, unwrapped"
+        );
+    }
 }
