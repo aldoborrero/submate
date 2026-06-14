@@ -81,11 +81,11 @@ A GPU feature flips whisper-rs's `use_gpu` on automatically (it defaults to
 `cfg!(feature = "_gpu")`), so a binary built with `cuda` uses the GPU with no
 runtime flag.
 
-`SUBMATE_WHISPER_THREADS` overrides the CPU inference thread count (default =
+`SUBMATE__WHISPER__THREADS` overrides the CPU inference thread count (default =
 whisper.cpp's `min(4, n_cpu)`; raising it can *regress* small models, which are
 memory-bandwidth-bound — measure per host).
 
-`SUBMATE_WHISPER_VAD_MODEL=<path>` enables Silero **VAD**: transcribe only
+`SUBMATE__WHISPER__VAD_MODEL=<path>` enables Silero **VAD**: transcribe only
 detected speech, skipping silence/non-speech. This removes whisper's
 hallucinated lines over silence/music and speeds up sparse audio (timestamps are
 mapped back to the original clip). Point it at a `ggml-silero-*.bin` model. (We

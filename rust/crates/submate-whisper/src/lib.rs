@@ -367,7 +367,7 @@ mod inference {
         Ok(ctx)
     }
 
-    /// Optional whisper.cpp thread-count override from `SUBMATE_WHISPER_THREADS`.
+    /// Optional whisper.cpp thread-count override from `SUBMATE__WHISPER__THREADS`.
     ///
     /// Returns `None` (leave whisper.cpp's own default of `min(4, n_cpu)`) unless
     /// the env var is set. Measured on a 20-thread box with the `base` model,
@@ -377,16 +377,16 @@ mod inference {
     /// physical cores may benefit), so we expose it as a knob instead of forcing
     /// a value that helps in theory but hurts in practice.
     fn whisper_threads() -> Option<std::os::raw::c_int> {
-        std::env::var("SUBMATE_WHISPER_THREADS")
+        std::env::var("SUBMATE__WHISPER__THREADS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(clamp_threads)
     }
 
-    /// Path to a Silero VAD model from `SUBMATE_WHISPER_VAD_MODEL`, or `None` to
+    /// Path to a Silero VAD model from `SUBMATE__WHISPER__VAD_MODEL`, or `None` to
     /// leave VAD off. Present-and-non-empty turns on speech-only transcription.
     fn whisper_vad_model() -> Option<String> {
-        std::env::var("SUBMATE_WHISPER_VAD_MODEL")
+        std::env::var("SUBMATE__WHISPER__VAD_MODEL")
             .ok()
             .filter(|s| !s.is_empty())
     }
@@ -479,7 +479,7 @@ mod inference {
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         // Only override whisper.cpp's default thread count when explicitly asked
-        // (SUBMATE_WHISPER_THREADS) — forcing more threads regresses small models.
+        // (SUBMATE__WHISPER__THREADS) — forcing more threads regresses small models.
         if let Some(threads) = whisper_threads() {
             params.set_n_threads(threads);
         }
@@ -496,7 +496,7 @@ mod inference {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        // VAD: when SUBMATE_WHISPER_VAD_MODEL is set, transcribe only the detected
+        // VAD: when SUBMATE__WHISPER__VAD_MODEL is set, transcribe only the detected
         // speech and map timings back below; a VAD miss (no speech) falls back to
         // the full clip so audio is never dropped.
         let vad = match whisper_vad_model().as_deref() {
