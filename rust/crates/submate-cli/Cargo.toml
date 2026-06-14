@@ -20,11 +20,11 @@ model = ["submate-node/model"]
 # GPU backends — build the CLI (and its embedded node) with whisper.cpp GPU
 # acceleration. Pick the one matching the host GPU; needs the backend toolkit at
 # build time. `nix build .#docker-gpu` builds with `cuda`.
-cuda = ["submate-node/cuda"]
-metal = ["submate-node/metal"]
-hipblas = ["submate-node/hipblas"]
-vulkan = ["submate-node/vulkan"]
-intel-sycl = ["submate-node/intel-sycl"]
+cuda = ["model", "submate-node/cuda"]
+metal = ["model", "submate-node/metal"]
+hipblas = ["model", "submate-node/hipblas"]
+vulkan = ["model", "submate-node/vulkan"]
+intel-sycl = ["model", "submate-node/intel-sycl"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }
