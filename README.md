@@ -1,234 +1,121 @@
-# Submate
+# submate
 
-AI-powered subtitle generation tool using Whisper with LLM translation capabilities.
+AI subtitle generation in native Rust — **Whisper** transcription (whisper.cpp
+via `whisper-rs`) with optional **LLM translation**. Use it from the command
+line, or run it as a **Bazarr Whisper ASR provider** so your media library gets
+machine-generated subtitles on demand.
 
 ## Features
 
-- **Whisper Transcription**: Generate subtitles from audio/video files using OpenAI Whisper (via faster-whisper and stable-ts)
-- **LLM Translation**: Translate subtitles using multiple backends (Ollama, OpenAI, Claude, Gemini)
-- **Media Server Integration**: Webhooks for Bazarr and Jellyfin
-- **Task Queue**: Async processing with Huey for handling multiple transcription jobs
-- **CLI & Server**: Both command-line tools and HTTP API available
+- **Transcribe** video/audio to `srt` / `vtt` / `ass` / `json` / `txt`, with
+  word-level timestamps and silence suppression (stable-ts-style post-processing).
+- **Translate** subtitles to any language via an LLM backend
+  (Ollama, OpenAI, Anthropic, Gemini).
+- **Bazarr integration** — drop-in Whisper ASR provider (`/bazarr/asr` +
+  language detection).
+- **GPU acceleration** — CUDA, Vulkan (incl. Intel iGPU), Metal, ROCm, Intel
+  oneAPI.
+- **Silero VAD** — transcribe only detected speech, cutting hallucinated lines
+  over silence/music.
+- Audio-track selection, Docker path mapping, multi-language audio handling.
 
-## Installation
+## Install
 
-### Using Nix (Recommended)
+The toolchain and runtime deps (ffmpeg, whisper.cpp build deps) live in the nix
+flake:
 
-```bash
-# Run directly
-nix run github:aldoborrero/submate -- --help
-
-# Or enter development shell
-nix develop
+```sh
+nix build .#submate          # CPU build  → ./result/bin/submate
+nix build .#submate-cuda     # NVIDIA (CUDA)
+nix build .#submate-vulkan   # cross-vendor GPU (incl. Intel iGPU)
+nix build .#docker-cpu       # container image (submate:cpu)
+nix build .#docker-gpu       # container image (submate:gpu, needs nvidia-container-toolkit)
 ```
 
-### Using pip
+Or develop with `nix develop` and `cargo build -p submate-cli --features model`.
 
-```bash
-pip install submate
+You also need a GGML Whisper model (e.g. from
+[ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)).
+**`large-v3-turbo`** is a good default (near-`large-v3` accuracy, much faster);
+use `large-v3` for the best quality on hard audio or CJK.
 
-# With LLM backends
-pip install submate[ollama]      # Ollama (local, free)
-pip install submate[openai]      # OpenAI
-pip install submate[claude]      # Anthropic Claude
-pip install submate[gemini]      # Google Gemini
-pip install submate[all-llm]     # All backends
+## Quick start
+
+```sh
+# Transcribe a file in one shot (writes movie.srt next to it)
+SUBMATE__WHISPER__MODEL=/models/ggml-large-v3-turbo.bin \
+  submate transcribe movie.mkv --sync
+
+# …choosing the audio track, output format, and a Silero VAD model
+submate transcribe movie.mkv --sync \
+  --audio lang:ja --format srt --vad-model /models/ggml-silero-v5.1.2.bin
+
+# Translate an existing subtitle with an LLM
+submate translate movie.ja.srt --target-lang en --backend claude
+
+# Run the server (Bazarr ASR provider, embedded processing node)
+SUBMATE__WHISPER__MODEL=/models/ggml-large-v3-turbo.bin submate server
 ```
 
-### Using Docker
+`submate probe <file>` lists audio tracks; `submate config show` prints the
+resolved configuration; `submate --help` lists everything.
 
-```bash
-# CPU version
-docker run -p 9000:9000 -v /media:/data ghcr.io/aldoborrero/submate:cpu
+## Bazarr
 
-# GPU version (requires nvidia-container-toolkit)
-docker run --gpus all -p 9000:9000 -v /media:/data ghcr.io/aldoborrero/submate:gpu
-```
-
-## Quick Start
-
-### Transcribe a Video
-
-```bash
-# Basic transcription
-submate transcribe movie.mkv
-
-# With translation to Spanish
-submate transcribe movie.mkv --translate-to es
-
-# Select Japanese audio track
-submate transcribe movie.mkv --audio-language ja
-
-# Process entire directory
-submate transcribe ./movies/ -r
-```
-
-### Translate Existing Subtitles
-
-```bash
-# Translate SRT file
-submate translate movie.en.srt -t es
-
-# With explicit source language
-submate translate subtitles.srt -s ja -t en -o subtitles_english.srt
-
-# Process directory recursively
-submate translate ./subs/ -t fr -r
-```
-
-### Start the Server
-
-```bash
-# Start server (default port 9000)
-submate server
-
-# Start background worker
-submate worker
-```
+Point Bazarr's Whisper provider at `http://<host>:9000/bazarr/asr`, enable
+language detection, and set `SUBMATE__WHISPER__MODEL` on the server. Bazarr calls
+synchronously and submate transcribes on demand (sharing one concurrency limit
+across requests).
 
 ## Configuration
 
-All configuration uses environment variables with `SUBMATE__` prefix:
+Everything is configurable via the `SUBMATE__` env prefix (`__` for nesting) or a
+config file (`-c config.toml`/`.env`/JSON). Common knobs:
 
-### Whisper Settings
+| Variable | Notes |
+|---|---|
+| `SUBMATE__WHISPER__MODEL` | **path** to a GGML model (not a name) |
+| `SUBMATE__WHISPER__VAD_MODEL` | path to a Silero VAD model → speech-only transcription |
+| `SUBMATE__WHISPER__THREADS` | CPU thread override (default `min(4, n_cpu)`; more can *regress* small models) |
+| `SUBMATE__SERVER__PORT` | default `9000` |
+| `SUBMATE__TRANSLATION__BACKEND` | `ollama` (default) / `openai` / `claude` / `gemini` |
+| `SUBMATE__TRANSLATION__<X>_API_KEY` | per-backend API key |
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SUBMATE__WHISPER__MODEL` | Model size (tiny, base, small, medium, large) | `medium` |
-| `SUBMATE__WHISPER__DEVICE` | Device (cpu, cuda, auto) | `cpu` |
-| `SUBMATE__WHISPER__COMPUTE_TYPE` | Precision (int8, float16, float32) | `int8` |
-| `SUBMATE__WHISPER__LANGUAGE` | Force source language | auto-detect |
+The CLI also exposes per-run overrides: `--model`, `--language`, `--format`,
+`--audio`, `--translate-to`, `--backend`, `--vad-model`, `--sync`, …
 
-### Translation Settings
+## GPU
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SUBMATE__TRANSLATION__BACKEND` | LLM backend (ollama, openai, claude, gemini) | `ollama` |
-| `SUBMATE__TRANSLATION__OLLAMA_MODEL` | Ollama model name | `llama3.2` |
-| `SUBMATE__TRANSLATION__OPENAI_API_KEY` | OpenAI API key | - |
-| `SUBMATE__TRANSLATION__ANTHROPIC_API_KEY` | Anthropic API key | - |
-| `SUBMATE__TRANSLATION__GEMINI_API_KEY` | Google Gemini API key | - |
+GPU offload is selected at **build time** by the cargo feature matching your host
+(each implies the `model` feature and needs that backend's toolchain):
 
-### Server Settings
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SUBMATE__SERVER__HOST` | Server host | `0.0.0.0` |
-| `SUBMATE__SERVER__PORT` | Server port | `9000` |
-| `SUBMATE__SERVER__BAZARR_ENABLED` | Enable Bazarr integration | `true` |
-| `SUBMATE__SERVER__JELLYFIN_ENABLED` | Enable Jellyfin integration | `true` |
-
-### Jellyfin Settings
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SUBMATE__JELLYFIN__SERVER_URL` | Jellyfin server URL | - |
-| `SUBMATE__JELLYFIN__API_KEY` | Jellyfin API key | - |
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Server info and health |
-| `/status` | GET | Server status with queue stats |
-| `/queue` | GET | Queue statistics |
-| `/bazarr/asr` | POST | Bazarr ASR transcription |
-| `/bazarr/detect-language` | POST | Bazarr language detection |
-| `/webhooks/jellyfin` | POST | Jellyfin event webhook |
-
-## Integrations
-
-### Bazarr
-
-Submate acts as a Whisper ASR provider for [Bazarr](https://bazarr.media/):
-
-1. In Bazarr, go to Settings → Subtitles → Whisper Provider
-1. Set endpoint: `http://submate:9000/bazarr/asr`
-1. Enable language detection: `http://submate:9000/bazarr/detect-language`
-
-### Jellyfin
-
-Webhook-based integration for automatic transcription:
-
-1. Install the [Jellyfin Webhook plugin](https://github.com/jellyfin/jellyfin-plugin-webhook)
-1. Add webhook URL: `http://submate:9000/webhooks/jellyfin`
-1. Enable ItemAdded events for Movies/Episodes
-
-## Docker Compose Example
-
-```yaml
-services:
-  submate:
-    image: ghcr.io/aldoborrero/submate:cpu
-    ports:
-      - "9000:9000"
-    environment:
-      - SUBMATE__WHISPER__MODEL=medium
-      - SUBMATE__TRANSLATION__BACKEND=ollama
-      - SUBMATE__JELLYFIN__SERVER_URL=http://jellyfin:8096
-      - SUBMATE__JELLYFIN__API_KEY=your-api-key
-    volumes:
-      - /media:/data
-      - whisper-models:/root/.cache/huggingface
-
-  submate-worker:
-    image: ghcr.io/aldoborrero/submate:cpu
-    command: worker
-    environment:
-      - SUBMATE__WHISPER__MODEL=medium
-    volumes:
-      - /media:/data
-      - whisper-models:/root/.cache/huggingface
-
-volumes:
-  whisper-models:
+```sh
+cargo build -p submate-cli --release --features cuda        # NVIDIA
+cargo build -p submate-cli --release --features vulkan      # cross-vendor (incl. Intel iGPU)
+cargo build -p submate-cli --release --features metal       # Apple Silicon
+cargo build -p submate-cli --release --features hipblas     # AMD ROCm
+cargo build -p submate-cli --release --features intel-sycl  # Intel oneAPI
 ```
+
+A GPU-built binary uses the GPU automatically (no runtime flag).
+
+## Architecture
+
+A broker-less server + processing-node design (FileFlows/Unmanic-style): the
+server owns media I/O and a durable SQLite queue and ships extracted audio to
+nodes that pull work; a single box runs an embedded node by default. Bazarr is
+served by a direct, synchronous transcription path rather than the queue. See
+[docs/architecture.md](docs/architecture.md).
 
 ## Development
 
-### Setup
+See [AGENTS.md](AGENTS.md) for the workspace layout and conventions. The check
+gate (from a `nix develop` shell):
 
-```bash
-# Enter development shell (includes all tools)
-nix develop
-
-# Or install dev dependencies
-pip install -e ".[dev]"
-```
-
-### Running Tests
-
-```bash
-pytest tests/ -v
-```
-
-### Code Quality
-
-```bash
-# Format
-ruff format submate/ tests/
-
-# Lint
-ruff check submate/ tests/
-
-# Type check
-mypy submate/ --ignore-missing-imports
-```
-
-### Building
-
-```bash
-# Build application
-nix build .#submate
-
-# Build Docker images
-nix build .#docker-cpu
-nix build .#docker-gpu
-
-# Load into Docker
-docker load < result
+```sh
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## License
 
-MIT
+submate is released under the MIT License — see [LICENSE](LICENSE).
