@@ -769,6 +769,98 @@ where
         .collect())
 }
 
+/// Translate a plain-text blob in a single round-trip (ports
+/// `TranslationService.translate_text`).
+///
+/// Short-circuits and returns `text` unchanged when `source_lang ==
+/// target_lang` (the same no-op guard the Python method applies before touching
+/// the backend). Otherwise it issues exactly one `complete` call with the
+/// default [`TRANSLATION_PROMPT`] (no separator-token batching — the plain-text
+/// path mirrors `backend.translate(..., prompt_template=None)`) and returns the
+/// reply.
+pub async fn translate_text<E, F, Fut>(
+    text: &str,
+    source_lang: &str,
+    target_lang: &str,
+    complete: &mut F,
+) -> Result<String, E>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
+    if source_lang == target_lang {
+        return Ok(text.to_string());
+    }
+    let prompt = format_prompt(TRANSLATION_PROMPT, source_lang, target_lang, text);
+    complete(prompt).await
+}
+
+/// Per-format translation dispatch for already-formatted Bazarr output (ports
+/// `BazarrService._translate_content`).
+///
+/// Decides *how* to translate already-rendered subtitle `content` for the
+/// requested [`OutputFormat`], and *when* to skip translation entirely. The
+/// contract Bazarr relies on is that this never propagates a failure: it always
+/// returns well-formed content for the requested format, falling back to the
+/// untranslated input whenever translation is unavailable, unsupported, or
+/// errors.
+///
+/// 1. **Short-circuit guard** — empty `content` or `source_lang ==
+///    target_lang` returns `content` unchanged, *before* any LLM call (the
+///    closure is not invoked).
+/// 2. **Format dispatch** —
+///    - [`OutputFormat::Srt`] → [`translate_srt_content`]
+///    - [`OutputFormat::Vtt`] → [`translate_vtt_content`]
+///    - [`OutputFormat::Txt`] → [`translate_text`] (plain [`TRANSLATION_PROMPT`],
+///      no batching)
+///    - [`OutputFormat::Json`] → **skip**: the JSON dump holds the full result,
+///      so it is returned unchanged without calling the closure (Python logs
+///      "Translation not supported for JSON format").
+/// 3. **Exception fallback** — any `Err` raised by the dispatched translation
+///    is swallowed and the original `content` is returned, matching the Python
+///    `try/except` that degrades to the untranslated text rather than failing
+///    the Bazarr request.
+///
+/// `chunk_size` is forwarded to the SRT/VTT batch loop; `complete` is the
+/// closure-driven LLM entrypoint shared with the sibling translate fns. The
+/// return type is `String` (not `Result`) precisely because the fallback
+/// absorbs every error into the verbatim `content`.
+pub async fn translate_content<E, F, Fut>(
+    content: &str,
+    source_lang: &str,
+    target_lang: &str,
+    output_format: submate_queue::models::OutputFormat,
+    chunk_size: usize,
+    complete: &mut F,
+) -> String
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String, E>>,
+{
+    use submate_queue::models::OutputFormat;
+
+    if content.is_empty() || source_lang == target_lang {
+        return content.to_string();
+    }
+
+    let result: Result<String, E> = match output_format {
+        OutputFormat::Srt => {
+            translate_srt_content(content, source_lang, target_lang, chunk_size, complete).await
+        }
+        OutputFormat::Vtt => {
+            translate_vtt_content(content, source_lang, target_lang, chunk_size, complete).await
+        }
+        OutputFormat::Txt => translate_text(content, source_lang, target_lang, complete).await,
+        // JSON holds the full result dump; translation is unsupported, so the
+        // closure is never called and the input is returned verbatim.
+        OutputFormat::Json => return content.to_string(),
+    };
+
+    // Translation failure must never reach the Bazarr caller: fall back to the
+    // original, untranslated content.
+    result.unwrap_or_else(|_| content.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -911,6 +1003,159 @@ mod tests {
             out,
             vec!["{\\i1}Hola".to_string(), "{\\b1}World".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn translate_text_short_circuits_on_same_language() {
+        let mut complete = async |_: String| -> Result<String, Infallible> {
+            panic!("backend must not be called when source == target");
+        };
+        let out = translate_text("hola", "es", "es", &mut complete)
+            .await
+            .unwrap();
+        assert_eq!(out, "hola");
+    }
+
+    #[tokio::test]
+    async fn translate_text_single_request_uses_default_prompt() {
+        let seen_prompt: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+        let mut complete = async |prompt: String| -> Result<String, Infallible> {
+            *seen_prompt.borrow_mut() = Some(prompt);
+            Ok("Hello.".to_string())
+        };
+        let out = translate_text("Hola.", "es", "en", &mut complete)
+            .await
+            .unwrap();
+        assert_eq!(out, "Hello.");
+        let prompt = seen_prompt
+            .into_inner()
+            .expect("backend was called exactly once");
+        // Plain-text path: default TRANSLATION_PROMPT, payload is the bare text
+        // with no separator-token batching (the input lands verbatim after the
+        // "Text to translate:" header).
+        assert!(prompt.starts_with("Translate the following subtitle text from es to en."));
+        assert!(prompt.ends_with("Text to translate:\nHola."));
+    }
+
+    /// Falsifiers for `translate_content`'s per-format dispatch, the JSON skip,
+    /// the same-lang/empty short-circuits, and the exception fallback. Each case
+    /// records whether the LLM closure was invoked so the no-op branches are
+    /// proven to bypass it, and the fallback case returns an `Err` to assert the
+    /// verbatim-content recovery.
+    mod dispatch {
+        use std::convert::Infallible;
+
+        use submate_queue::models::OutputFormat;
+
+        use super::super::{translate_content, SRT_SEPARATOR_TOKEN, VTT_SEPARATOR_TOKEN};
+
+        const SRT_IN: &str = "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n";
+        const VTT_IN: &str = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n";
+
+        /// SRT dispatch: the SRT batch path runs (the closure sees the
+        /// `---BREAK---` separator-joined payload) and the cue text is replaced.
+        #[tokio::test]
+        async fn srt_branch_runs_srt_translator() {
+            let called = std::cell::Cell::new(false);
+            let mut complete = async |prompt: String| -> Result<String, Infallible> {
+                called.set(true);
+                assert!(prompt.contains(SRT_SEPARATOR_TOKEN) || prompt.contains("Hello"));
+                Ok("Hola".to_string())
+            };
+            let out =
+                translate_content(SRT_IN, "en", "es", OutputFormat::Srt, 50, &mut complete).await;
+            assert!(called.get(), "SRT branch must call the LLM");
+            assert!(out.contains("Hola"));
+            assert!(out.contains("00:00:01,000 --> 00:00:02,000"));
+        }
+
+        /// VTT dispatch: the VTT batch path runs (the `|||SUBTITLE_BREAK|||`
+        /// separator) and the cue text is replaced.
+        #[tokio::test]
+        async fn vtt_branch_runs_vtt_translator() {
+            let called = std::cell::Cell::new(false);
+            let mut complete = async |prompt: String| -> Result<String, Infallible> {
+                called.set(true);
+                assert!(prompt.contains(VTT_SEPARATOR_TOKEN) || prompt.contains("Hello"));
+                Ok("Hola".to_string())
+            };
+            let out =
+                translate_content(VTT_IN, "en", "es", OutputFormat::Vtt, 50, &mut complete).await;
+            assert!(called.get(), "VTT branch must call the LLM");
+            assert!(out.contains("Hola"));
+        }
+
+        /// TXT dispatch: the plain-text path runs (single request, no separator
+        /// token) and returns the reply verbatim.
+        #[tokio::test]
+        async fn txt_branch_runs_plain_translator() {
+            let call_count = std::cell::Cell::new(0u32);
+            let mut complete = async |prompt: String| -> Result<String, Infallible> {
+                call_count.set(call_count.get() + 1);
+                // Plain-text path: the bare blob lands as the payload, not
+                // separator-joined cues.
+                assert!(prompt.ends_with("Text to translate:\nHello world"));
+                Ok("Hola mundo".to_string())
+            };
+            let out = translate_content(
+                "Hello world",
+                "en",
+                "es",
+                OutputFormat::Txt,
+                50,
+                &mut complete,
+            )
+            .await;
+            assert_eq!(call_count.get(), 1, "TXT path issues exactly one request");
+            assert_eq!(out, "Hola mundo");
+        }
+
+        /// JSON skip: the closure is never invoked and the JSON content is
+        /// returned byte-for-byte unchanged.
+        #[tokio::test]
+        async fn json_branch_skips_and_returns_verbatim() {
+            let json = "{\"segments\": [{\"text\": \"Hello\"}]}";
+            let mut complete = async |_: String| -> Result<String, Infallible> {
+                panic!("JSON format must skip translation (no LLM call)");
+            };
+            let out =
+                translate_content(json, "en", "es", OutputFormat::Json, 50, &mut complete).await;
+            assert_eq!(out, json);
+        }
+
+        /// Same source==target: short-circuits before any LLM call, content
+        /// unchanged.
+        #[tokio::test]
+        async fn same_language_short_circuits_verbatim() {
+            let mut complete = async |_: String| -> Result<String, Infallible> {
+                panic!("same-language must short-circuit (no LLM call)");
+            };
+            let out =
+                translate_content(SRT_IN, "en", "en", OutputFormat::Srt, 50, &mut complete).await;
+            assert_eq!(out, SRT_IN);
+        }
+
+        /// Empty content: short-circuits before any LLM call, empty out.
+        #[tokio::test]
+        async fn empty_content_short_circuits() {
+            let mut complete = async |_: String| -> Result<String, Infallible> {
+                panic!("empty content must short-circuit (no LLM call)");
+            };
+            let out = translate_content("", "en", "es", OutputFormat::Srt, 50, &mut complete).await;
+            assert_eq!(out, "");
+        }
+
+        /// Exception fallback: a backend error during translation is swallowed
+        /// and the original, untranslated content is returned verbatim.
+        #[tokio::test]
+        async fn translation_error_falls_back_to_original() {
+            #[derive(Debug)]
+            struct Boom;
+            let mut complete = async |_: String| -> Result<String, Boom> { Err(Boom) };
+            let out =
+                translate_content(SRT_IN, "en", "es", OutputFormat::Srt, 50, &mut complete).await;
+            assert_eq!(out, SRT_IN, "failed translation degrades to original");
+        }
     }
 
     #[test]
