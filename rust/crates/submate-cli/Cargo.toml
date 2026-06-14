@@ -38,7 +38,10 @@ submate-node = { path = "../submate-node" }
 submate-paths = { path = "../submate-paths" }
 submate-subtitle = { path = "../submate-subtitle" }
 submate-translate = { path = "../submate-translate" }
+submate-whisper = { path = "../submate-whisper" }
+submate-bazarr = { path = "../submate-bazarr" }
 axum = { workspace = true }
+async-trait = { workspace = true }
 clap = { workspace = true }
 indicatif = { workspace = true }
 tokio = { workspace = true }

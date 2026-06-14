@@ -1040,23 +1040,174 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
         let addr = listener.local_addr()?;
         tracing::info!("submate server listening on {addr}");
 
-        // Embedded node: a single-box deployment processes its own queue.
+        // Embedded node: a single-box deployment processes its own queue. Its
+        // Dispatcher is shared with the direct Bazarr path (below) so Bazarr and
+        // the queue drain share one runner cap.
         let node_settings = EmbeddedNodeSettings::from_server(&config.server);
-        let _node = if node_settings.enabled {
+        let (_node, bazarr) = if node_settings.enabled {
             let base_url = format!("http://{addr}");
             let dispatcher = submate_node::Dispatcher::new(node_settings.runners.max(1) as usize);
-            let processor = make_processor(dispatcher, &config.whisper.model);
+            let processor = make_processor(dispatcher.clone(), &config.whisper.model);
             let translation = build_translation_step(&config);
-            spawn_embedded_node(base_url, &node_settings, processor, Some(translation))
+            let node = spawn_embedded_node(base_url, &node_settings, processor, Some(translation));
+            let bazarr = build_bazarr_transcriber(dispatcher, &config)?;
+            (node, bazarr)
         } else {
-            None
+            (None, None)
         };
 
-        let router =
-            app(AppState::with_coordinator(coord).with_server_settings(config.server.clone()));
+        let mut state =
+            AppState::with_coordinator(coord).with_server_settings(config.server.clone());
+        if let Some(bazarr) = bazarr {
+            state = state.with_bazarr(bazarr);
+        }
+        let router = app(state);
         axum::serve(listener, router).await?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+/// Map the wire [`submate_proto::OutputFormat`] to the translate layer's
+/// [`submate_queue::models::OutputFormat`] for the chunked-translate dispatch.
+/// `Ass` has no Bazarr/translate path, so it is `None` (translation skipped).
+#[cfg(feature = "model")]
+fn proto_to_queue_format(
+    format: submate_proto::OutputFormat,
+) -> Option<submate_queue::models::OutputFormat> {
+    use submate_proto::OutputFormat as P;
+    use submate_queue::models::OutputFormat as Q;
+    match format {
+        P::Srt => Some(Q::Srt),
+        P::Vtt => Some(Q::Vtt),
+        P::Txt => Some(Q::Txt),
+        P::Json => Some(Q::Json),
+        P::Ass => None,
+    }
+}
+
+/// Production [`BazarrTranscriber`]: the real whisper + translate pipeline,
+/// sharing the embedded node's [`Dispatcher`] so a Bazarr request waits for a
+/// runner under load rather than oversubscribing. Model-gated; without the
+/// feature [`build_bazarr_transcriber`] returns `None` and the routes degrade.
+#[cfg(feature = "model")]
+struct WhisperBazarrTranscriber {
+    dispatcher: submate_node::Dispatcher,
+    model_path: String,
+    backend: std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>,
+    chunk_size: usize,
+}
+
+#[cfg(feature = "model")]
+#[async_trait::async_trait]
+impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
+    async fn transcribe(
+        &self,
+        opts: submate_server::BazarrTranscribeOpts,
+        pcm: Vec<u8>,
+    ) -> Result<submate_server::BazarrOutput, String> {
+        use submate_proto::OutputFormat;
+        let samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
+        let task = match opts.task {
+            submate_types::TranscriptionTask::Translate => submate_whisper::Task::Translate,
+            submate_types::TranscriptionTask::Transcribe => submate_whisper::Task::Transcribe,
+        };
+        // Source language is always auto-detected (mirrors the Python handler);
+        // Bazarr's `language` param is the translation target, applied below.
+        let options = submate_whisper::TranscribeOptions {
+            language: None,
+            task,
+        };
+        let raw = self
+            .dispatcher
+            .transcribe_pcm(self.model_path.clone(), samples.clone(), options)
+            .await
+            .map_err(|e| e.to_string())?;
+        let detected = raw.language.clone();
+        let assembled =
+            submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &samples)
+                .map_err(|e| e.to_string())?;
+        let mut content = match opts.output_format {
+            OutputFormat::Srt => assembled.to_srt_vtt(false),
+            OutputFormat::Vtt => assembled.to_srt_vtt(true),
+            OutputFormat::Ass => assembled.to_ass(),
+            OutputFormat::Json => assembled.to_json(),
+            OutputFormat::Txt => assembled.to_txt(),
+        };
+
+        // Translate when a target language is requested and differs from the
+        // detected source; any error degrades to the untranslated content
+        // (`translate_content` absorbs it, matching the Python fallback).
+        if let (Some(target), Some(qfmt)) = (
+            opts.target_language.as_deref().filter(|t| !t.is_empty()),
+            proto_to_queue_format(opts.output_format),
+        ) {
+            if target != detected {
+                let backend = self.backend.clone();
+                let mut complete = move |prompt: String| {
+                    let backend = backend.clone();
+                    async move { backend.complete(&prompt).await }
+                };
+                content = submate_translate::translate_content(
+                    &content,
+                    &detected,
+                    target,
+                    qfmt,
+                    self.chunk_size,
+                    &mut complete,
+                )
+                .await;
+            }
+        }
+
+        Ok(submate_server::BazarrOutput {
+            content,
+            detected_language: detected,
+        })
+    }
+
+    async fn detect(&self, pcm: Vec<u8>) -> Result<submate_server::BazarrDetected, String> {
+        // Language id only needs the first ~30 s (Whisper's first mel window).
+        let mut samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
+        samples.truncate(16_000 * 30);
+        let options = submate_whisper::TranscribeOptions {
+            language: None,
+            task: submate_whisper::Task::Transcribe,
+        };
+        let raw = self
+            .dispatcher
+            .transcribe_pcm(self.model_path.clone(), samples, options)
+            .await
+            .map_err(|e| e.to_string())?;
+        let detected = submate_bazarr::detect_language(Some(&raw.language));
+        Ok(submate_server::BazarrDetected {
+            detected_language: detected.detected_language.to_string(),
+            language_code: detected.language_code,
+        })
+    }
+}
+
+/// Build the production Bazarr transcriber sharing `dispatcher` (and the same
+/// model + translation backend the embedded node uses). `None` without the
+/// `model` feature — the `/bazarr/*` routes then degrade gracefully.
+#[cfg(feature = "model")]
+fn build_bazarr_transcriber(
+    dispatcher: submate_node::Dispatcher,
+    config: &Config,
+) -> anyhow::Result<Option<std::sync::Arc<dyn submate_server::BazarrTranscriber>>> {
+    Ok(Some(std::sync::Arc::new(WhisperBazarrTranscriber {
+        dispatcher,
+        model_path: config.whisper.model.clone(),
+        backend: std::sync::Arc::new(build_backend(config)),
+        chunk_size: config.translation.chunk_size.max(1) as usize,
+    })))
+}
+
+#[cfg(not(feature = "model"))]
+fn build_bazarr_transcriber(
+    _dispatcher: submate_node::Dispatcher,
+    _config: &Config,
+) -> anyhow::Result<Option<std::sync::Arc<dyn submate_server::BazarrTranscriber>>> {
+    Ok(None)
 }
 
 /// `submate node --server <url>` — run a processing node that pulls work from a
