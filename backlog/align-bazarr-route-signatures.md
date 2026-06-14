@@ -33,11 +33,20 @@ Query params (all from FastAPI `Query`, names are wire-exact):
 Body: the uploaded audio (Python `audio_file: UploadFile = File(...)`; the Rust
 port relays a raw PCM `Bytes` body — see `port-server-bazarr-asr`).
 
-Success response: the subtitle text streamed as `media_type="text/plain"` with
-response header **`Source: Transcribed using stable-ts from Submate`** (exact
-string). Errors: `ValueError` → **400** `detail=str(e)` (e.g. invalid `output`);
-any other exception → **500** with the *fixed literal* `detail="Transcription failed"`
-(NOT the exception text — `router.py` swallows it on the 500 branch).
+Success response: the subtitle text as `text/plain` with response header
+**`Source: Transcribed using stable-ts from Submate`** (exact string).
+
+**Failure response (corrects the Python spec — see `port-bazarr-provider-contract-tests`).**
+Bazarr's provider does `subtitle.content = r.content` with **no status check**
+(`whisperai.py::download_subtitle`), so an error body would be saved as a corrupt
+subtitle. The Python `/asr` returns a 500 with `detail="Transcription failed"`,
+which is therefore a *bug* against the real client. The Rust port instead returns
+an **empty body** on any transcription failure (so subliminal discards it →
+Bazarr retries on its schedule) and **never** an error envelope. The one 400 case
+the Python keeps — `ValueError` on an invalid `output` value — is acceptable
+because subliminal only hits it on misconfiguration, never mid-show; do NOT mimic
+FastAPI's 422 query-validation envelope (a framework artifact no Bazarr request
+triggers).
 
 ### `POST /bazarr/detect-language`
 
@@ -84,9 +93,10 @@ Two `cargo test -p submate-server` cases (added alongside the
 
 1. `bazarr_asr_response_headers` — a successful `/bazarr/asr` POST returns
    `content-type: text/plain` and header
-   `Source: Transcribed using stable-ts from Submate`; an invalid `output=xml`
-   yields **400**; a transcription failure yields **500** with body
-   `detail="Transcription failed"`.
+   `Source: Transcribed using stable-ts from Submate`; a transcription failure
+   yields an **empty body** (NOT a 500/400 with an error envelope — that would be
+   saved as a corrupt subtitle). An invalid `output` value may 400, but the
+   failure path of real transcription must never return a non-empty error body.
 2. `bazarr_detect_language_error_is_200` — when detection fails, `/bazarr/detect-language`
    returns **HTTP 200** with body
    `{"detected_language":"Unknown","language_code":"und"}` (never a 4xx/5xx), and
