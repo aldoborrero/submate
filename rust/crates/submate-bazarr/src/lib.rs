@@ -7,6 +7,12 @@
 //! header, byte-for-byte matching Python's `wave.open(...).writeframes(...)`
 //! (see `WhisperModelWrapper._save_audio_with_wav_headers` in
 //! `submate/whisper.py`).
+//!
+//! It also hosts the Bazarr detect-language naming: [`detect_language`] turns a
+//! raw Whisper language code into the `{detected_language, language_code}` pair
+//! the detect-language endpoint returns, via the deliberately narrow
+//! [`LANGUAGE_NAMES`] table (a verbatim port of `BazarrService.LANGUAGE_NAMES`,
+//! NOT the broader `submate-lang` `name_en` table).
 
 /// Bazarr's wire format: mono.
 const CHANNELS: u16 = 1;
@@ -61,6 +67,112 @@ pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
     out.extend_from_slice(pcm);
 
     out
+}
+
+/// The detected-language placeholder for a missing/empty detection.
+///
+/// Mirrors Python's `result.language or "und"`: an empty or absent Whisper
+/// language collapses to `"und"`.
+pub const UNDETERMINED_CODE: &str = "und";
+
+/// The display name for any code outside [`LANGUAGE_NAMES`].
+///
+/// Mirrors `LANGUAGE_NAMES.get(code, "Unknown")`. Note `"und"` itself is NOT a
+/// key, so a no-detection result names to `"Unknown"`.
+pub const UNKNOWN_NAME: &str = "Unknown";
+
+/// The deliberately NARROW Bazarr language-code → display-name table (the
+/// `en..uk` set).
+///
+/// This is a *verbatim* port of `BazarrService.LANGUAGE_NAMES` in
+/// `submate/queue/services/bazarr.py` — NOT the broader `submate-lang`
+/// `name_en` table. Bazarr's detect-language response is keyed off this exact
+/// set: any code outside it (including valid ISO-639-1 codes the full table
+/// *would* name, e.g. `ca`/`be`/`fa`, and `"und"` itself) must name to
+/// [`UNKNOWN_NAME`]. Routing through `submate-lang` would name those and
+/// silently diverge the wire contract, so the table is intentionally not
+/// derived from it.
+const LANGUAGE_NAMES: &[(&str, &str)] = &[
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("ja", "Japanese"),
+    ("zh", "Chinese"),
+    ("ko", "Korean"),
+    ("ar", "Arabic"),
+    ("hi", "Hindi"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("tr", "Turkish"),
+    ("vi", "Vietnamese"),
+    ("th", "Thai"),
+    ("sv", "Swedish"),
+    ("da", "Danish"),
+    ("fi", "Finnish"),
+    ("no", "Norwegian"),
+    ("cs", "Czech"),
+    ("el", "Greek"),
+    ("he", "Hebrew"),
+    ("hu", "Hungarian"),
+    ("id", "Indonesian"),
+    ("ms", "Malay"),
+    ("ro", "Romanian"),
+    ("sk", "Slovak"),
+    ("uk", "Ukrainian"),
+];
+
+/// Normalize a Whisper-detected language code, applying Python truthiness.
+///
+/// Mirrors `language_code = result.language or "und"`: `None` and `Some("")`
+/// (the falsy cases) both collapse to [`UNDETERMINED_CODE`]; any non-empty
+/// code passes through unchanged.
+pub fn normalize_detected_code(whisper_lang: Option<&str>) -> String {
+    match whisper_lang {
+        Some(code) if !code.is_empty() => code.to_string(),
+        _ => UNDETERMINED_CODE.to_string(),
+    }
+}
+
+/// Map a language code to its Bazarr display name.
+///
+/// Mirrors `LANGUAGE_NAMES.get(code, "Unknown")`: an in-set code yields its
+/// mapped name, anything else (including `"und"`) yields [`UNKNOWN_NAME`].
+pub fn detect_language_name(code: &str) -> &'static str {
+    LANGUAGE_NAMES
+        .iter()
+        .find_map(|&(k, name)| (k == code).then_some(name))
+        .unwrap_or(UNKNOWN_NAME)
+}
+
+/// The `{detected_language, language_code}` pair Bazarr's detect-language
+/// endpoint returns.
+///
+/// Both fields are sourced from this one crate so the queue detect path and the
+/// detect-language error-envelope default (the no-detection
+/// `{"Unknown", "und"}`) cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedLanguage {
+    /// Display name (`LANGUAGE_NAMES.get(code, "Unknown")`).
+    pub detected_language: &'static str,
+    /// The normalized language code (`result.language or "und"`).
+    pub language_code: String,
+}
+
+/// Compute the full detect-language pair from a raw Whisper language code.
+///
+/// This is the single source for both the queue bazarr-service detect path and
+/// the detect-language error-envelope default: it applies the `or "und"`
+/// normalization, then the narrow table lookup.
+pub fn detect_language(whisper_lang: Option<&str>) -> DetectedLanguage {
+    let language_code = normalize_detected_code(whisper_lang);
+    DetectedLanguage {
+        detected_language: detect_language_name(&language_code),
+        language_code,
+    }
 }
 
 /// Byte-for-byte parity against the Python `wave`-module goldens.
@@ -168,5 +280,142 @@ mod parity {
         assert_eq!(out.len(), WAV_HEADER_LEN);
         assert_eq!(&out[..4], b"RIFF");
         assert_eq!(&out[40..44], &[0x00, 0x00, 0x00, 0x00]); // data len = 0
+    }
+
+    /// The in-set codes and their exact Python-sourced names, pinned inline.
+    ///
+    /// This is the verbatim `BazarrService.LANGUAGE_NAMES` table; a typo or a
+    /// dropped/added entry fails here even without the JSON golden.
+    const GOLDEN_PAIRS: &[(&str, &str)] = &[
+        ("en", "English"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("ru", "Russian"),
+        ("ja", "Japanese"),
+        ("zh", "Chinese"),
+        ("ko", "Korean"),
+        ("ar", "Arabic"),
+        ("hi", "Hindi"),
+        ("nl", "Dutch"),
+        ("pl", "Polish"),
+        ("tr", "Turkish"),
+        ("vi", "Vietnamese"),
+        ("th", "Thai"),
+        ("sv", "Swedish"),
+        ("da", "Danish"),
+        ("fi", "Finnish"),
+        ("no", "Norwegian"),
+        ("cs", "Czech"),
+        ("el", "Greek"),
+        ("he", "Hebrew"),
+        ("hu", "Hungarian"),
+        ("id", "Indonesian"),
+        ("ms", "Malay"),
+        ("ro", "Romanian"),
+        ("sk", "Slovak"),
+        ("uk", "Ukrainian"),
+    ];
+
+    /// Every in-set code names to its mapped value, and the table holds exactly
+    /// the verbatim Python entries (the `en..uk` list — 30 codes; the "29" in
+    /// the backlog prose is a miscount of that same list, the Python dict has
+    /// 30, which is the source of truth).
+    #[test]
+    fn language_name_lookup_in_set() {
+        assert_eq!(LANGUAGE_NAMES.len(), 30, "table must stay the narrow en..uk set");
+        assert_eq!(GOLDEN_PAIRS.len(), 30);
+        for &(code, name) in GOLDEN_PAIRS {
+            assert_eq!(detect_language_name(code), name, "code {code:?}");
+            // A non-empty code passes through untouched, naming to its value.
+            assert_eq!(
+                detect_language(Some(code)),
+                DetectedLanguage {
+                    detected_language: name,
+                    language_code: code.to_string(),
+                },
+                "detect pair for {code:?}",
+            );
+        }
+    }
+
+    /// Valid-but-out-of-set ISO codes the broader `submate-lang` table *would*
+    /// name still resolve to `"Unknown"` — the parity trap.
+    #[test]
+    fn language_name_lookup_out_of_set() {
+        for code in ["ca", "fa", "be", "xx"] {
+            assert_eq!(detect_language_name(code), UNKNOWN_NAME, "code {code:?}");
+            assert_eq!(
+                detect_language(Some(code)),
+                DetectedLanguage {
+                    detected_language: UNKNOWN_NAME,
+                    language_code: code.to_string(),
+                },
+                "detect pair for {code:?}",
+            );
+        }
+    }
+
+    /// The absent-detection cases: `None` and `Some("")` both collapse to the
+    /// `{"Unknown", "und"}` envelope default, and `"und"` is itself not a key.
+    #[test]
+    fn language_name_lookup_absent() {
+        let expected = DetectedLanguage {
+            detected_language: UNKNOWN_NAME,
+            language_code: UNDETERMINED_CODE.to_string(),
+        };
+        assert_eq!(detect_language(None), expected);
+        assert_eq!(detect_language(Some("")), expected);
+        assert_eq!(detect_language_name(UNDETERMINED_CODE), UNKNOWN_NAME);
+    }
+
+    /// Golden cross-check against the captured fixture, when present.
+    ///
+    /// `rust/fixtures/` is denylisted for the port, so
+    /// `rust/fixtures/queue/bazarr_language_names.json` is authored by a
+    /// separate capture pre-pass. The fixture is a flat
+    /// `{ "<code>": "<detected_language>", ... }` object (the value Python's
+    /// `LANGUAGE_NAMES.get(code, "Unknown")` produces). Until it lands this
+    /// skips with an `eprintln`, matching `wav_wrap_matches_python_wave`.
+    #[test]
+    fn language_name_lookup_golden() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/queue/bazarr_language_names.json");
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            eprintln!(
+                "skipping golden assertion: rust/fixtures/queue/bazarr_language_names.json \
+                 not captured yet (rust/fixtures/ is denylisted — capture first)"
+            );
+            return;
+        };
+        for (code, expected_name) in parse_flat_json_object(&raw) {
+            assert_eq!(
+                detect_language_name(&code),
+                expected_name,
+                "golden code {code:?}",
+            );
+        }
+    }
+
+    /// Minimal parser for a flat `{ "k": "v", ... }` JSON object of string
+    /// values. The crate is intentionally dependency-free, and the golden has
+    /// no nesting/escapes/numbers, so this stays a few lines rather than
+    /// pulling `serde` into a pure-data crate.
+    fn parse_flat_json_object(raw: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let body = raw.trim().trim_start_matches('{').trim_end_matches('}');
+        for entry in body.split(',') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let (k, v) = entry.split_once(':').expect("malformed golden entry");
+            let key = k.trim().trim_matches('"').to_string();
+            let val = v.trim().trim_matches('"').to_string();
+            out.push((key, val));
+        }
+        out
     }
 }
