@@ -58,7 +58,7 @@ devshell.
 | `cargo build -p submate-cli --features model` | build the CLI with whisper.cpp |
 | `nix build .#submate` | the `submate` CLI package (CPU) |
 | `nix build .#submate-cuda` / `.#submate-vulkan` | GPU builds |
-| `nix build .#docker-cpu` / `.#docker-gpu` | container images |
+| `nix build .#docker-cpu` / `.#docker-gpu` / `.#docker-vulkan` | container images |
 | `nix fmt` | format nix/shell/yaml/json/toml/markdown (Rust uses `cargo fmt`) |
 
 ## Build, test, lint

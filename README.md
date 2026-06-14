@@ -30,6 +30,7 @@ nix build .#submate-cuda     # NVIDIA (CUDA)
 nix build .#submate-vulkan   # cross-vendor GPU (incl. Intel iGPU)
 nix build .#docker-cpu       # container image (submate:cpu)
 nix build .#docker-gpu       # container image (submate:gpu, needs nvidia-container-toolkit)
+nix build .#docker-vulkan    # container image (submate:vulkan, pass --device /dev/dri + host ICD)
 ```
 
 Or develop with `nix develop` and `cargo build -p submate-cli --features model`.
