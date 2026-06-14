@@ -69,7 +69,6 @@
     "device": "cpu",
     "folders": [],
     "implementation": "faster-whisper",
-    "model": "medium",
-    "transcribe_kwargs": {}
+    "model": "medium"
   }
 }

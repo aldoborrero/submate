@@ -34,7 +34,7 @@
 //!   the result against `fixtures/config/nested.resolved.json`.
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use submate_types::{Device, LanguageNamingType, TranslationBackend, WhisperImplementation};
 
 use std::path::Path;
@@ -66,10 +66,34 @@ pub struct WhisperSettings {
     pub device: Device,
     pub compute_type: String,
     pub implementation: WhisperImplementation,
-    #[serde(deserialize_with = "deserialize_json_kwargs")]
-    pub transcribe_kwargs: Map<String, Value>,
     #[serde(deserialize_with = "deserialize_pipe_list")]
     pub folders: Vec<String>,
+
+    // whisper.cpp decoding knobs. `None` leaves whisper.cpp's own default; each
+    // is also exposed as a CLI flag on `transcribe` (`--initial-prompt`,
+    // `--beam-size`, …) and via `SUBMATE__WHISPER__*`. Skipped from the
+    // serialized form when unset so they stay out of `config show` until used.
+    /// Prompt text that biases the decoder's vocabulary/spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// Beam-search width; unset uses greedy decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beam_size: Option<u32>,
+    /// Sampling temperature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// No-speech probability above which a segment is treated as silence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_speech_threshold: Option<f32>,
+    /// Entropy threshold for the decoder's temperature fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy_threshold: Option<f32>,
+    /// Average-log-probability threshold below which a decode is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprob_threshold: Option<f32>,
+    /// Maximum characters per segment (caps subtitle line length).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_len: Option<u32>,
 }
 
 impl Default for WhisperSettings {
@@ -79,8 +103,14 @@ impl Default for WhisperSettings {
             device: Device::Cpu,
             compute_type: "int8".to_string(),
             implementation: WhisperImplementation::FasterWhisper,
-            transcribe_kwargs: Map::new(),
             folders: Vec::new(),
+            initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            no_speech_threshold: None,
+            entropy_threshold: None,
+            logprob_threshold: None,
+            max_len: None,
         }
     }
 }
@@ -345,25 +375,6 @@ where
             .map(str::to_string)
             .collect()),
         other => Vec::<String>::deserialize(other).map_err(serde::de::Error::custom),
-    }
-}
-
-/// Coerce a JSON-string env value into a `Map`, or pass through an already-typed
-/// map.
-///
-/// Ports `WhisperSettings.parse_json_kwargs`: `transcribe_kwargs` arrives from
-/// the env as a JSON **string** (`'{"beam_size": 5}'`) which must be parsed into
-/// a map; the file/defaults layer supplies a real object that passes through
-/// unchanged. An absent field falls back to `#[serde(default)]` (`{}`); an empty
-/// string also yields `{}`, matching the Python validator's empty-input branch.
-fn deserialize_json_kwargs<'de, D>(deserializer: D) -> Result<Map<String, Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match Value::deserialize(deserializer)? {
-        Value::String(s) if s.is_empty() => Ok(Map::new()),
-        Value::String(s) => serde_json::from_str(&s).map_err(serde::de::Error::custom),
-        other => Map::<String, Value>::deserialize(other).map_err(serde::de::Error::custom),
     }
 }
 

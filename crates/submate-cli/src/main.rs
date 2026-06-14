@@ -171,6 +171,36 @@ struct TranscribeArgs {
     #[arg(short = 'F', long, value_enum, default_value_t = OutputFormat::Srt)]
     format: OutputFormat,
 
+    // Whisper decoding knobs. Each overrides `SUBMATE__WHISPER__*` and leaves
+    // whisper.cpp's own default in place when omitted.
+    /// Prompt text biasing the decoder's vocabulary/spelling.
+    #[arg(long, value_name = "TEXT")]
+    initial_prompt: Option<String>,
+
+    /// Beam-search width; omit for greedy decoding.
+    #[arg(long, value_name = "N")]
+    beam_size: Option<u32>,
+
+    /// Sampling temperature.
+    #[arg(long, value_name = "T")]
+    temperature: Option<f32>,
+
+    /// No-speech probability above which a segment is treated as silence.
+    #[arg(long, value_name = "T")]
+    no_speech_threshold: Option<f32>,
+
+    /// Entropy threshold for the decoder's temperature fallback.
+    #[arg(long, value_name = "T")]
+    entropy_threshold: Option<f32>,
+
+    /// Average-log-probability threshold below which a decode is rejected.
+    #[arg(long, value_name = "T")]
+    logprob_threshold: Option<f32>,
+
+    /// Maximum characters per segment (caps subtitle line length).
+    #[arg(long, value_name = "N")]
+    max_len: Option<u32>,
+
     /// Overwrite existing subtitle files.
     #[arg(short = 'f', long)]
     force: bool,
@@ -831,6 +861,19 @@ async fn transcribe_files(
             target_language: args.translate_to.clone(),
             translation_backend: None,
             output_format: args.format.into(),
+            // CLI flags override the `SUBMATE__WHISPER__*` config defaults.
+            initial_prompt: args
+                .initial_prompt
+                .clone()
+                .or_else(|| config.whisper.initial_prompt.clone()),
+            beam_size: args.beam_size.or(config.whisper.beam_size),
+            temperature: args.temperature.or(config.whisper.temperature),
+            no_speech_threshold: args
+                .no_speech_threshold
+                .or(config.whisper.no_speech_threshold),
+            entropy_threshold: args.entropy_threshold.or(config.whisper.entropy_threshold),
+            logprob_threshold: args.logprob_threshold.or(config.whisper.logprob_threshold),
+            max_len: args.max_len.or(config.whisper.max_len),
         };
         let source = AudioSource::File {
             path: file.clone(),
@@ -1136,6 +1179,9 @@ struct WhisperBazarrTranscriber {
     model_path: String,
     backend: std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>,
     chunk_size: usize,
+    /// Decode knobs from `SUBMATE__WHISPER__*`, applied to every Bazarr request.
+    /// `language`/`task` are placeholders overridden per call.
+    decode: submate_whisper::TranscribeOptions,
 }
 
 #[cfg(feature = "model")]
@@ -1154,9 +1200,10 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         };
         // Source language is always auto-detected (mirrors the Python handler);
         // Bazarr's `language` param is the translation target, applied below.
+        // Decode knobs come from config (`self.decode`); task is per-request.
         let options = submate_whisper::TranscribeOptions {
-            language: None,
             task,
+            ..self.decode.clone()
         };
         let raw = self
             .dispatcher
@@ -1207,10 +1254,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         // Language id only needs the first ~30 s (Whisper's first mel window).
         let mut samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
         samples.truncate(16_000 * 30);
-        let options = submate_whisper::TranscribeOptions {
-            language: None,
-            task: submate_whisper::Task::Transcribe,
-        };
+        let options = self.decode.clone();
         let raw = self
             .dispatcher
             .transcribe_pcm(self.model_path.clone(), samples, options)
@@ -1237,6 +1281,17 @@ fn build_bazarr_transcriber(
         model_path: config.whisper.model.clone(),
         backend: std::sync::Arc::new(build_backend(config)),
         chunk_size: config.translation.chunk_size.max(1) as usize,
+        decode: submate_whisper::TranscribeOptions {
+            language: None,
+            task: submate_whisper::Task::Transcribe,
+            initial_prompt: config.whisper.initial_prompt.clone(),
+            beam_size: config.whisper.beam_size,
+            temperature: config.whisper.temperature,
+            no_speech_threshold: config.whisper.no_speech_threshold,
+            entropy_threshold: config.whisper.entropy_threshold,
+            logprob_threshold: config.whisper.logprob_threshold,
+            max_len: config.whisper.max_len,
+        },
     })))
 }
 

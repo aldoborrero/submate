@@ -9,9 +9,9 @@
 //!   field types (port, enums).
 //! * `parity::validators` — `config/validators.env` resolved through
 //!   [`Config::from_env`] equals `config/validators.resolved.json`, pinning the
-//!   `mode="before"` field coercions: pipe-separated lists split on `'|'`, a
-//!   JSON-string `transcribe_kwargs` parsed into a map, and the `custom_regroup`
-//!   string passthrough (a non-disabling pattern stays a string).
+//!   field coercions: pipe-separated lists split on `'|'`, the whisper decode
+//!   knobs (`beam_size` → `u32`, `initial_prompt` → `String`), and the
+//!   `custom_regroup` string passthrough (a non-disabling pattern stays a string).
 //!
 //! Object key ordering is irrelevant: both sides are compared as
 //! `serde_json::Value` (BTreeMap-backed).

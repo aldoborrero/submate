@@ -849,11 +849,25 @@ pub fn whisper_processor(
         let model_path = model_path.clone();
         let language = opts.source_language.clone();
         let output_format = opts.output_format;
+        let initial_prompt = opts.initial_prompt.clone();
+        let beam_size = opts.beam_size;
+        let temperature = opts.temperature;
+        let no_speech_threshold = opts.no_speech_threshold;
+        let entropy_threshold = opts.entropy_threshold;
+        let logprob_threshold = opts.logprob_threshold;
+        let max_len = opts.max_len;
         async move {
             let samples = pcm_s16le_to_f32(&pcm);
             let options = submate_whisper::TranscribeOptions {
                 language,
                 task: submate_whisper::Task::Transcribe,
+                initial_prompt,
+                beam_size,
+                temperature,
+                no_speech_threshold,
+                entropy_threshold,
+                logprob_threshold,
+                max_len,
             };
             // Decode, then run the full subtitle assembly (regroup -> suppress ->
             // output formatting) so the job output is a real assembled result, not
@@ -1080,6 +1094,13 @@ mod translation_tests {
             target_language: target.map(str::to_string),
             translation_backend: None,
             output_format: format,
+            initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            no_speech_threshold: None,
+            entropy_threshold: None,
+            logprob_threshold: None,
+            max_len: None,
         }
     }
 
@@ -1203,6 +1224,13 @@ mod agent_tests {
             target_language: None,
             translation_backend: None,
             output_format: submate_proto::OutputFormat::default(),
+            initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            no_speech_threshold: None,
+            entropy_threshold: None,
+            logprob_threshold: None,
+            max_len: None,
         }
     }
 

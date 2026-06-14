@@ -81,6 +81,20 @@ pub struct TranscribeOptions {
     pub language: Option<String>,
     /// Transcribe or translate.
     pub task: Task,
+    /// Prompt text biasing the decoder's vocabulary/spelling.
+    pub initial_prompt: Option<String>,
+    /// Beam-search width; `None` uses greedy decoding.
+    pub beam_size: Option<u32>,
+    /// Sampling temperature.
+    pub temperature: Option<f32>,
+    /// No-speech probability above which a segment is treated as silence.
+    pub no_speech_threshold: Option<f32>,
+    /// Entropy threshold for the decoder's temperature fallback.
+    pub entropy_threshold: Option<f32>,
+    /// Average-log-probability threshold below which a decode is rejected.
+    pub logprob_threshold: Option<f32>,
+    /// Maximum characters per segment (caps subtitle line length).
+    pub max_len: Option<u32>,
 }
 
 /// Errors raised while loading a model or running inference.
@@ -589,7 +603,15 @@ mod inference {
             .create_state()
             .map_err(|e| WhisperError::Load(e.to_string()))?;
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Beam search when a width is given, else greedy (whisper.cpp's default).
+        let strategy = match options.beam_size {
+            Some(n) => SamplingStrategy::BeamSearch {
+                beam_size: n as i32,
+                patience: -1.0,
+            },
+            None => SamplingStrategy::Greedy { best_of: 1 },
+        };
+        let mut params = FullParams::new(strategy);
         // Only override whisper.cpp's default thread count when explicitly asked
         // (SUBMATE__WHISPER__THREADS) — forcing more threads regresses small models.
         if let Some(threads) = whisper_threads() {
@@ -601,6 +623,26 @@ mod inference {
         params.set_translate(matches!(options.task, Task::Translate));
         if let Some(lang) = options.language.as_deref() {
             params.set_language(Some(lang));
+        }
+        // Optional decoding knobs (CLI flags / SUBMATE__WHISPER__*); each leaves
+        // whisper.cpp's own default in place when unset.
+        if let Some(prompt) = options.initial_prompt.as_deref() {
+            params.set_initial_prompt(prompt);
+        }
+        if let Some(t) = options.temperature {
+            params.set_temperature(t);
+        }
+        if let Some(t) = options.no_speech_threshold {
+            params.set_no_speech_thold(t);
+        }
+        if let Some(t) = options.entropy_threshold {
+            params.set_entropy_thold(t);
+        }
+        if let Some(t) = options.logprob_threshold {
+            params.set_logprob_thold(t);
+        }
+        if let Some(n) = options.max_len {
+            params.set_max_len(n as i32);
         }
         // Quiet: whisper.cpp's stdout callbacks have no place in a library.
         params.set_print_special(false);

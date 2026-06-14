@@ -67,7 +67,7 @@ pub struct WorkRequest {
 ///
 /// Serialized as an internally tagged enum so an empty poll is still a
 /// well-typed JSON body (`{"type":"no_work"}`) rather than an absent payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkResponse {
     /// A job was claimed for this node.
@@ -92,7 +92,7 @@ pub enum WorkResponse {
 ///
 /// Languages are ISO-639 strings (e.g. `"en"`), matching what the Whisper and
 /// translation pipelines consume; `None` means "auto-detect" / "not applicable".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobOpts {
     /// Whisper model size to load for this job.
     pub model: WhisperModel,
@@ -111,6 +111,31 @@ pub struct JobOpts {
     /// so payloads without this field keep producing SRT.
     #[serde(default)]
     pub output_format: OutputFormat,
+
+    // whisper.cpp decoding knobs forwarded to the node; `None` leaves whisper's
+    // default. Skipped from the wire form when unset so existing payloads are
+    // byte-identical.
+    /// Prompt text biasing the decoder's vocabulary/spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// Beam-search width; unset uses greedy decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beam_size: Option<u32>,
+    /// Sampling temperature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    /// No-speech probability above which a segment is treated as silence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_speech_threshold: Option<f32>,
+    /// Entropy threshold for the decoder's temperature fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy_threshold: Option<f32>,
+    /// Average-log-probability threshold below which a decode is rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logprob_threshold: Option<f32>,
+    /// Maximum characters per segment (caps subtitle line length).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_len: Option<u32>,
 }
 
 /// Node → server: in-flight progress for a running job.
@@ -262,6 +287,13 @@ mod tests {
                 target_language: Some("en".into()),
                 translation_backend: Some(TranslationBackend::Claude),
                 output_format: OutputFormat::Ass,
+                initial_prompt: Some("proper nouns: Ada, Zümrüt".into()),
+                beam_size: Some(5),
+                temperature: Some(0.0),
+                no_speech_threshold: Some(0.6),
+                entropy_threshold: Some(2.4),
+                logprob_threshold: Some(-1.0),
+                max_len: Some(42),
             },
         });
     }
@@ -280,6 +312,13 @@ mod tests {
             target_language: None,
             translation_backend: None,
             output_format: OutputFormat::default(),
+            initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            no_speech_threshold: None,
+            entropy_threshold: None,
+            logprob_threshold: None,
+            max_len: None,
         });
     }
 

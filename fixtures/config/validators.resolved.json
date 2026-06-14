@@ -69,6 +69,7 @@
     "openai_model": "gpt-5-mini"
   },
   "whisper": {
+    "beam_size": 5,
     "compute_type": "int8",
     "device": "cpu",
     "folders": [
@@ -77,10 +78,7 @@
       "/data/c"
     ],
     "implementation": "faster-whisper",
-    "model": "medium",
-    "transcribe_kwargs": {
-      "beam_size": 5,
-      "best_of": 5
-    }
+    "initial_prompt": "Acme Corp, Zürich",
+    "model": "medium"
   }
 }

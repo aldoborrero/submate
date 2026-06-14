@@ -69,7 +69,6 @@
     "device": "cuda",
     "folders": [],
     "implementation": "faster-whisper",
-    "model": "large-v3",
-    "transcribe_kwargs": {}
+    "model": "large-v3"
   }
 }

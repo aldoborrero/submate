@@ -1191,6 +1191,13 @@ mod tests {
             target_language: None,
             translation_backend: None,
             output_format: submate_proto::OutputFormat::default(),
+            initial_prompt: None,
+            beam_size: None,
+            temperature: None,
+            no_speech_threshold: None,
+            entropy_threshold: None,
+            logprob_threshold: None,
+            max_len: None,
         }
     }
 
