@@ -226,12 +226,12 @@ pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 /// OpenAI-compatible chat endpoint.
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
-/// Default OpenAI model (ports `OpenAIBackend.__init__`'s `model="gpt-4o-mini"`).
-pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
+/// Default OpenAI model (ports `OpenAIBackend.__init__`'s `model="gpt-5-mini"`).
+pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5-mini";
 
 /// Default Gemini model (ports `GeminiBackend.__init__`'s
-/// `model="gemini-2.0-flash"`).
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.0-flash";
+/// `model="gemini-2.5-flash"`).
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 
 /// Base URL for Gemini's OpenAI-compatible endpoint.
 ///
@@ -316,8 +316,8 @@ impl Backend for OpenAiCompatBackend {
 }
 
 /// Default Claude model (ports `ClaudeBackend.__init__`'s
-/// `model="claude-sonnet-4-20250514"`).
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-20250514";
+/// `model="claude-sonnet-4-6"`).
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
 /// Default Anthropic messages API base URL.
 ///
@@ -1028,7 +1028,7 @@ mod tests {
                     OpenAiCompatBackend::new(
                         "gemini",
                         "g-test",
-                        "gemini-2.0-flash",
+                        "gemini-2.5-flash",
                         format!("{base}/v1beta/openai"),
                     )
                 },

@@ -331,15 +331,15 @@ class TranslationSettings(BaseModel):
 
     # Claude/Anthropic settings
     anthropic_api_key: str = Field(default="", description="Anthropic API key for Claude")
-    claude_model: str = Field(default="claude-sonnet-4-20250514", description="Claude model for translation")
+    claude_model: str = Field(default="claude-sonnet-4-6", description="Claude model for translation")
 
     # OpenAI settings
     openai_api_key: str = Field(default="", description="OpenAI API key")
-    openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model for translation")
+    openai_model: str = Field(default="gpt-5-mini", description="OpenAI model for translation")
 
     # Google Gemini settings
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
-    gemini_model: str = Field(default="gemini-2.0-flash", description="Gemini model for translation")
+    gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model for translation")
 
     # Chunking settings
     chunk_size: int = Field(

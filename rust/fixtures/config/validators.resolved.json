@@ -60,13 +60,13 @@
     "anthropic_api_key": "",
     "backend": "ollama",
     "chunk_size": 50,
-    "claude_model": "claude-sonnet-4-20250514",
+    "claude_model": "claude-sonnet-4-6",
     "gemini_api_key": "",
-    "gemini_model": "gemini-2.0-flash",
+    "gemini_model": "gemini-2.5-flash",
     "ollama_model": "llama3.2",
     "ollama_url": "http://localhost:11434",
     "openai_api_key": "",
-    "openai_model": "gpt-4o-mini"
+    "openai_model": "gpt-5-mini"
   },
   "whisper": {
     "compute_type": "int8",

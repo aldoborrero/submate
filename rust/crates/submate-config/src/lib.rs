@@ -254,11 +254,11 @@ impl Default for TranslationSettings {
             ollama_model: "llama3.2".to_string(),
             ollama_url: "http://localhost:11434".to_string(),
             anthropic_api_key: String::new(),
-            claude_model: "claude-sonnet-4-20250514".to_string(),
+            claude_model: "claude-sonnet-4-6".to_string(),
             openai_api_key: String::new(),
-            openai_model: "gpt-4o-mini".to_string(),
+            openai_model: "gpt-5-mini".to_string(),
             gemini_api_key: String::new(),
-            gemini_model: "gemini-2.0-flash".to_string(),
+            gemini_model: "gemini-2.5-flash".to_string(),
             chunk_size: 50,
         }
     }

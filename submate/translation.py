@@ -109,7 +109,7 @@ class OllamaBackend(TranslationBackendBase):
 class ClaudeBackend(TranslationBackendBase):
     """Claude/Anthropic-based translation backend."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
         self.api_key = api_key
         self.model = model
 
@@ -136,7 +136,7 @@ class ClaudeBackend(TranslationBackendBase):
 class OpenAIBackend(TranslationBackendBase):
     """OpenAI-based translation backend."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model: str = "gpt-5-mini"):
         self.api_key = api_key
         self.model = model
 
@@ -159,7 +159,7 @@ class OpenAIBackend(TranslationBackendBase):
 class GeminiBackend(TranslationBackendBase):
     """Google Gemini-based translation backend."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         self.api_key = api_key
         self.model = model
 
