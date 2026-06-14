@@ -85,6 +85,13 @@ runtime flag.
 whisper.cpp's `min(4, n_cpu)`; raising it can *regress* small models, which are
 memory-bandwidth-bound — measure per host).
 
+`SUBMATE_WHISPER_VAD_MODEL=<path>` enables Silero **VAD**: transcribe only
+detected speech, skipping silence/non-speech. This removes whisper's
+hallucinated lines over silence/music and speeds up sparse audio (timestamps are
+mapped back to the original clip). Point it at a `ggml-silero-*.bin` model. (We
+drive VAD via the standalone `WhisperVadContext` because whisper-rs's `full`
+bypasses whisper.cpp's built-in `--vad`.)
+
 > Note: the Rust port is not nix-packaged yet, so `nix build .#docker-gpu` still
 > builds the **Python** image. A CUDA-enabled Rust image is a follow-up to
 > packaging the `rust/` workspace in nix.

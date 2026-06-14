@@ -256,10 +256,76 @@ mod word_grouping_tests {
     }
 }
 
+/// A speech region from VAD, mapping the *filtered* (speech-only) timeline back
+/// to the *original* clip timeline. All values in seconds.
+#[cfg(any(feature = "model", test))]
+#[derive(Debug, Clone, Copy)]
+struct VadRegion {
+    /// Where this region begins in the concatenated speech-only audio.
+    filtered_start: f64,
+    /// Where it began in the original clip.
+    orig_start: f64,
+    /// Region duration.
+    dur: f64,
+}
+
+/// Map a timestamp on the filtered (speech-only) timeline back to the original
+/// clip timeline.
+///
+/// The filtered audio is the speech regions concatenated, so the map is
+/// piecewise: find the region the timestamp falls in and shift it by that
+/// region's original offset. A timestamp on a region boundary belongs to the
+/// later region; one past the last region clamps to its end.
+#[cfg(any(feature = "model", test))]
+fn remap_seconds(regions: &[VadRegion], filtered_s: f64) -> f64 {
+    for r in regions {
+        if filtered_s < r.filtered_start + r.dur {
+            return r.orig_start + (filtered_s - r.filtered_start).max(0.0);
+        }
+    }
+    regions.last().map_or(filtered_s, |r| r.orig_start + r.dur)
+}
+
+#[cfg(test)]
+mod vad_remap_tests {
+    use super::{remap_seconds, VadRegion};
+
+    // Original speech at [10,15) and [40,45), concatenated to filtered [0,5) and
+    // [5,10) — the 25s silence between them is dropped.
+    fn regions() -> Vec<VadRegion> {
+        vec![
+            VadRegion { filtered_start: 0.0, orig_start: 10.0, dur: 5.0 },
+            VadRegion { filtered_start: 5.0, orig_start: 40.0, dur: 5.0 },
+        ]
+    }
+
+    #[test]
+    fn maps_filtered_time_back_to_original() {
+        let r = regions();
+        assert_eq!(remap_seconds(&r, 0.0), 10.0); // region 1 start
+        assert_eq!(remap_seconds(&r, 2.5), 12.5); // mid region 1
+        assert_eq!(remap_seconds(&r, 5.0), 40.0); // boundary -> region 2 start
+        assert_eq!(remap_seconds(&r, 7.5), 42.5); // mid region 2
+    }
+
+    #[test]
+    fn clamps_past_the_last_region() {
+        assert_eq!(remap_seconds(&regions(), 99.0), 45.0);
+    }
+
+    #[test]
+    fn empty_regions_pass_through() {
+        assert_eq!(remap_seconds(&[], 3.0), 3.0);
+    }
+}
+
 #[cfg(feature = "model")]
 mod inference {
     use super::*;
-    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+    use whisper_rs::{
+        FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext,
+        WhisperVadContextParams, WhisperVadParams,
+    };
 
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
@@ -315,6 +381,62 @@ mod inference {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(clamp_threads)
+    }
+
+    /// Path to a Silero VAD model from `SUBMATE_WHISPER_VAD_MODEL`, or `None` to
+    /// leave VAD off. Present-and-non-empty turns on speech-only transcription.
+    fn whisper_vad_model() -> Option<String> {
+        std::env::var("SUBMATE_WHISPER_VAD_MODEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Run Silero VAD over `pcm`, returning the speech-only PCM (the detected
+    /// speech regions concatenated) and the map back to the original timeline.
+    ///
+    /// whisper-rs's `state.full` calls `whisper_full_with_state`, which skips
+    /// whisper.cpp's built-in VAD (that lives only in the `whisper_full`
+    /// wrapper), so we drive the VAD engine ourselves — the same thing the
+    /// wrapper does internally.
+    fn run_vad(vad_model: &str, pcm: &[f32]) -> Result<(Vec<f32>, Vec<VadRegion>), WhisperError> {
+        let mut vctx = WhisperVadContext::new(vad_model, WhisperVadContextParams::default())
+            .map_err(|e| WhisperError::Load(e.to_string()))?;
+        let segments = vctx
+            .segments_from_samples(WhisperVadParams::default(), pcm)
+            .map_err(|e| WhisperError::Inference(e.to_string()))?;
+
+        // VAD timestamps are centiseconds; 16 kHz mono => 160 samples per cs.
+        let per_cs = f64::from(SAMPLE_RATE / 100);
+        let sr = f64::from(SAMPLE_RATE);
+        let mut filtered: Vec<f32> = Vec::new();
+        let mut regions: Vec<VadRegion> = Vec::new();
+        for i in 0..segments.num_segments() {
+            let (Some(start_cs), Some(end_cs)) = (
+                segments.get_segment_start_timestamp(i),
+                segments.get_segment_end_timestamp(i),
+            ) else {
+                continue;
+            };
+            let s0 = ((f64::from(start_cs) * per_cs) as usize).min(pcm.len());
+            let s1 = ((f64::from(end_cs) * per_cs) as usize).min(pcm.len());
+            if s1 <= s0 {
+                continue;
+            }
+            let filtered_start = filtered.len() as f64 / sr;
+            filtered.extend_from_slice(&pcm[s0..s1]);
+            regions.push(VadRegion {
+                filtered_start,
+                orig_start: f64::from(start_cs) / 100.0,
+                dur: (s1 - s0) as f64 / sr,
+            });
+        }
+        tracing::debug!(
+            speech_regions = regions.len(),
+            speech_secs = filtered.len() as f64 / sr,
+            clip_secs = pcm.len() as f64 / sr,
+            "VAD kept speech-only audio"
+        );
+        Ok((filtered, regions))
     }
 
     /// Clamp a core count into a valid `set_n_threads` argument (`>= 1`, fits
@@ -374,8 +496,23 @@ mod inference {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
+        // VAD: when SUBMATE_WHISPER_VAD_MODEL is set, transcribe only the detected
+        // speech and map timings back below; a VAD miss (no speech) falls back to
+        // the full clip so audio is never dropped.
+        let vad = match whisper_vad_model().as_deref() {
+            Some(model) => {
+                let (filtered, regions) = run_vad(model, pcm)?;
+                (!regions.is_empty()).then_some((filtered, regions))
+            }
+            None => None,
+        };
+        let (samples, vad_regions) = match &vad {
+            Some((filtered, regions)) => (filtered.as_slice(), Some(regions.as_slice())),
+            None => (pcm, None),
+        };
+
         state
-            .full(params, pcm)
+            .full(params, samples)
             .map_err(|e| WhisperError::Inference(e.to_string()))?;
 
         let n_segments = state.full_n_segments();
@@ -407,6 +544,18 @@ mod inference {
                 end: centiseconds_to_seconds(seg_t1),
                 words,
             });
+        }
+
+        // Shift speech-only timings back onto the original clip timeline.
+        if let Some(regions) = vad_regions {
+            for seg in &mut segments {
+                seg.start = remap_seconds(regions, seg.start);
+                seg.end = remap_seconds(regions, seg.end);
+                for word in &mut seg.words {
+                    word.start = remap_seconds(regions, word.start);
+                    word.end = remap_seconds(regions, word.end);
+                }
+            }
         }
 
         Ok(WhisperResult {
