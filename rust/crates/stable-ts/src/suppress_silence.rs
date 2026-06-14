@@ -387,7 +387,7 @@ struct WordSpan {
 
 impl WordSpan {
     fn new(start: f64, end: f64) -> Self {
-        WordSpan { start, end }
+        Self { start, end }
     }
 
     fn set_start(&mut self, val: f64) {

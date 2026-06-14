@@ -74,7 +74,7 @@ pub struct WhisperSettings {
 
 impl Default for WhisperSettings {
     fn default() -> Self {
-        WhisperSettings {
+        Self {
             model: "medium".to_string(),
             device: Device::Cpu,
             compute_type: "int8".to_string(),
@@ -98,7 +98,7 @@ pub struct StableTsSettings {
 
 impl Default for StableTsSettings {
     fn default() -> Self {
-        StableTsSettings {
+        Self {
             word_level_highlight: false,
             custom_regroup: StrOrBool::Str("cm_sl=84_sl=42++++++1".to_string()),
             suppress_silence: true,
@@ -125,7 +125,7 @@ pub struct ServerSettings {
 
 impl Default for ServerSettings {
     fn default() -> Self {
-        ServerSettings {
+        Self {
             address: "0.0.0.0".to_string(),
             port: 9000,
             concurrent_transcriptions: 2,
@@ -175,7 +175,7 @@ pub struct QueueSettings {
 
 impl Default for QueueSettings {
     fn default() -> Self {
-        QueueSettings {
+        Self {
             db_path: "${XDG_DATA_HOME}/subgen/queue.db".to_string(),
             max_retries: 3,
             retry_delay: 5,
@@ -210,7 +210,7 @@ pub struct SubtitleSettings {
 
 impl Default for SubtitleSettings {
     fn default() -> Self {
-        SubtitleSettings {
+        Self {
             force_detected_language_to: String::new(),
             append_credits: false,
             skip_if_target_subtitle_exists: true,
@@ -249,7 +249,7 @@ pub struct TranslationSettings {
 
 impl Default for TranslationSettings {
     fn default() -> Self {
-        TranslationSettings {
+        Self {
             backend: TranslationBackend::Ollama,
             ollama_model: "llama3.2".to_string(),
             ollama_url: "http://localhost:11434".to_string(),
@@ -286,7 +286,7 @@ impl Config {
     /// Kept separate from [`Config::from_env`] so resolution can be exercised
     /// without extracting, and so the chain order lives in one place.
     fn figment(config_file: Option<&Path>) -> Figment {
-        let mut figment = Figment::from(Serialized::defaults(Config::default()));
+        let mut figment = Figment::from(Serialized::defaults(Self::default()));
 
         // Optional `--config-file` JSON layer. Ports `get_config(config_file)`:
         // a file supplies overrides on top of the defaults, but the env still
@@ -312,13 +312,13 @@ impl Config {
     ///
     /// The error is boxed: `figment::Error` is a large enum, so an unboxed
     /// `Result` would bloat every caller's stack frame on the happy path.
-    pub fn from_env(config_file: Option<&Path>) -> Result<Config, Box<figment::Error>> {
+    pub fn from_env(config_file: Option<&Path>) -> Result<Self, Box<figment::Error>> {
         Self::figment(config_file).extract().map_err(Box::new)
     }
 
     /// Convenience entrypoint equivalent to `from_env(None)`: resolve purely
     /// from defaults and the `SUBMATE__` environment.
-    pub fn load() -> Result<Config, Box<figment::Error>> {
+    pub fn load() -> Result<Self, Box<figment::Error>> {
         Self::from_env(None)
     }
 }

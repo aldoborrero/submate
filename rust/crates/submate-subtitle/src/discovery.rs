@@ -111,10 +111,9 @@ pub fn get_external_subtitle_paths(video_path: &Path) -> Vec<PathBuf> {
     };
     let video_stem = path_stem(video_path);
 
-    let entries = match std::fs::read_dir(&video_dir) {
-        Ok(entries) => entries,
+    let Ok(entries) = std::fs::read_dir(&video_dir) else {
         // Python swallows OSError from a failed scan and returns what it has.
-        Err(_) => return Vec::new(),
+        return Vec::new();
     };
 
     let mut subtitle_paths = Vec::new();

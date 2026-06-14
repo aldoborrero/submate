@@ -58,11 +58,11 @@ impl OutputFormat {
 impl From<OutputFormat> for submate_proto::OutputFormat {
     fn from(f: OutputFormat) -> Self {
         match f {
-            OutputFormat::Srt => submate_proto::OutputFormat::Srt,
-            OutputFormat::Vtt => submate_proto::OutputFormat::Vtt,
-            OutputFormat::Ass => submate_proto::OutputFormat::Ass,
-            OutputFormat::Json => submate_proto::OutputFormat::Json,
-            OutputFormat::Txt => submate_proto::OutputFormat::Txt,
+            OutputFormat::Srt => Self::Srt,
+            OutputFormat::Vtt => Self::Vtt,
+            OutputFormat::Ass => Self::Ass,
+            OutputFormat::Json => Self::Json,
+            OutputFormat::Txt => Self::Txt,
         }
     }
 }
@@ -73,7 +73,9 @@ mod translate_paths;
 // ahead of the IO wiring. `cmd_transcribe`/`collect_media_files` still carry
 // their own glob-based collection; `port-cli-commands` swaps them onto these
 // byte-for-byte-ported helpers. Allowed dead until then so the parity tests
-// (the item's falsifier) build and run.
+// (the item's falsifier) build and run. `#[allow]`, not `#[expect]`: the module
+// is dead only in a non-test build (the parity test uses it), so the
+// expectation would be unfulfilled under `--all-targets`.
 #[allow(dead_code)]
 mod transcribe_collect;
 
@@ -577,9 +579,8 @@ fn find_subtitle_files(path: &Path, recursive: bool) -> Vec<PathBuf> {
 /// file. Errors reading a directory are swallowed, matching the glob-based
 /// Python scan that silently skips unreadable entries.
 fn collect_files(dir: &Path, recursive: bool, visit: &mut dyn FnMut(&Path)) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -925,8 +926,7 @@ fn output_count(output: &str, format: OutputFormat) -> (usize, &'static str) {
                 .as_ref()
                 .and_then(|v| v.get("segments"))
                 .and_then(serde_json::Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
+                .map_or(0, Vec::len),
             "segment",
         ),
         OutputFormat::Txt => (
@@ -947,9 +947,7 @@ fn output_count(output: &str, format: OutputFormat) -> (usize, &'static str) {
 fn result_summary(input: &Path, output: &Path, count: usize, noun: &str) -> String {
     let name = |p: &Path| {
         p.file_name()
-            .and_then(|n| n.to_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| p.display().to_string())
+            .and_then(|n| n.to_str()).map_or_else(|| p.display().to_string(), str::to_owned)
     };
     let unit = if count == 1 {
         noun.to_string()
@@ -986,7 +984,7 @@ impl ProgressRenderer<std::io::Stderr> {
     /// Build a renderer for `file`, choosing TTY vs. plain from whether stderr is
     /// a terminal. `is_tty` is taken explicitly (rather than probed inside) so
     /// the decision is testable and overridable.
-    fn for_stderr(file: &Path, is_tty: bool) -> ProgressRenderer<std::io::Stderr> {
+    fn for_stderr(file: &Path, is_tty: bool) -> Self {
         let name = display_name(file);
         if is_tty {
             // `draw_target` on stderr; the template renders e.g.
@@ -998,9 +996,9 @@ impl ProgressRenderer<std::io::Stderr> {
                     .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
             );
             bar.set_prefix(name);
-            ProgressRenderer::Tty { bar }
+            Self::Tty { bar }
         } else {
-            ProgressRenderer::Plain {
+            Self::Plain {
                 out: std::io::stderr(),
                 name,
                 last_pct: None,
@@ -1015,10 +1013,10 @@ impl<W: std::io::Write> ProgressRenderer<W> {
     fn update(&mut self, pct: f32) {
         let whole = (pct.clamp(0.0, 1.0) * 100.0).round() as u8;
         match self {
-            ProgressRenderer::Tty { bar } => {
+            Self::Tty { bar } => {
                 bar.set_position(whole as u64);
             }
-            ProgressRenderer::Plain {
+            Self::Plain {
                 out,
                 name,
                 last_pct,
@@ -1037,8 +1035,8 @@ impl<W: std::io::Write> ProgressRenderer<W> {
     /// writer is flushed.
     fn finish(self) {
         match self {
-            ProgressRenderer::Tty { bar } => bar.finish_and_clear(),
-            ProgressRenderer::Plain { mut out, .. } => {
+            Self::Tty { bar } => bar.finish_and_clear(),
+            Self::Plain { mut out, .. } => {
                 let _ = out.flush();
             }
         }
@@ -1049,9 +1047,7 @@ impl<W: std::io::Write> ProgressRenderer<W> {
 /// full `display()` form for paths with no final component).
 fn display_name(path: &Path) -> String {
     path.file_name()
-        .and_then(|n| n.to_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| path.display().to_string())
+        .and_then(|n| n.to_str()).map_or_else(|| path.display().to_string(), str::to_owned)
 }
 
 /// Bind an ephemeral loopback port and serve the coordinator's router on it,
@@ -1493,8 +1489,7 @@ fn resolve_single_file_track(
                 let lang = tracks
                     .iter()
                     .find(|t| t.index == index)
-                    .map(|t| t.language.as_str())
-                    .unwrap_or("unknown");
+                    .map_or("unknown", |t| t.language.as_str());
                 eprintln!(
                     "Ambiguous audio selection; using track #{index} ({lang}). \
                      Override with -a track:<n> (or -a <lang>), or run interactively \

@@ -165,8 +165,8 @@ impl AppState {
     /// The `/nodes/*` and `/jobs/*` routes return `503` until a coordinator is
     /// attached via [`AppState::with_coordinator`]. Server processing settings
     /// default to the Python defaults (`process_on_add = true`).
-    pub fn new(stats: impl StatsSource) -> AppState {
-        AppState {
+    pub fn new(stats: impl StatsSource) -> Self {
+        Self {
             stats: Arc::new(stats),
             coord: None,
             server: Arc::new(ServerSettings::default()),
@@ -176,8 +176,8 @@ impl AppState {
 
     /// Build state backed by a live [`NodeCoordinator`]. The coordinator also
     /// supplies live [`QueueStats`] for the ops routes.
-    pub fn with_coordinator(coord: Arc<NodeCoordinator>) -> AppState {
-        AppState {
+    pub fn with_coordinator(coord: Arc<NodeCoordinator>) -> Self {
+        Self {
             stats: coord.clone(),
             coord: Some(coord),
             server: Arc::new(ServerSettings::default()),
@@ -187,7 +187,7 @@ impl AppState {
 
     /// Override the server processing settings (`process_on_add` /
     /// `process_on_play`) that gate Jellyfin webhook handling.
-    pub fn with_server_settings(mut self, server: ServerSettings) -> AppState {
+    pub fn with_server_settings(mut self, server: ServerSettings) -> Self {
         self.server = Arc::new(server);
         self
     }
@@ -195,7 +195,7 @@ impl AppState {
     /// Attach the direct Bazarr transcription seam. Without it the `/bazarr/*`
     /// routes degrade gracefully (empty body / `Unknown`), so a brain-only
     /// server stays Bazarr-safe.
-    pub fn with_bazarr(mut self, bazarr: Arc<dyn BazarrTranscriber>) -> AppState {
+    pub fn with_bazarr(mut self, bazarr: Arc<dyn BazarrTranscriber>) -> Self {
         self.bazarr = Some(bazarr);
         self
     }
@@ -208,8 +208,8 @@ impl AppState {
 }
 
 impl Default for AppState {
-    fn default() -> AppState {
-        AppState::new(EmptyStats)
+    fn default() -> Self {
+        Self::new(EmptyStats)
     }
 }
 
@@ -237,19 +237,19 @@ pub enum ServerError {
 impl ServerError {
     fn status(&self) -> StatusCode {
         match self {
-            ServerError::NotFound(_) => StatusCode::NOT_FOUND,
-            ServerError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ServerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            ServerError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
 
 impl From<QueueError> for ServerError {
-    fn from(err: QueueError) -> ServerError {
+    fn from(err: QueueError) -> Self {
         match err {
-            QueueError::NotFound(id) => ServerError::NotFound(format!("job {id} not found")),
-            other => ServerError::Internal(other.to_string()),
+            QueueError::NotFound(id) => Self::NotFound(format!("job {id} not found")),
+            other => Self::Internal(other.to_string()),
         }
     }
 }
@@ -345,8 +345,8 @@ pub struct NodeCoordinator {
 
 impl NodeCoordinator {
     /// Build a coordinator over an existing job store.
-    pub fn new(store: JobStore) -> NodeCoordinator {
-        NodeCoordinator {
+    pub fn new(store: JobStore) -> Self {
+        Self {
             store: Mutex::new(store),
             nodes: Mutex::new(HashMap::new()),
             waiters: Mutex::new(HashMap::new()),
@@ -440,9 +440,7 @@ impl NodeCoordinator {
     fn register(&self, req: NodeRegister) -> NodeRegistered {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         let token = nodes
-            .get(&req.id)
-            .map(|existing| existing.token.clone())
-            .unwrap_or_else(|| format!("tok_{}", req.id));
+            .get(&req.id).map_or_else(|| format!("tok_{}", req.id), |existing| existing.token.clone());
         nodes.insert(
             req.id,
             NodeInfo {
@@ -672,8 +670,8 @@ impl EmbeddedNodeSettings {
     /// the runner count taken from `concurrent_transcriptions` and both job
     /// kinds advertised. A box configured for `concurrent_transcriptions = 0`
     /// still gets a single runner so it can make progress.
-    pub fn from_server(server: &ServerSettings) -> EmbeddedNodeSettings {
-        EmbeddedNodeSettings {
+    pub fn from_server(server: &ServerSettings) -> Self {
+        Self {
             enabled: true,
             node_id: "embedded".to_string(),
             gpu: false,
@@ -684,8 +682,8 @@ impl EmbeddedNodeSettings {
 }
 
 impl Default for EmbeddedNodeSettings {
-    fn default() -> EmbeddedNodeSettings {
-        EmbeddedNodeSettings::from_server(&ServerSettings::default())
+    fn default() -> Self {
+        Self::from_server(&ServerSettings::default())
     }
 }
 
@@ -905,12 +903,12 @@ struct AsrParams {
     output: String,
     /// Accepted but ignored (Bazarr sends `encode=false` after pre-encoding).
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     encode: Option<String>,
     #[serde(default)]
     word_timestamps: bool,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     video_file: Option<String>,
 }
 
@@ -927,7 +925,7 @@ fn default_output() -> String {
 /// real provider sends no offset/length and we detect on the uploaded clip.
 #[cfg(feature = "bazarr")]
 #[derive(Deserialize)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct DetectParams {
     #[serde(default)]
     encode: Option<String>,
@@ -1346,8 +1344,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct TestClock(Arc<AtomicI64>);
     impl TestClock {
-        fn new(ms: i64) -> TestClock {
-            TestClock(Arc::new(AtomicI64::new(ms)))
+        fn new(ms: i64) -> Self {
+            Self(Arc::new(AtomicI64::new(ms)))
         }
         fn set(&self, ms: i64) {
             self.0.store(ms, Ordering::SeqCst);
@@ -1759,8 +1757,7 @@ mod tests {
             std::process::Command::new(name)
                 .arg("-version")
                 .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+                .is_ok_and(|o| o.status.success())
         }
         if !binary_on_path("ffmpeg") || !binary_on_path("ffprobe") {
             eprintln!("skipping audio_transfer extraction: ffmpeg/ffprobe not on PATH");

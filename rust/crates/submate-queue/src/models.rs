@@ -38,10 +38,10 @@ impl OutputFormat {
     /// The on-the-wire `.value` string (matches Python `OutputFormat.value`).
     pub fn value(self) -> &'static str {
         match self {
-            OutputFormat::Srt => "srt",
-            OutputFormat::Vtt => "vtt",
-            OutputFormat::Txt => "txt",
-            OutputFormat::Json => "json",
+            Self::Srt => "srt",
+            Self::Vtt => "vtt",
+            Self::Txt => "txt",
+            Self::Json => "json",
         }
     }
 
@@ -58,13 +58,13 @@ impl OutputFormat {
     /// unknown (or `None`) string falls back to `default` if given, else
     /// [`OutputFormat::Srt`]. (The Python overload that accepts an existing
     /// `OutputFormat` is the identity and needs no Rust counterpart.)
-    pub fn from_value(value: Option<&str>, default: Option<OutputFormat>) -> OutputFormat {
+    pub fn from_value(value: Option<&str>, default: Option<Self>) -> Self {
         match value {
-            Some("srt") => OutputFormat::Srt,
-            Some("vtt") => OutputFormat::Vtt,
-            Some("txt") => OutputFormat::Txt,
-            Some("json") => OutputFormat::Json,
-            _ => default.unwrap_or(OutputFormat::Srt),
+            Some("srt") => Self::Srt,
+            Some("vtt") => Self::Vtt,
+            Some("txt") => Self::Txt,
+            Some("json") => Self::Json,
+            _ => default.unwrap_or(Self::Srt),
         }
     }
 }
@@ -113,16 +113,16 @@ impl SkipReason {
     /// The on-the-wire `.value` string (matches Python `SkipReason.value`).
     pub fn value(self) -> &'static str {
         match self {
-            SkipReason::NotSkipped => "not_skipped",
-            SkipReason::TargetSubtitleExists => "target_subtitle_exists",
-            SkipReason::ExternalSubtitleExists => "external_subtitle_exists",
-            SkipReason::InternalSubtitleLanguageExists => "internal_subtitle_language_exists",
-            SkipReason::SubtitleLanguageInSkipList => "subtitle_language_in_skip_list",
-            SkipReason::AudioLanguageInSkipList => "audio_language_in_skip_list",
-            SkipReason::UnknownLanguage => "unknown_language",
-            SkipReason::NoPreferredAudioLanguage => "no_preferred_audio_language",
-            SkipReason::LrcFileExists => "lrc_file_exists",
-            SkipReason::LanguageNotSetButSubtitlesExist => "language_not_set_but_subtitles_exist",
+            Self::NotSkipped => "not_skipped",
+            Self::TargetSubtitleExists => "target_subtitle_exists",
+            Self::ExternalSubtitleExists => "external_subtitle_exists",
+            Self::InternalSubtitleLanguageExists => "internal_subtitle_language_exists",
+            Self::SubtitleLanguageInSkipList => "subtitle_language_in_skip_list",
+            Self::AudioLanguageInSkipList => "audio_language_in_skip_list",
+            Self::UnknownLanguage => "unknown_language",
+            Self::NoPreferredAudioLanguage => "no_preferred_audio_language",
+            Self::LrcFileExists => "lrc_file_exists",
+            Self::LanguageNotSetButSubtitlesExist => "language_not_set_but_subtitles_exist",
         }
     }
 }

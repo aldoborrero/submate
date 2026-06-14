@@ -44,11 +44,11 @@ impl OutputFormat {
     /// File extension including the leading dot (e.g. `".srt"`).
     pub fn extension(self) -> &'static str {
         match self {
-            OutputFormat::Srt => ".srt",
-            OutputFormat::Vtt => ".vtt",
-            OutputFormat::Ass => ".ass",
-            OutputFormat::Json => ".json",
-            OutputFormat::Txt => ".txt",
+            Self::Srt => ".srt",
+            Self::Vtt => ".vtt",
+            Self::Ass => ".ass",
+            Self::Json => ".json",
+            Self::Txt => ".txt",
         }
     }
 }
@@ -201,12 +201,12 @@ struct JobOutcomeWire {
 impl From<JobOutcome> for JobOutcomeWire {
     fn from(o: JobOutcome) -> Self {
         match o {
-            JobOutcome::Ok { output } => JobOutcomeWire {
+            JobOutcome::Ok { output } => Self {
                 ok: true,
                 output: Some(output),
                 error: None,
             },
-            JobOutcome::Err { error } => JobOutcomeWire {
+            JobOutcome::Err { error } => Self {
                 ok: false,
                 output: None,
                 error: Some(error),
@@ -218,11 +218,11 @@ impl From<JobOutcome> for JobOutcomeWire {
 impl From<JobOutcomeWire> for JobOutcome {
     fn from(w: JobOutcomeWire) -> Self {
         if w.ok {
-            JobOutcome::Ok {
+            Self::Ok {
                 output: w.output.unwrap_or_default(),
             }
         } else {
-            JobOutcome::Err {
+            Self::Err {
                 error: w.error.unwrap_or_default(),
             }
         }

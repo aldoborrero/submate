@@ -112,7 +112,7 @@ struct VirtualFolder {
 /// Raises [`JellyfinError::NoAdminUser`] when no user qualifies.
 fn pick_admin_user_id(users: &[User]) -> Result<String> {
     for user in users {
-        if user.policy.as_ref().map(|p| p.is_administrator).unwrap_or(false) {
+        if user.policy.as_ref().is_some_and(|p| p.is_administrator) {
             return Ok(user.id.clone());
         }
     }

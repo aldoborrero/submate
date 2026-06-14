@@ -183,8 +183,7 @@ fn join_parent(video_path: &str, name: &str) -> String {
     // keep "..", keep the absolute root, drop "." and empties — before joining.
     let parent = Utf8Path::new(video_path)
         .parent()
-        .map(Utf8Path::as_str)
-        .unwrap_or("");
+        .map_or("", Utf8Path::as_str);
     let absolute = parent.starts_with('/');
     let parts: Vec<&str> = parent
         .split('/')

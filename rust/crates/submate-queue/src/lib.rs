@@ -96,23 +96,23 @@ impl JobState {
     /// The textual form persisted in the `state` column.
     fn as_str(self) -> &'static str {
         match self {
-            JobState::Queued => "queued",
-            JobState::Running => "running",
-            JobState::Done => "done",
-            JobState::Failed => "failed",
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
         }
     }
 
-    fn from_str(s: &str) -> JobState {
+    fn from_str(s: &str) -> Self {
         match s {
-            "queued" => JobState::Queued,
-            "running" => JobState::Running,
-            "done" => JobState::Done,
-            "failed" => JobState::Failed,
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
             // The column is only ever written by this module, so an unknown
             // value means the DB was tampered with; treating it as `failed` is
             // the safe, non-claimable fallback.
-            _ => JobState::Failed,
+            _ => Self::Failed,
         }
     }
 }
@@ -146,9 +146,9 @@ pub struct Job {
 }
 
 impl Job {
-    fn from_row(row: &Row<'_>) -> rusqlite::Result<Job> {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         let state: String = row.get("state")?;
-        Ok(Job {
+        Ok(Self {
             id: row.get("id")?,
             kind: row.get("kind")?,
             payload: row.get("payload")?,
@@ -187,8 +187,8 @@ pub struct NewJob {
 impl NewJob {
     /// A job runnable immediately with a single attempt, default priority, and
     /// no GPU requirement.
-    pub fn now(kind: impl Into<String>, payload: impl Into<String>) -> NewJob {
-        NewJob {
+    pub fn now(kind: impl Into<String>, payload: impl Into<String>) -> Self {
+        Self {
             kind: kind.into(),
             payload: payload.into(),
             priority: 0,
@@ -199,19 +199,19 @@ impl NewJob {
     }
 
     /// Set the attempt budget.
-    pub fn with_max_attempts(mut self, max_attempts: u32) -> NewJob {
+    pub fn with_max_attempts(mut self, max_attempts: u32) -> Self {
         self.max_attempts = max_attempts;
         self
     }
 
     /// Set the claim priority (higher is claimed first).
-    pub fn with_priority(mut self, priority: i64) -> NewJob {
+    pub fn with_priority(mut self, priority: i64) -> Self {
         self.priority = priority;
         self
     }
 
     /// Require the job to run on a GPU-capable node.
-    pub fn requiring_gpu(mut self) -> NewJob {
+    pub fn requiring_gpu(mut self) -> Self {
         self.requires_gpu = true;
         self
     }
@@ -240,16 +240,16 @@ pub struct NodeCapabilities {
 
 impl NodeCapabilities {
     /// A node that accepts any kind and has no GPU (the common CPU node).
-    pub fn cpu() -> NodeCapabilities {
-        NodeCapabilities {
+    pub fn cpu() -> Self {
+        Self {
             gpu: false,
             kinds: None,
         }
     }
 
     /// A node that accepts any kind and has a GPU.
-    pub fn gpu() -> NodeCapabilities {
-        NodeCapabilities {
+    pub fn gpu() -> Self {
+        Self {
             gpu: true,
             kinds: None,
         }
@@ -279,8 +279,7 @@ impl Clock for SystemClock {
     fn now_ms(&self) -> i64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as i64)
     }
 }
 
@@ -299,8 +298,8 @@ pub struct StoreConfig {
 }
 
 impl Default for StoreConfig {
-    fn default() -> StoreConfig {
-        StoreConfig {
+    fn default() -> Self {
+        Self {
             backoff_base_ms: 1_000,
             backoff_max_ms: 5 * 60 * 1_000,
             lease_ms: 5 * 60 * 1_000,
@@ -327,15 +326,15 @@ pub struct JobStore {
 impl JobStore {
     /// Open (or create) a store at `path`, applying WAL + `busy_timeout` and
     /// creating the schema if absent. Uses the system clock and default config.
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<JobStore> {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
-        JobStore::from_conn(conn, StoreConfig::default(), Box::new(SystemClock))
+        Self::from_conn(conn, StoreConfig::default(), Box::new(SystemClock))
     }
 
     /// Open an in-memory store (primarily for tests).
-    pub fn open_in_memory() -> Result<JobStore> {
+    pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        JobStore::from_conn(conn, StoreConfig::default(), Box::new(SystemClock))
+        Self::from_conn(conn, StoreConfig::default(), Box::new(SystemClock))
     }
 
     /// Open an in-memory store with an explicit [`StoreConfig`] and [`Clock`].
@@ -344,9 +343,9 @@ impl JobStore {
     /// underlying `rusqlite::Connection`: callers (including downstream crates'
     /// tests) inject a controllable clock to exercise lease reclaim and backoff
     /// without sleeping.
-    pub fn in_memory_with(config: StoreConfig, clock: Box<dyn Clock>) -> Result<JobStore> {
+    pub fn in_memory_with(config: StoreConfig, clock: Box<dyn Clock>) -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        JobStore::from_conn(conn, config, clock)
+        Self::from_conn(conn, config, clock)
     }
 
     /// Construct a store from an existing connection with explicit config and
@@ -355,7 +354,7 @@ impl JobStore {
         conn: Connection,
         config: StoreConfig,
         clock: Box<dyn Clock>,
-    ) -> Result<JobStore> {
+    ) -> Result<Self> {
         // WAL gives concurrent readers alongside a writer; busy_timeout lets a
         // writer wait out a contending writer instead of erroring with
         // SQLITE_BUSY. `journal_mode` is a no-op (returns the new mode) on
@@ -366,7 +365,7 @@ impl JobStore {
             config.busy_timeout_ms as u64,
         ))?;
 
-        let store = JobStore {
+        let store = Self {
             conn,
             config,
             clock,
@@ -658,8 +657,8 @@ mod tests {
     struct TestClock(Arc<AtomicI64>);
 
     impl TestClock {
-        fn new(ms: i64) -> TestClock {
-            TestClock(Arc::new(AtomicI64::new(ms)))
+        fn new(ms: i64) -> Self {
+            Self(Arc::new(AtomicI64::new(ms)))
         }
         fn set(&self, ms: i64) {
             self.0.store(ms, Ordering::SeqCst);

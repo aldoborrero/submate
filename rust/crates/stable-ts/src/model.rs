@@ -84,7 +84,7 @@ impl WordTiming {
     /// Build a word, rounding `start`/`end` like stable-ts does on construction.
     #[must_use]
     pub fn new(word: impl Into<String>, start: f64, end: f64) -> Self {
-        WordTiming {
+        Self {
             word: word.into(),
             start: round_timestamp(start),
             end: round_timestamp(end),
@@ -180,7 +180,7 @@ struct RawWord {
 
 impl From<RawWord> for WordTiming {
     fn from(r: RawWord) -> Self {
-        WordTiming {
+        Self {
             word: r.word,
             start: round_timestamp(r.start),
             end: round_timestamp(r.end),
@@ -411,7 +411,7 @@ impl From<RawSegment> for Segment {
         // start collapses to 0.0, otherwise it is rounded.
         let default_start = r.start.filter(|&s| s != 0.0).map_or(0.0, round_timestamp);
         let default_end = r.end.filter(|&e| e != 0.0).map_or(0.0, round_timestamp);
-        Segment {
+        Self {
             default_start,
             default_end,
             default_text: r.text.unwrap_or_default(),
@@ -485,7 +485,7 @@ impl WhisperResult {
             .map(Segment::from)
             .collect();
 
-        WhisperResult { segments, language, ori_dict, regroup_history, nonspeech_sections }
+        Self { segments, language, ori_dict, regroup_history, nonspeech_sections }
     }
 
     /// Derived `text`: concatenation of every segment's text.

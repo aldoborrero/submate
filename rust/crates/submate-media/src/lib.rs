@@ -183,31 +183,31 @@ impl std::str::FromStr for AudioSelector {
         let trimmed = s.trim();
         // An empty value behaves like `auto`, matching the omitted-flag default.
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("auto") {
-            return Ok(AudioSelector::Auto);
+            return Ok(Self::Auto);
         }
         if trimmed.eq_ignore_ascii_case("default") {
-            return Ok(AudioSelector::Default);
+            return Ok(Self::Default);
         }
         if let Some(rest) = trimmed.strip_prefix("track:") {
             let index = rest
                 .trim()
                 .parse::<usize>()
                 .map_err(|_| SelectorParseError(s.to_string()))?;
-            return Ok(AudioSelector::Index(index));
+            return Ok(Self::Index(index));
         }
         if let Some(rest) = trimmed.strip_prefix("lang:") {
             let code = rest.trim();
             if code.is_empty() {
                 return Err(SelectorParseError(s.to_string()));
             }
-            return Ok(AudioSelector::Lang(code.to_string()));
+            return Ok(Self::Lang(code.to_string()));
         }
         // A bare token is treated as a language code, but reject anything that
         // looks like a malformed `prefix:value` form so typos surface early.
         if trimmed.contains(':') {
             return Err(SelectorParseError(s.to_string()));
         }
-        Ok(AudioSelector::Lang(trimmed.to_string()))
+        Ok(Self::Lang(trimmed.to_string()))
     }
 }
 
@@ -306,8 +306,7 @@ fn default_or_first(tracks: &[AudioTrack]) -> usize {
     tracks
         .iter()
         .find(|t| t.default)
-        .map(|t| t.index)
-        .unwrap_or(tracks[0].index)
+        .map_or(tracks[0].index, |t| t.index)
 }
 
 /// Whether several tracks match a `Lang` selector — used by callers to log a
@@ -1043,8 +1042,7 @@ mod real_ffprobe {
         std::process::Command::new(name)
             .arg("-version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     #[tokio::test]
@@ -1115,8 +1113,7 @@ mod extract_pcm_sha {
         std::process::Command::new("ffmpeg")
             .arg("-version")
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     /// Locate the golden sha file, tolerating either the flat

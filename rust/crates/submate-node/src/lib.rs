@@ -165,7 +165,7 @@ impl AgentError {
     /// tearing the agent down: transport failures mean the server is (probably
     /// temporarily) unreachable.
     fn is_retryable(&self) -> bool {
-        matches!(self, AgentError::Http(_))
+        matches!(self, Self::Http(_))
     }
 }
 
@@ -486,7 +486,7 @@ impl<P: JobProcessor> Agent<P> {
         processor: P,
         config: AgentConfig,
     ) -> Self {
-        Agent {
+        Self {
             http: reqwest::Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
             register,
@@ -776,8 +776,7 @@ fn jitter_fraction() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos() as u64)
         | 1;
     // One xorshift64 step.
     let mut x = seed;
@@ -1068,8 +1067,7 @@ mod translation_tests {
             // uppercased so the per-cue split realigns 1:1.
             let marker = prompt
                 .rfind("translate:\n")
-                .map(|i| i + "translate:\n".len())
-                .unwrap_or(0);
+                .map_or(0, |i| i + "translate:\n".len());
             Ok(prompt[marker..].to_uppercase())
         }
     }

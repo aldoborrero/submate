@@ -251,7 +251,7 @@ const TABLE: &[LangEntry] = &[
 impl LanguageCode {
     /// All variants in definition order, excluding [`LanguageCode::None`].
     /// Useful for parity tests that enumerate the full table.
-    pub fn all() -> impl Iterator<Item = LanguageCode> {
+    pub fn all() -> impl Iterator<Item = Self> {
         TABLE.iter().map(|e| e.variant)
     }
 
@@ -296,38 +296,33 @@ impl LanguageCode {
 
     /// Look up by ISO 639-1 code (e.g. `"en"`). Case-insensitive and trimmed.
     /// Empty/`None` input yields [`LanguageCode::None`].
-    pub fn from_iso_639_1(code: Option<&str>) -> LanguageCode {
-        let code = match normalize(code) {
-            Some(c) => c,
-            None => return LanguageCode::None,
+    pub fn from_iso_639_1(code: Option<&str>) -> Self {
+        let Some(code) = normalize(code) else {
+            return Self::None;
         };
         TABLE
             .iter()
             .find(|e| e.iso_639_1 == Some(code.as_str()))
-            .map(|e| e.variant)
-            .unwrap_or(LanguageCode::None)
+            .map_or(Self::None, |e| e.variant)
     }
 
     /// Look up by ISO 639-2 code, matching either the /T or /B form (e.g.
     /// `"eng"`, `"ger"`). Case-insensitive and trimmed.
-    pub fn from_iso_639_2(code: Option<&str>) -> LanguageCode {
-        let code = match normalize(code) {
-            Some(c) => c,
-            None => return LanguageCode::None,
+    pub fn from_iso_639_2(code: Option<&str>) -> Self {
+        let Some(code) = normalize(code) else {
+            return Self::None;
         };
         TABLE
             .iter()
             .find(|e| e.iso_639_2_t == Some(code.as_str()) || e.iso_639_2_b == Some(code.as_str()))
-            .map(|e| e.variant)
-            .unwrap_or(LanguageCode::None)
+            .map_or(Self::None, |e| e.variant)
     }
 
     /// Look up by language name (English or native). Case-insensitive and
     /// trimmed.
-    pub fn from_name(name: Option<&str>) -> LanguageCode {
-        let name = match normalize(name) {
-            Some(n) => n,
-            None => return LanguageCode::None,
+    pub fn from_name(name: Option<&str>) -> Self {
+        let Some(name) = normalize(name) else {
+            return Self::None;
         };
         for e in TABLE {
             if e.name_en.is_some_and(|n| n.to_lowercase() == name) {
@@ -337,19 +332,18 @@ impl LanguageCode {
                 return e.variant;
             }
         }
-        LanguageCode::None
+        Self::None
     }
 
     /// Flexible parse: matches an ISO 639-1, 639-2/T, or 639-2/B code, an
     /// English name, or a native name. Case-insensitive and trimmed. `"und"`
     /// and empty input yield [`LanguageCode::None`].
-    pub fn from_string(value: Option<&str>) -> LanguageCode {
-        let value = match normalize(value) {
-            Some(v) => v,
-            None => return LanguageCode::None,
+    pub fn from_string(value: Option<&str>) -> Self {
+        let Some(value) = normalize(value) else {
+            return Self::None;
         };
         if value == "und" {
-            return LanguageCode::None;
+            return Self::None;
         }
         let v = value.as_str();
         for e in TABLE {
@@ -362,12 +356,12 @@ impl LanguageCode {
                 return e.variant;
             }
         }
-        LanguageCode::None
+        Self::None
     }
 
     /// Whether a string represents a valid (non-`None`) language.
     pub fn is_valid_language(value: Option<&str>) -> bool {
-        Self::from_string(value) != LanguageCode::None
+        Self::from_string(value) != Self::None
     }
 
     /// Mirrors Python `bool(lang)`: true unless this is [`LanguageCode::None`].

@@ -192,8 +192,8 @@ pub enum BackendError {
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackendError::NotInstalled(msg) => write!(f, "backend not installed: {msg}"),
-            BackendError::Request(msg) => write!(f, "backend request failed: {msg}"),
+            Self::NotInstalled(msg) => write!(f, "backend not installed: {msg}"),
+            Self::Request(msg) => write!(f, "backend request failed: {msg}"),
         }
     }
 }
@@ -205,7 +205,7 @@ impl std::error::Error for BackendError {}
 /// so the four HTTP backends can lean on `?` instead of repeating a `.map_err`.
 impl From<reqwest::Error> for BackendError {
     fn from(err: reqwest::Error) -> Self {
-        BackendError::Request(err.to_string())
+        Self::Request(err.to_string())
     }
 }
 
@@ -214,7 +214,7 @@ impl From<reqwest::Error> for BackendError {
 /// can lean on `?`.
 impl From<OpenAIError> for BackendError {
     fn from(err: OpenAIError) -> Self {
-        BackendError::Request(err.to_string())
+        Self::Request(err.to_string())
     }
 }
 

@@ -121,7 +121,7 @@ pub struct SegTol {
 
 impl Default for SegTol {
     fn default() -> Self {
-        SegTol { count: 1, time_ms: 200, text_ratio: 0.9 }
+        Self { count: 1, time_ms: 200, text_ratio: 0.9 }
     }
 }
 

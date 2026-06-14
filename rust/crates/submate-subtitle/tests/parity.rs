@@ -45,7 +45,7 @@ impl TempDir {
             n
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
-        TempDir(dir)
+        Self(dir)
     }
 
     fn path(&self) -> &Path {
@@ -72,8 +72,7 @@ fn ffprobe_on_path() -> bool {
     std::process::Command::new("ffprobe")
         .arg("-version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 mod parity {
