@@ -6,6 +6,7 @@
   gnumake,
   pkg-config,
   cudaPackages,
+  autoAddDriverRunpath,
   shaderc,
   vulkan-headers,
   vulkan-loader,
@@ -36,7 +37,13 @@ rustPlatform.buildRustPackage {
     gnumake
     pkg-config
   ]
-  ++ lib.optionals isCuda [ cudaPackages.cuda_nvcc ]
+  # autoAddDriverRunpath patches the binary's runpath to the host NVIDIA driver
+  # (`/run/opengl-driver/lib`) so the real `libcuda` is found at runtime — we
+  # link against a stub at build time (see preBuild), not the driver itself.
+  ++ lib.optionals isCuda [
+    cudaPackages.cuda_nvcc
+    autoAddDriverRunpath
+  ]
   ++ lib.optionals isVulkan [ shaderc ]; # glslc, to compile the Vulkan shaders
 
   buildInputs =
@@ -48,6 +55,15 @@ rustPlatform.buildRustPackage {
       vulkan-headers
       vulkan-loader
     ];
+
+  # whisper.cpp's CUDA build links the driver lib `-lcuda`, which exists only at
+  # runtime. The toolkit ships a build-time stub at `cuda_cudart/lib/stubs`;
+  # point the linker there so it resolves in the sandbox. This adds only a `-L`
+  # search path (no runpath), so the stub never leaks into the binary — the real
+  # driver is wired in by autoAddDriverRunpath above.
+  preBuild = lib.optionalString isCuda ''
+    export NIX_LDFLAGS="''${NIX_LDFLAGS:-} -L${cudaPackages.cuda_cudart}/lib/stubs"
+  '';
 
   # Build only the CLI binary, with whisper.cpp inference (+ GPU backend).
   cargoBuildFlags = [
