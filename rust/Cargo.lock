@@ -2242,6 +2242,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "submate-queue",
  "submate-subtitle",
  "submate-types",
  "tokio",

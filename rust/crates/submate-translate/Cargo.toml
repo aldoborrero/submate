@@ -12,6 +12,7 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+submate-queue = { path = "../submate-queue" }
 submate-subtitle = { path = "../submate-subtitle" }
 submate-types = { path = "../submate-types" }
 
