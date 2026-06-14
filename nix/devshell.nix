@@ -39,7 +39,4 @@ perSystem.devshell.mkShell {
       value = "${pkgs.libclang.lib}/lib";
     }
   ];
-
-  commands = [
-  ];
 }

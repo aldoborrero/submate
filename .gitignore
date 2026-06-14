@@ -46,5 +46,5 @@ samples/
 /.claude/profile/
 # grind runtime
 /.grind-stop
-/rust/target/
+/target/
 .scratch/

@@ -1,10 +1,10 @@
 # submate task runner.
 #
-# The Rust CLI lives under `rust/`, and transcription needs the `model` feature
-# (the whisper.cpp pipeline) plus `--sync` to process a file in one shot without
-# a separate node. These recipes hide that mouthful behind `just transcribe …`.
+# Transcription needs the `model` feature (the whisper.cpp pipeline) plus
+# `--sync` to process a file in one shot without a separate node. These recipes
+# hide that mouthful behind `just transcribe …`.
 
-manifest := "rust/Cargo.toml"
+manifest := "Cargo.toml"
 
 # List recipes (default target).
 default:

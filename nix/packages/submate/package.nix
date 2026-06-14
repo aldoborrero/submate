@@ -20,15 +20,24 @@ let
   isVulkan = gpuBackend == "vulkan";
   feature = if gpuBackend == null then "model" else gpuBackend;
 in
-# The native-Rust port (rust/). Builds the `submate` CLI; the `model` feature
-# compiles whisper.cpp via whisper-rs (needs cmake + a C/C++ toolchain + libclang
-# for bindgen). A GPU backend adds its toolkit + the matching cargo feature.
+# Builds the `submate` CLI; the `model` feature compiles whisper.cpp via
+# whisper-rs (needs cmake + a C/C++ toolchain + libclang for bindgen). A GPU
+# backend adds its toolkit + the matching cargo feature.
 rustPlatform.buildRustPackage {
   pname = "submate" + lib.optionalString (gpuBackend != null) "-${gpuBackend}";
   version = "0.1.0";
 
-  src = ../../../rust;
-  cargoLock.lockFile = ../../../rust/Cargo.lock;
+  # The Rust workspace lives at the repo root; select just its files so a build
+  # doesn't sweep in nix/, .scratch/, target/, docs/, etc.
+  src = lib.fileset.toSource {
+    root = ../../..;
+    fileset = lib.fileset.unions [
+      ../../../Cargo.toml
+      ../../../Cargo.lock
+      ../../../crates
+    ];
+  };
+  cargoLock.lockFile = ../../../Cargo.lock;
 
   nativeBuildInputs = [
     rustPlatform.bindgenHook # LIBCLANG_PATH + clang args for whisper-rs bindgen
