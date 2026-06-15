@@ -508,6 +508,20 @@ fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend + Send +
     })
 }
 
+/// Map the `[stable_ts]` config into the whisper assembly knobs. A
+/// `custom_regroup` of `false`/empty disables regrouping (empty algo string).
+fn assemble_options(s: &submate_config::StableTsSettings) -> submate_whisper::AssembleOptions {
+    use submate_config::StrOrBool;
+    submate_whisper::AssembleOptions {
+        regroup_algo: match &s.custom_regroup {
+            StrOrBool::Str(pattern) => pattern.clone(),
+            StrOrBool::Bool(_) => String::new(),
+        },
+        suppress_silence: s.suppress_silence,
+        min_word_duration: s.min_word_duration,
+    }
+}
+
 /// Resolve where a `transcribe` result is written next to its input.
 ///
 /// A plain transcribe targets `<stem>.<ext>` (the format's extension replacing
@@ -685,6 +699,9 @@ async fn transcribe_files(
     let dispatcher =
         submate_whisper::Dispatcher::new(config.server.concurrent_transcriptions.max(1) as usize);
 
+    // Post-decode assembly knobs from `[stable_ts]`.
+    let assemble = assemble_options(&config.stable_ts);
+
     // The LLM backend is built once and shared (Arc) across files; only needed
     // when `--translate-to` is given.
     let backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>> = args
@@ -776,6 +793,8 @@ async fn transcribe_files(
             args.translate_to.as_deref(),
             backend.clone(),
             config.translation.chunk_size,
+            &assemble,
+            config.stable_ts.word_level_highlight,
         )
         .await;
 
@@ -821,6 +840,8 @@ async fn transcribe_one(
     translate_to: Option<&str>,
     backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>>,
     chunk_size: u32,
+    assemble: &submate_whisper::AssembleOptions,
+    word_level: bool,
 ) -> anyhow::Result<String> {
     use submate_media::{
         PreparedAudio, extract_audio_track_to_memory, prepare_audio_for_transcription,
@@ -845,14 +866,14 @@ async fn transcribe_one(
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let assembled = submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &pcm)
+    let assembled = submate_whisper::assemble_result(&raw, assemble, &pcm)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let detected = raw.language.clone();
 
     let target_format: submate_types::OutputFormat = format.into();
     let mut content = match target_format {
-        submate_types::OutputFormat::Srt => assembled.to_srt_vtt(false),
-        submate_types::OutputFormat::Vtt => assembled.to_srt_vtt(true),
+        submate_types::OutputFormat::Srt => assembled.to_srt_vtt(word_level, false),
+        submate_types::OutputFormat::Vtt => assembled.to_srt_vtt(word_level, true),
         submate_types::OutputFormat::Ass => assembled.to_ass(),
         submate_types::OutputFormat::Json => assembled.to_json(),
         submate_types::OutputFormat::Txt => assembled.to_txt(),
@@ -894,6 +915,8 @@ async fn transcribe_one(
     _translate_to: Option<&str>,
     _backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>>,
     _chunk_size: u32,
+    _assemble: &submate_whisper::AssembleOptions,
+    _word_level: bool,
 ) -> anyhow::Result<String> {
     anyhow::bail!("model support not built in (rebuild with --features model)")
 }
@@ -1004,6 +1027,8 @@ struct WhisperBazarrTranscriber {
     /// Decode knobs from `SUBMATE__WHISPER__*`, applied to every Bazarr request.
     /// `language`/`task` are placeholders overridden per call.
     decode: submate_whisper::TranscribeOptions,
+    /// Post-decode assembly knobs from `[stable_ts]`.
+    assemble: submate_whisper::AssembleOptions,
 }
 
 #[cfg(feature = "model")]
@@ -1033,12 +1058,12 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
             .await
             .map_err(|e| e.to_string())?;
         let detected = raw.language.clone();
-        let assembled =
-            submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &samples)
-                .map_err(|e| e.to_string())?;
+        let assembled = submate_whisper::assemble_result(&raw, &self.assemble, &samples)
+            .map_err(|e| e.to_string())?;
+        let word_level = opts.word_timestamps;
         let mut content = match opts.output_format {
-            OutputFormat::Srt => assembled.to_srt_vtt(false),
-            OutputFormat::Vtt => assembled.to_srt_vtt(true),
+            OutputFormat::Srt => assembled.to_srt_vtt(word_level, false),
+            OutputFormat::Vtt => assembled.to_srt_vtt(word_level, true),
             OutputFormat::Ass => assembled.to_ass(),
             OutputFormat::Json => assembled.to_json(),
             OutputFormat::Txt => assembled.to_txt(),
@@ -1113,6 +1138,7 @@ fn build_bazarr_transcriber(
             logprob_threshold: config.whisper.logprob_threshold,
             max_len: config.whisper.max_len,
         },
+        assemble: assemble_options(&config.stable_ts),
     })))
 }
 
