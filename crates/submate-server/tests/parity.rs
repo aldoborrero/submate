@@ -15,8 +15,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use fixtures::{assert_json_eq, golden};
 use http_body_util::BodyExt;
-use parity::{assert_json_eq, golden};
 use serde_json::Value;
 use submate_server::{AppState, app};
 use tower::ServiceExt;

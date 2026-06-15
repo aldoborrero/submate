@@ -16,7 +16,7 @@
 //! Object key ordering is irrelevant: both sides are compared as
 //! `serde_json::Value` (BTreeMap-backed).
 
-use parity::{EnvGuard, assert_json_eq, fixture_path, golden};
+use fixtures::{EnvGuard, assert_json_eq, fixture_path, golden};
 use submate_config::Config;
 
 #[test]
@@ -50,7 +50,7 @@ fn parse_env(rel: &str) -> Vec<(String, String)> {
 #[test]
 fn env_nesting() {
     // Clear ambient `SUBMATE__*` and set the test vars in a serialized, isolated
-    // scope (see `parity::EnvGuard`) so this test neither leaks `SUBMATE__*` into
+    // scope (see `fixtures::EnvGuard`) so this test neither leaks `SUBMATE__*` into
     // the process nor races other env-driven tests; restored when `_env` drops.
     let vars = parse_env("config/nested.env");
     let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

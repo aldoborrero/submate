@@ -22,7 +22,7 @@ tracing = { workspace = true }
 submate-types = { path = "../submate-types" }
 
 [dev-dependencies]
-parity = { path = "../parity" }
+fixtures = { path = "../fixtures" }
 http-body-util = "0.1"
 
 [lints]

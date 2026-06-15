@@ -2,13 +2,13 @@
 //!
 //! Each test parses a captured `to_dict()` JSON golden into the
 //! [`WhisperResult`] and re-emits it via [`WhisperResult::to_dict`]; the result
-//! must equal the golden JSON value exactly (`parity::assert_json_eq` does a
+//! must equal the golden JSON value exactly (`fixtures::assert_json_eq` does a
 //! structural, float-aware comparison — the capture writes sorted-key/pretty
 //! JSON, but the Rust side compares parsed `serde_json::Value`s, so formatting
 //! is irrelevant). The goldens span the empty (`00_raw`), regroup-staged
 //! (`01_regroup_*`), and populated-`nonspeech_sections` (`02_suppress`) shapes.
 
-use parity::{assert_f32_close, assert_json_eq, assert_str_eq, fixture_path, golden, load_f32};
+use fixtures::{assert_f32_close, assert_json_eq, assert_str_eq, fixture_path, golden, load_f32};
 use stable_ts::{
     DEFAULT_MIN_WORD_DUR, WhisperResult, apply_regroup_op, audio2timings, ops_to_value,
     parse_regroup_algo, set_current_as_orig, suppress_silence, update_nonspeech_sections,

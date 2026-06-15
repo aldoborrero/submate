@@ -70,7 +70,7 @@ runner cap.
 | Bazarr glue: PCM↔f32, language-name table | `submate-bazarr` |
 | axum server: bazarr + ops routes | `submate-server` |
 | the `submate` binary (clap) | `submate-cli` |
-| dev-only test helpers (golden loader, assert_*) | `parity` |
+| dev-only golden-fixture helpers (loader, assert_*) | `fixtures` |
 
 ## The model feature
 

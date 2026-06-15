@@ -19,11 +19,7 @@
 //! The exact per-stage math is pinned byte-for-byte by the `stable-ts` crate's
 //! own parity tests; this test guards their composition.
 
-// Pull the parity helpers in under an alias so the tests can live in a module
-// literally named `parity` (the falsifier is invoked as `parity::transcribe`)
-// without shadowing the `parity` *crate* import.
-use ::parity as harness;
-use harness::{Seg, SegTol, assert_segments_close, golden, load_f32, segs_from_json};
+use fixtures::{Seg, SegTol, assert_segments_close, golden, load_f32, segs_from_json};
 use submate_whisper::{
     AssembleOptions, WhisperResult, WhisperSegment, WhisperWord, assemble_result,
 };

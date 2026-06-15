@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 
 [dev-dependencies]
-parity = { path = "../parity" }
+fixtures = { path = "../fixtures" }
 serde_json = { workspace = true }
 
 [lints]

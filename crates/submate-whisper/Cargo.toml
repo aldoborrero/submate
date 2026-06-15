@@ -34,7 +34,7 @@ tracing = { workspace = true }
 whisper-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
-parity = { path = "../parity" }
+fixtures = { path = "../fixtures" }
 
 [lints]
 workspace = true

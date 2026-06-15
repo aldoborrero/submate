@@ -1508,7 +1508,7 @@ mod cli {
         // download hint. Clear `SUBMATE__*` (incl. `SUBMATE__WHISPER__MODEL`)
         // under the shared env lock so this never races other env-driven tests
         // (e.g. `config_show`'s resolution); the guard restores on drop.
-        let _env = ::parity::EnvGuard::set(&[]);
+        let _env = ::fixtures::EnvGuard::set(&[]);
         let err = resolve_model(None, "medium")
             .expect_err("missing model must be an Err, not a panic")
             .to_string();

@@ -39,7 +39,7 @@ mod parity {
     /// chunk boundaries + separator-token joins match the golden.
     #[test]
     fn chunking() {
-        let srt = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.in.srt"))
+        let srt = std::fs::read_to_string(::fixtures::fixture_path("translate/sampleA.in.srt"))
             .expect("missing translate/sampleA.in.srt fixture");
         let contents = srt_cue_contents(&srt);
 
@@ -48,7 +48,7 @@ mod parity {
             .map(|range| join_batch(&contents[range], SRT_SEPARATOR_TOKEN))
             .collect();
 
-        let golden = ::parity::golden("translate/chunking.json");
+        let golden = ::fixtures::golden("translate/chunking.json");
         let golden_batches: Vec<&str> = golden["batches"]
             .as_array()
             .expect("chunking.json missing `batches` array")
@@ -64,7 +64,7 @@ mod parity {
             golden_batches.len()
         );
         for (actual, expected) in batches.iter().zip(golden_batches) {
-            ::parity::assert_str_eq(actual, expected);
+            ::fixtures::assert_str_eq(actual, expected);
         }
     }
 }

@@ -1,4 +1,4 @@
-//! Parity test helpers.
+//! Golden-fixture test helpers.
 //!
 //! Behavior is verified by diffing output against *golden* fixtures (see
 //! `fixtures/`). Three diff modes exist, and picking the right one per layer is
@@ -25,7 +25,7 @@ use serde_json::Value;
 
 /// Absolute path to the committed `fixtures/` directory.
 ///
-/// Resolved from this crate's manifest dir (`crates/parity`) so tests
+/// Resolved from this crate's manifest dir (`crates/fixtures`) so tests
 /// work regardless of the cwd the test runner chooses.
 pub fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::str::FromStr;
 
-use parity::{assert_json_eq, golden};
+use fixtures::{assert_json_eq, golden};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;

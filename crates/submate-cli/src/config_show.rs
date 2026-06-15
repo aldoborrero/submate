@@ -152,7 +152,7 @@ pub fn config_show_rows(config_json: &Value) -> Vec<(String, String)> {
 #[cfg(test)]
 mod parity {
     use super::*;
-    use ::parity::{EnvGuard, assert_json_eq, golden};
+    use ::fixtures::{EnvGuard, assert_json_eq, golden};
     use submate_config::Config;
 
     /// `[[setting, value], ...]` JSON, matching the goldens' shape.

@@ -96,7 +96,7 @@ fn has_ignored_extension(name: &str) -> bool {
 #[cfg(test)]
 mod parity {
     use super::*;
-    use ::parity::golden;
+    use ::fixtures::golden;
     use submate_paths::{AUDIO_EXTENSIONS, VIDEO_EXTENSIONS};
 
     /// Fixture-driven parity falsifier for the directory classifier.

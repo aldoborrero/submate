@@ -42,11 +42,11 @@ mod parity {
     /// mocked-LLM SRT apply flow reproduces the golden byte-for-byte.
     #[tokio::test]
     async fn apply() {
-        let input = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.in.srt"))
+        let input = std::fs::read_to_string(::fixtures::fixture_path("translate/sampleA.in.srt"))
             .expect("missing translate/sampleA.in.srt fixture");
 
         // Recorded `{prompt: completion}` pairs (exact-key lookup, no HTTP).
-        let mock = ::parity::golden("translate/mock_llm.json");
+        let mock = ::fixtures::golden("translate/mock_llm.json");
         let completions = mock
             .as_object()
             .expect("mock_llm.json is not a JSON object")
@@ -67,8 +67,8 @@ mod parity {
             .await
             .unwrap();
 
-        let golden = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.out.srt"))
+        let golden = std::fs::read_to_string(::fixtures::fixture_path("translate/sampleA.out.srt"))
             .expect("missing translate/sampleA.out.srt fixture");
-        ::parity::assert_str_eq(&actual, &golden);
+        ::fixtures::assert_str_eq(&actual, &golden);
     }
 }

@@ -1,6 +1,6 @@
 //! Parity tests against golden fixtures captured.
 
-use parity::golden;
+use fixtures::golden;
 use serde_json::Value;
 use submate_lang::LanguageCode;
 

@@ -13,9 +13,9 @@ serde_json = { workspace = true }
 figment = { workspace = true }
 
 [dev-dependencies]
-# `parity::EnvGuard` drives env-based resolution from a `.env` fixture in a
+# `fixtures::EnvGuard` drives env-based resolution from a `.env` fixture in a
 # serialized, isolated scope (clears `SUBMATE__*`, restores on drop).
-parity = { path = "../parity" }
+fixtures = { path = "../fixtures" }
 serde_json = { workspace = true }
 
 [lints]

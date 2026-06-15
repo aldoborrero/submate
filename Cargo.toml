@@ -13,7 +13,7 @@ members = [
   "crates/submate-bazarr",
   "crates/submate-server",
   "crates/submate-cli",
-  "crates/parity",
+  "crates/fixtures",
 ]
 
 [workspace.package]

@@ -21,7 +21,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-parity = { path = "../parity" }
+fixtures = { path = "../fixtures" }
 wiremock = { workspace = true }
 
 [lints]

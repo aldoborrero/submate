@@ -29,14 +29,14 @@ no queue or distributed-node system.
 │   ├── submate-bazarr    # Bazarr glue: PCM↔f32, language-name table
 │   ├── submate-server    # axum server: bazarr + ops routes
 │   ├── submate-cli       # the `submate` binary (clap)
-│   └── parity            # dev-only test helpers (golden loader, assert_*)
+│   └── fixtures          # dev-only golden-fixture helpers (loader, assert_*)
 ├── fixtures/             # frozen golden snapshots for parity tests
 ├── nix/                  # flake packaging (numtide/blueprint)
 └── docs/                 # architecture.md + design notes
 ```
 
 **Two seams matter.** *Pure-data* crates (`submate-types`, `-lang`, `-config`,
-`stable-ts`, `-subtitle`, `-paths`, `parity`) carry **no** tokio/reqwest and have
+`stable-ts`, `-subtitle`, `-paths`, `fixtures`) carry **no** tokio/reqwest and have
 exact byte-diff parity tests — keep them I/O-free. The **`model` feature**
 (whisper.cpp) is confined to `submate-whisper` and `submate-cli`; the other
 crates build and test **without** compiling whisper.cpp, which keeps the test
