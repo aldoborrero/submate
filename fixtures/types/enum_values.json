@@ -21,11 +21,6 @@
     "OLLAMA": "ollama",
     "OPENAI": "openai"
   },
-  "WhisperImplementation": {
-    "FASTER_WHISPER": "faster-whisper",
-    "HF_WHISPER": "hf-whisper",
-    "OPENAI_WHISPER": "openai-whisper"
-  },
   "WhisperModel": {
     "BASE": "base",
     "BASE_EN": "base.en",

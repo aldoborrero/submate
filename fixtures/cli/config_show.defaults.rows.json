@@ -36,18 +36,6 @@
     "2"
   ],
   [
-    "Path Mapping.Enabled",
-    "No"
-  ],
-  [
-    "Path Mapping.From Path",
-    "(not set)"
-  ],
-  [
-    "Path Mapping.To Path",
-    "(not set)"
-  ],
-  [
     "Translation.Backend",
     "ollama"
   ],

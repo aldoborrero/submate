@@ -2056,10 +2056,6 @@ name = "submate-paths"
 version = "0.1.0"
 dependencies = [
  "camino",
- "parity",
- "serde_json",
- "submate-lang",
- "submate-types",
 ]
 
 [[package]]
@@ -2073,7 +2069,6 @@ dependencies = [
  "serde",
  "serde_json",
  "submate-types",
- "thiserror",
  "tokio",
  "tower",
  "tracing",
@@ -2082,12 +2077,6 @@ dependencies = [
 [[package]]
 name = "submate-subtitle"
 version = "0.1.0"
-dependencies = [
- "parity",
- "serde",
- "serde_json",
- "submate-lang",
-]
 
 [[package]]
 name = "submate-translate"
@@ -2123,7 +2112,6 @@ dependencies = [
  "serde",
  "serde_json",
  "stable-ts",
- "submate-media",
  "thiserror",
  "tokio",
  "tracing",

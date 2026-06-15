@@ -17,8 +17,7 @@ use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
 use submate_types::{
-    Device, LanguageNamingType, TranscriptionTask, TranslationBackend, WhisperImplementation,
-    WhisperModel,
+    Device, LanguageNamingType, TranscriptionTask, TranslationBackend, WhisperModel,
 };
 
 /// Assert one enum against its golden `{variant_name: value}` table.
@@ -89,7 +88,6 @@ where
 /// All enums in the golden must be accounted for by a `check_enum` call below.
 const COVERED_ENUMS: &[&str] = &[
     "WhisperModel",
-    "WhisperImplementation",
     "Device",
     "TranscriptionTask",
     "LanguageNamingType",
@@ -113,15 +111,6 @@ fn enum_values() {
             ("LARGE_V1", WhisperModel::LargeV1),
             ("LARGE_V2", WhisperModel::LargeV2),
             ("LARGE_V3", WhisperModel::LargeV3),
-        ],
-    );
-
-    check_enum(
-        "WhisperImplementation",
-        &[
-            ("FASTER_WHISPER", WhisperImplementation::FasterWhisper),
-            ("OPENAI_WHISPER", WhisperImplementation::OpenaiWhisper),
-            ("HF_WHISPER", WhisperImplementation::HfWhisper),
         ],
     );
 

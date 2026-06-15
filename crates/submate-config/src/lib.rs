@@ -147,15 +147,6 @@ impl Default for ServerSettings {
     }
 }
 
-/// Path mapping settings for Docker deployments.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PathMappingSettings {
-    pub enabled: bool,
-    pub from_path: String,
-    pub to_path: String,
-}
-
 /// Translation settings for LLM-backed subtitle translation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -196,7 +187,6 @@ pub struct Config {
     pub whisper: WhisperSettings,
     pub stable_ts: StableTsSettings,
     pub server: ServerSettings,
-    pub path_mapping: PathMappingSettings,
     pub translation: TranslationSettings,
     pub debug: bool,
 }

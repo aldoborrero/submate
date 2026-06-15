@@ -1,10 +1,5 @@
 {
   "debug": false,
-  "path_mapping": {
-    "enabled": false,
-    "from_path": "",
-    "to_path": ""
-  },
   "server": {
     "address": "0.0.0.0",
     "concurrent_transcriptions": 2,

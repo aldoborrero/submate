@@ -25,10 +25,8 @@ Everything except transcription itself is exact-diffable.
 fixtures/
   config/   <case>.env      ->  <case>.resolved.json     # resolved Config as JSON
   lang/     lang_conversions.json                        # every LanguageCode <-> iso pair
-  paths/    path_cases.json                              # build_subtitle_path inputs -> output
-  subtitle/ <name>.{srt,vtt,ass} -> <name>.detected.json # + *.srt/*.vtt round-trip goldens
-            discovery_cases.json                         # fs discovery + filename-language + .lrc cases
-  bazarr/   pcm/sine440.{pcm,wav}                        # raw s16le PCM -> WAV header golden
+  subtitle/ basic.{srt,vtt}, single.srt, tagged_sample.ass # cue parse/round-trip goldens
+  bazarr/   pcm/sine440.pcm                              # raw s16le PCM (f32 decode golden)
   translate/ <name>.in.srt + mock_llm.json -> <name>.out.srt
   stablets/ <clip>/00_raw.json        # WhisperResult after ingest (word ts from whisper)
             <clip>/01_regroup_<algo>.json   # after EACH parse_regroup_algo stage

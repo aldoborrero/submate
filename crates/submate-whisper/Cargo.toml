@@ -10,7 +10,7 @@ repository.workspace = true
 # `model` pulls in whisper-rs and compiles whisper.cpp. Off by default so CI
 # without a model (and without LIBCLANG_PATH/cmake) still builds the crate.
 default = []
-model = ["dep:whisper-rs", "dep:submate-media"]
+model = ["dep:whisper-rs"]
 # GPU backends for whisper.cpp inference. Each enables `model` and forwards to
 # the matching whisper-rs backend, which compiles whisper.cpp with that backend
 # and flips `WhisperContextParameters::use_gpu` to default `true`. Pick the one
@@ -27,7 +27,6 @@ intel-sycl = ["model", "whisper-rs/intel-sycl"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 stable-ts = { path = "../stable-ts" }
-submate-media = { path = "../submate-media", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

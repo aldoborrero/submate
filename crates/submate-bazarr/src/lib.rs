@@ -1,68 +1,16 @@
 //! Bazarr provider glue.
 //!
 //! Bazarr posts raw s16le (signed 16-bit little-endian), mono, 16 kHz PCM with
-//! no container. The downstream f32 decode assumes a parseable WAV, so this is
-//! the boundary normalization: [`wrap_pcm_as_wav`] prepends the canonical
-//! 44-byte WAV/RIFF header.
+//! no container. [`pcm_s16le_to_f32`] is the boundary decode that turns those
+//! bytes into the mono f32 samples whisper-rs expects.
 //!
 //! It also hosts the Bazarr detect-language naming: [`detect_language`] turns a
 //! raw Whisper language code into the `{detected_language, language_code}` pair
 //! the detect-language endpoint returns, via the deliberately narrow
 //! [`LANGUAGE_NAMES`] table (NOT the broader `submate-lang` `name_en` table).
 
-/// Bazarr's wire format: mono.
-const CHANNELS: u16 = 1;
-/// Bazarr's wire format: 16 kHz.
-const SAMPLE_RATE: u32 = 16_000;
-/// Bazarr's wire format: 16-bit samples (2 bytes).
-const BITS_PER_SAMPLE: u16 = 16;
 /// Canonical PCM WAV header length.
 const WAV_HEADER_LEN: usize = 44;
-
-/// Wrap raw Bazarr PCM in a canonical WAV/RIFF container.
-///
-/// Two deterministic, content-only branches:
-///
-/// 1. **RIFF passthrough** — if `pcm` already begins with `b"RIFF"`, it is
-///    already a WAV container and is returned unchanged.
-/// 2. **Raw-PCM wrap** — otherwise `pcm` is treated as s16le mono 16 kHz and a
-///    canonical 44-byte WAV/RIFF header is prepended.
-pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
-    if pcm.starts_with(b"RIFF") {
-        return pcm.to_vec();
-    }
-
-    let block_align: u16 = CHANNELS * (BITS_PER_SAMPLE / 8);
-    let byte_rate: u32 = SAMPLE_RATE * u32::from(block_align);
-    // The WAV `data` chunk size is a u32, so the container caps at 4 GiB of PCM
-    // (~37 h of 16 kHz mono s16le) by format. Bazarr clips are seconds long, so
-    // the cast never truncates in practice; truncation here would mean a clip
-    // beyond what WAV can represent at all.
-    let data_len = pcm.len() as u32;
-    // RIFF chunk size covers everything after the first 8 bytes: the WAVE tag,
-    // the 24-byte fmt chunk, the 8-byte data chunk header, and the payload.
-    let riff_size = 36u32.saturating_add(data_len);
-
-    let mut out = Vec::with_capacity(WAV_HEADER_LEN + pcm.len());
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&riff_size.to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
-    out.extend_from_slice(&1u16.to_le_bytes()); // audio format = PCM
-    out.extend_from_slice(&CHANNELS.to_le_bytes());
-    out.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    out.extend_from_slice(&byte_rate.to_le_bytes());
-    out.extend_from_slice(&block_align.to_le_bytes());
-    out.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
-
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    out.extend_from_slice(pcm);
-
-    out
-}
 
 /// Decode raw s16le PCM (or a canonical-WAV-wrapped clip) into mono f32 samples.
 ///
@@ -75,9 +23,8 @@ pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
 /// Each little-endian `i16` is divided by `32768.0` — the standard s16→float
 /// scale (`i16::MIN / 32768 == -1.0`, `i16::MAX / 32768 == 32767/32768`). A
 /// trailing odd byte (an incomplete final sample) is dropped (`chunks_exact(2)`).
-/// If `bytes` begins with `b"RIFF"` — a clip run back through
-/// [`wrap_pcm_as_wav`] — the canonical 44-byte header is skipped first, so the
-/// two functions are inverses on that header.
+/// If `bytes` begins with `b"RIFF"` — a clip wrapped in a canonical WAV/RIFF
+/// container — the 44-byte header is skipped first.
 pub fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
     let pcm = if bytes.starts_with(b"RIFF") && bytes.len() >= WAV_HEADER_LEN {
         &bytes[WAV_HEADER_LEN..]
@@ -192,12 +139,10 @@ pub fn detect_language(whisper_lang: Option<&str>) -> DetectedLanguage {
     }
 }
 
-/// Byte-for-byte parity against the WAV-header goldens under
-/// `fixtures/bazarr/pcm/`.
+/// Byte-for-byte parity against the goldens under `fixtures/bazarr/pcm/`.
 ///
 /// When a golden is absent the test skips with an `eprintln` so it arms itself
-/// the moment the fixture appears. The header bytes are also pinned inline so a
-/// regression is caught even without the fixtures.
+/// the moment the fixture appears.
 #[cfg(test)]
 mod parity {
     use super::*;
@@ -218,80 +163,6 @@ mod parity {
                 None
             }
         }
-    }
-
-    #[track_caller]
-    fn assert_bytes_eq(actual: &[u8], golden: &[u8]) {
-        assert_eq!(
-            actual.len(),
-            golden.len(),
-            "byte length mismatch: {} vs {}",
-            actual.len(),
-            golden.len()
-        );
-        if let Some(i) = actual.iter().zip(golden).position(|(a, g)| a != g) {
-            panic!(
-                "byte parity mismatch at offset {i}: actual=0x{:02x} golden=0x{:02x}",
-                actual[i], golden[i]
-            );
-        }
-    }
-
-    /// Wrap branch: raw PCM golden in, WAV golden out, exact.
-    #[test]
-    fn wav_wrap_matches_python_wave() {
-        let (Some(pcm), Some(wav)) = (golden("sine440.pcm"), golden("sine440.wav")) else {
-            return;
-        };
-        assert_bytes_eq(&wrap_pcm_as_wav(&pcm), &wav);
-    }
-
-    /// RIFF passthrough: bytes already starting with `b"RIFF"` (the WAV golden
-    /// fed back in) come out unchanged.
-    #[test]
-    fn wav_wrap_riff_passthrough() {
-        let Some(wav) = golden("sine440.wav") else {
-            return;
-        };
-        assert_eq!(&wav[..4], b"RIFF");
-        assert_bytes_eq(&wrap_pcm_as_wav(&wav), &wav);
-    }
-
-    /// Header bytes pinned inline so a byte_rate/block_align off-by-one fails
-    /// even when the fixtures are absent.
-    #[test]
-    fn wav_header_layout_is_canonical() {
-        // 4 bytes of arbitrary, non-RIFF PCM.
-        let pcm = [0x01u8, 0x00, 0xff, 0x7f];
-        let out = wrap_pcm_as_wav(&pcm);
-        assert_eq!(out.len(), WAV_HEADER_LEN + pcm.len());
-
-        let expected_header: [u8; WAV_HEADER_LEN] = [
-            b'R', b'I', b'F', b'F', // RIFF
-            0x28, 0x00, 0x00, 0x00, // 36 + 4 = 40
-            b'W', b'A', b'V', b'E', // WAVE
-            b'f', b'm', b't', b' ', // "fmt "
-            0x10, 0x00, 0x00, 0x00, // fmt chunk size = 16
-            0x01, 0x00, // audio format = PCM
-            0x01, 0x00, // channels = 1
-            0x80, 0x3e, 0x00, 0x00, // sample rate = 16000
-            0x00, 0x7d, 0x00, 0x00, // byte rate = 32000
-            0x02, 0x00, // block align = 2
-            0x10, 0x00, // bits per sample = 16
-            b'd', b'a', b't', b'a', // "data"
-            0x04, 0x00, 0x00, 0x00, // data len = 4
-        ];
-        assert_eq!(&out[..WAV_HEADER_LEN], &expected_header);
-        assert_eq!(&out[WAV_HEADER_LEN..], &pcm);
-    }
-
-    /// Empty PCM still yields a valid 44-byte header with zero data length.
-    #[test]
-    fn wav_wrap_empty_pcm() {
-        let out = wrap_pcm_as_wav(&[]);
-        assert_eq!(out.len(), WAV_HEADER_LEN);
-        assert_eq!(&out[..4], b"RIFF");
-        assert_eq!(&out[40..44], &[0x00, 0x00, 0x00, 0x00]); // data len = 0
     }
 
     #[track_caller]
@@ -327,13 +198,14 @@ mod parity {
         assert_f32_close(&pcm_s16le_to_f32(&bytes), &[0.5]);
     }
 
-    /// wrap/decode are inverses: RIFF-prefixed input header-strips to the same
-    /// samples as the raw PCM, so a clip survives a wrap→decode round-trip.
+    /// RIFF-prefixed input header-strips to the same samples as the raw PCM:
+    /// a canonical 44-byte WAV header in front of the payload is skipped.
     #[test]
     fn pcm_decode_riff_roundtrip() {
         let raw = [0x01, 0x00, 0xff, 0x7f, 0x00, 0x80, 0x34, 0x12];
-        let wrapped = wrap_pcm_as_wav(&raw);
-        assert_eq!(&wrapped[..4], b"RIFF");
+        let mut wrapped = vec![0u8; WAV_HEADER_LEN];
+        wrapped[..4].copy_from_slice(b"RIFF");
+        wrapped.extend_from_slice(&raw);
         assert_f32_close(&pcm_s16le_to_f32(&wrapped), &pcm_s16le_to_f32(&raw));
     }
 

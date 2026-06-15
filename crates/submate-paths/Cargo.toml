@@ -8,12 +8,6 @@ repository.workspace = true
 
 [dependencies]
 camino = { workspace = true }
-submate-lang = { path = "../submate-lang" }
-submate-types = { path = "../submate-types" }
-
-[dev-dependencies]
-parity = { path = "../parity" }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

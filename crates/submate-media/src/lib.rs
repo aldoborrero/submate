@@ -1,7 +1,7 @@
 //! ffmpeg/ffprobe wrappers.
 //!
-//! Covers audio-track probing — [`get_audio_tracks`] and [`get_audio_languages`]
-//! run `ffprobe -show_streams -select_streams a -of json` and read each audio
+//! Covers audio-track probing — [`get_audio_tracks`] runs
+//! `ffprobe -show_streams -select_streams a -of json` and reads each audio
 //! stream's index, language tag and codec name — and audio extraction:
 //! [`extract_audio_track_to_memory`] and [`prepare_audio_for_transcription`]
 //! spawn `ffmpeg` to decode a selected audio track to raw 16-bit mono 16 kHz
@@ -138,21 +138,6 @@ fn track_language_matches(track_language: &str, requested: LanguageCode) -> bool
         return false;
     }
     LanguageCode::from_string(Some(track_language)) == requested
-}
-
-/// Find an audio track by language code, normalizing ISO 639 codes.
-///
-/// Returns the first track whose language matches, or `None`. Matching is done
-/// on the canonical [`LanguageCode`] (so `ja` matches a `jpn`-tagged track),
-/// not raw strings.
-pub fn get_audio_track_by_language<'a>(
-    tracks: &'a [AudioTrack],
-    language: &str,
-) -> Option<&'a AudioTrack> {
-    let requested = LanguageCode::from_string(Some(language));
-    tracks
-        .iter()
-        .find(|track| track_language_matches(&track.language, requested))
 }
 
 /// A typed audio-track selector parsed from the CLI `-a`/`--audio` value.
@@ -390,24 +375,6 @@ pub async fn get_audio_tracks(video_path: &Path) -> Result<Vec<AudioTrack>, Prob
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_audio_tracks(&stdout)
-}
-
-/// Get the language code of every audio track in a media file.
-///
-/// On any probe failure it logs at debug level and returns an empty list rather
-/// than propagating the error.
-pub async fn get_audio_languages(video_path: &Path) -> Vec<String> {
-    match get_audio_tracks(video_path).await {
-        Ok(tracks) => tracks.into_iter().map(|track| track.language).collect(),
-        Err(err) => {
-            tracing::debug!(
-                path = %video_path.display(),
-                error = %err,
-                "failed to get audio languages",
-            );
-            Vec::new()
-        }
-    }
 }
 
 /// The audio format `ffmpeg` decodes a track to before it reaches whisper:
@@ -677,53 +644,6 @@ mod parity {
             parse_audio_tracks("not json"),
             Err(ProbeError::Parse(_)),
         ));
-    }
-
-    #[test]
-    fn track_lookup_is_case_insensitive() {
-        let tracks = parse_audio_tracks(SAMPLE_PROBE_JSON).expect("sample JSON parses");
-
-        let found = get_audio_track_by_language(&tracks, "ENG").expect("english track found");
-        assert_eq!(found.codec, "aac");
-
-        assert!(get_audio_track_by_language(&tracks, "spa").is_none());
-    }
-
-    /// A 639-1 request (`ja`, `en`) resolves the 639-2-tagged track (`jpn`,
-    /// `eng`) — the anime-dub headline case — while the native 639-2 code still
-    /// works, an untagged (`und`) track is never returned for a specific code,
-    /// and a genuinely absent language yields `None`.
-    #[test]
-    fn audio_track_language_normalizes() {
-        let tracks = [
-            track(0, "jpn", false),
-            track(1, "eng", false),
-            track(2, "und", false),
-        ];
-
-        // 639-1 → 639-2 normalization.
-        assert_eq!(
-            get_audio_track_by_language(&tracks, "ja").map(|t| t.index),
-            Some(0),
-        );
-        assert_eq!(
-            get_audio_track_by_language(&tracks, "en").map(|t| t.index),
-            Some(1),
-        );
-
-        // The native 639-2 code still resolves.
-        assert_eq!(
-            get_audio_track_by_language(&tracks, "jpn").map(|t| t.index),
-            Some(0),
-        );
-
-        // An untagged track is not returned for any specific requested code,
-        // including a request that itself normalizes to "no language".
-        assert!(get_audio_track_by_language(&tracks, "und").is_none());
-        assert!(get_audio_track_by_language(&tracks, "").is_none());
-
-        // No track carries this language.
-        assert!(get_audio_track_by_language(&tracks, "spa").is_none());
     }
 
     /// `disposition.default` and `tags.title` flow through to [`AudioTrack`]

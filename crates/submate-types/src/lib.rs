@@ -57,22 +57,6 @@ pub enum WhisperModel {
     LargeV3,
 }
 
-/// Valid Whisper implementations.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
-)]
-pub enum WhisperImplementation {
-    #[strum(serialize = "faster-whisper")]
-    #[serde(rename = "faster-whisper")]
-    FasterWhisper,
-    #[strum(serialize = "openai-whisper")]
-    #[serde(rename = "openai-whisper")]
-    OpenaiWhisper,
-    #[strum(serialize = "hf-whisper")]
-    #[serde(rename = "hf-whisper")]
-    HfWhisper,
-}
-
 /// Valid compute devices.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,

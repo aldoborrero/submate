@@ -1,4 +1,3 @@
-//! Subtitle format detection and SRT/VTT/ASS parsing.
+//! SRT/VTT parsing and composition.
 
 pub mod cue;
-pub mod discovery;
