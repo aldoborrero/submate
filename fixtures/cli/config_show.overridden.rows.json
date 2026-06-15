@@ -8,18 +8,6 @@
     "cpu"
   ],
   [
-    "Whisper.Compute Type",
-    "int8"
-  ],
-  [
-    "Whisper.Implementation",
-    "faster-whisper"
-  ],
-  [
-    "Whisper.Folders",
-    "(none)"
-  ],
-  [
     "Stable Ts.Word Level Highlight",
     "No"
   ],
@@ -48,34 +36,6 @@
     "2"
   ],
   [
-    "Server.Process On Add",
-    "Yes"
-  ],
-  [
-    "Server.Process On Play",
-    "No"
-  ],
-  [
-    "Server.Bazarr Enabled",
-    "Yes"
-  ],
-  [
-    "Server.Jellyfin Enabled",
-    "Yes"
-  ],
-  [
-    "Server.Status Enabled",
-    "Yes"
-  ],
-  [
-    "Server.Bazarr Keep Model Loaded",
-    "Yes"
-  ],
-  [
-    "Server.Bazarr Model Idle Timeout",
-    "300"
-  ],
-  [
     "Path Mapping.Enabled",
     "No"
   ],
@@ -88,18 +48,6 @@
     "(not set)"
   ],
   [
-    "Jellyfin.Server Url",
-    "(not set)"
-  ],
-  [
-    "Jellyfin.Api Key",
-    "(not set)"
-  ],
-  [
-    "Jellyfin.Libraries",
-    "(none)"
-  ],
-  [
     "Queue.Db Path",
     "/home/aldo/.local/share/subgen/queue.db"
   ],
@@ -110,70 +58,6 @@
   [
     "Queue.Retry Delay",
     "5"
-  ],
-  [
-    "Subtitle.Force Detected Language To",
-    "(not set)"
-  ],
-  [
-    "Subtitle.Append Credits",
-    "No"
-  ],
-  [
-    "Subtitle.Skip If Target Subtitle Exists",
-    "Yes"
-  ],
-  [
-    "Subtitle.Skip If External Subtitles Exist",
-    "No"
-  ],
-  [
-    "Subtitle.Skip If Internal Subtitle Language",
-    "(not set)"
-  ],
-  [
-    "Subtitle.Skip Subtitle Languages",
-    "eng, spa"
-  ],
-  [
-    "Subtitle.Skip If Audio Languages",
-    "(none)"
-  ],
-  [
-    "Subtitle.Skip Unknown Language",
-    "Yes"
-  ],
-  [
-    "Subtitle.Preferred Audio Languages",
-    "(none)"
-  ],
-  [
-    "Subtitle.Limit To Preferred Audio Languages",
-    "No"
-  ],
-  [
-    "Subtitle.Lrc For Audio Files",
-    "Yes"
-  ],
-  [
-    "Subtitle.Only Skip If Subgen Subtitle",
-    "No"
-  ],
-  [
-    "Subtitle.Skip If No Language But Subtitles Exist",
-    "No"
-  ],
-  [
-    "Subtitle.Language Naming Type",
-    "iso_639_2_b"
-  ],
-  [
-    "Subtitle.Include Subgen Marker",
-    "No"
-  ],
-  [
-    "Subtitle.Include Model In Filename",
-    "No"
   ],
   [
     "Translation.Backend",
@@ -217,10 +101,6 @@
   ],
   [
     "Debug",
-    "No"
-  ],
-  [
-    "Clear Vram On Complete",
     "No"
   ]
 ]

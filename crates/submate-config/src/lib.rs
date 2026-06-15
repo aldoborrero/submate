@@ -35,7 +35,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use submate_types::{Device, LanguageNamingType, TranslationBackend, WhisperImplementation};
+use submate_types::{Device, TranslationBackend};
 
 use std::path::Path;
 
@@ -64,10 +64,6 @@ pub enum StrOrBool {
 pub struct WhisperSettings {
     pub model: String,
     pub device: Device,
-    pub compute_type: String,
-    pub implementation: WhisperImplementation,
-    #[serde(deserialize_with = "deserialize_pipe_list")]
-    pub folders: Vec<String>,
 
     // whisper.cpp decoding knobs. `None` leaves whisper.cpp's own default; each
     // is also exposed as a CLI flag on `transcribe` (`--initial-prompt`,
@@ -101,9 +97,6 @@ impl Default for WhisperSettings {
         Self {
             model: "medium".to_string(),
             device: Device::Cpu,
-            compute_type: "int8".to_string(),
-            implementation: WhisperImplementation::FasterWhisper,
-            folders: Vec::new(),
             initial_prompt: None,
             beam_size: None,
             temperature: None,
@@ -144,13 +137,6 @@ pub struct ServerSettings {
     pub address: String,
     pub port: u16,
     pub concurrent_transcriptions: u32,
-    pub process_on_add: bool,
-    pub process_on_play: bool,
-    pub bazarr_enabled: bool,
-    pub jellyfin_enabled: bool,
-    pub status_enabled: bool,
-    pub bazarr_keep_model_loaded: bool,
-    pub bazarr_model_idle_timeout: u32,
 }
 
 impl Default for ServerSettings {
@@ -159,13 +145,6 @@ impl Default for ServerSettings {
             address: "0.0.0.0".to_string(),
             port: 9000,
             concurrent_transcriptions: 2,
-            process_on_add: true,
-            process_on_play: false,
-            bazarr_enabled: true,
-            jellyfin_enabled: true,
-            status_enabled: true,
-            bazarr_keep_model_loaded: true,
-            bazarr_model_idle_timeout: 300,
         }
     }
 }
@@ -177,16 +156,6 @@ pub struct PathMappingSettings {
     pub enabled: bool,
     pub from_path: String,
     pub to_path: String,
-}
-
-/// Jellyfin media server integration settings (`JellyfinSettings`).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct JellyfinSettings {
-    pub server_url: String,
-    pub api_key: String,
-    #[serde(deserialize_with = "deserialize_pipe_list")]
-    pub libraries: Vec<String>,
 }
 
 /// Queue and retry settings (`QueueSettings`).
@@ -209,54 +178,6 @@ impl Default for QueueSettings {
             db_path: "${XDG_DATA_HOME}/subgen/queue.db".to_string(),
             max_retries: 3,
             retry_delay: 5,
-        }
-    }
-}
-
-/// Subtitle generation and language settings (`SubtitleSettings`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SubtitleSettings {
-    pub force_detected_language_to: String,
-    pub append_credits: bool,
-    pub skip_if_target_subtitle_exists: bool,
-    pub skip_if_external_subtitles_exist: bool,
-    pub skip_if_internal_subtitle_language: String,
-    #[serde(deserialize_with = "deserialize_pipe_list")]
-    pub skip_subtitle_languages: Vec<String>,
-    #[serde(deserialize_with = "deserialize_pipe_list")]
-    pub skip_if_audio_languages: Vec<String>,
-    pub skip_unknown_language: bool,
-    #[serde(deserialize_with = "deserialize_pipe_list")]
-    pub preferred_audio_languages: Vec<String>,
-    pub limit_to_preferred_audio_languages: bool,
-    pub lrc_for_audio_files: bool,
-    pub only_skip_if_subgen_subtitle: bool,
-    pub skip_if_no_language_but_subtitles_exist: bool,
-    pub language_naming_type: LanguageNamingType,
-    pub include_subgen_marker: bool,
-    pub include_model_in_filename: bool,
-}
-
-impl Default for SubtitleSettings {
-    fn default() -> Self {
-        Self {
-            force_detected_language_to: String::new(),
-            append_credits: false,
-            skip_if_target_subtitle_exists: true,
-            skip_if_external_subtitles_exist: false,
-            skip_if_internal_subtitle_language: String::new(),
-            skip_subtitle_languages: Vec::new(),
-            skip_if_audio_languages: Vec::new(),
-            skip_unknown_language: false,
-            preferred_audio_languages: Vec::new(),
-            limit_to_preferred_audio_languages: false,
-            lrc_for_audio_files: true,
-            only_skip_if_subgen_subtitle: false,
-            skip_if_no_language_but_subtitles_exist: false,
-            language_naming_type: LanguageNamingType::Iso6392B,
-            include_subgen_marker: false,
-            include_model_in_filename: false,
         }
     }
 }
@@ -302,12 +223,9 @@ pub struct Config {
     pub stable_ts: StableTsSettings,
     pub server: ServerSettings,
     pub path_mapping: PathMappingSettings,
-    pub jellyfin: JellyfinSettings,
     pub queue: QueueSettings,
-    pub subtitle: SubtitleSettings,
     pub translation: TranslationSettings,
     pub debug: bool,
-    pub clear_vram_on_complete: bool,
 }
 
 impl Config {
@@ -350,31 +268,6 @@ impl Config {
     /// from defaults and the `SUBMATE__` environment.
     pub fn load() -> Result<Self, Box<figment::Error>> {
         Self::from_env(None)
-    }
-}
-
-/// Coerce a pipe-separated env string into a `Vec<String>`, or pass through an
-/// already-typed sequence from the file/defaults layer.
-///
-/// Ports the `parse_pipe_separated_*` `mode="before"` validators in
-/// the config layer: figment hands env vars to serde as bare strings, so
-/// `"a|b|c"` must be split on `'|'`, each element `trim()`-med, and empty
-/// elements dropped (`"a||b"` and a trailing `|` yield no blank entries). The
-/// file/defaults layer instead supplies a real JSON array, which must still
-/// deserialize unchanged — matching Python's permissive branch where a
-/// non-string value is returned as-is.
-fn deserialize_pipe_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match Value::deserialize(deserializer)? {
-        Value::String(s) => Ok(s
-            .split('|')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect()),
-        other => Vec::<String>::deserialize(other).map_err(serde::de::Error::custom),
     }
 }
 

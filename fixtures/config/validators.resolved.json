@@ -1,11 +1,5 @@
 {
-  "clear_vram_on_complete": false,
   "debug": false,
-  "jellyfin": {
-    "api_key": "",
-    "libraries": [],
-    "server_url": ""
-  },
   "path_mapping": {
     "enabled": false,
     "from_path": "",
@@ -18,43 +12,14 @@
   },
   "server": {
     "address": "0.0.0.0",
-    "bazarr_enabled": true,
-    "bazarr_keep_model_loaded": true,
-    "bazarr_model_idle_timeout": 300,
     "concurrent_transcriptions": 2,
-    "jellyfin_enabled": true,
-    "port": 9000,
-    "process_on_add": true,
-    "process_on_play": false,
-    "status_enabled": true
+    "port": 9000
   },
   "stable_ts": {
     "custom_regroup": "cm_sl=84_sl=42++++++1",
     "min_word_duration": 0.1,
     "suppress_silence": true,
     "word_level_highlight": false
-  },
-  "subtitle": {
-    "append_credits": false,
-    "force_detected_language_to": "",
-    "include_model_in_filename": false,
-    "include_subgen_marker": false,
-    "language_naming_type": "iso_639_2_b",
-    "limit_to_preferred_audio_languages": false,
-    "lrc_for_audio_files": true,
-    "only_skip_if_subgen_subtitle": false,
-    "preferred_audio_languages": [],
-    "skip_if_audio_languages": [],
-    "skip_if_external_subtitles_exist": false,
-    "skip_if_internal_subtitle_language": "",
-    "skip_if_no_language_but_subtitles_exist": false,
-    "skip_if_target_subtitle_exists": true,
-    "skip_subtitle_languages": [
-      "en",
-      "es",
-      "fr"
-    ],
-    "skip_unknown_language": false
   },
   "translation": {
     "anthropic_api_key": "",
@@ -70,14 +35,7 @@
   },
   "whisper": {
     "beam_size": 5,
-    "compute_type": "int8",
     "device": "cpu",
-    "folders": [
-      "/data/a",
-      "/data/b",
-      "/data/c"
-    ],
-    "implementation": "faster-whisper",
     "initial_prompt": "Acme Corp, Zürich",
     "model": "medium"
   }
