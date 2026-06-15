@@ -48,18 +48,6 @@
     "(not set)"
   ],
   [
-    "Queue.Db Path",
-    "/home/aldo/.local/share/subgen/queue.db"
-  ],
-  [
-    "Queue.Max Retries",
-    "3"
-  ],
-  [
-    "Queue.Retry Delay",
-    "5"
-  ],
-  [
     "Translation.Backend",
     "ollama"
   ],

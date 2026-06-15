@@ -5,12 +5,10 @@
 //! golden `server/core_router.json` so the handlers cannot silently drift.
 //!
 //! * `core_router::root` — `GET /` must equal the golden `root` object exactly:
-//!   `name`, `version`, `docs`, and all four `endpoints` keys/values
-//!   (`bazarr_asr`, `bazarr_detect_language`, `status`, `queue`).
-//! * `core_router::status` — `GET /status` must carry the static envelope from
-//!   the golden `status` object (`status`/`version` scalars) plus a `queue`
-//!   object key. The queue *contents* are deliberately not pinned: the server
-//!   uses a node-topology shape on purpose (see `docs/architecture.md`).
+//!   `name`, `version`, `docs`, and all three `endpoints` keys/values
+//!   (`bazarr_asr`, `bazarr_detect_language`, `status`).
+//! * `core_router::status` — `GET /status` must equal the golden `status`
+//!   envelope (`status`/`version`).
 
 use axum::{
     Router,
@@ -49,17 +47,5 @@ async fn status() {
     assert_eq!(http_status, StatusCode::OK);
 
     let expected = golden("server/core_router.json");
-    let expected_status = &expected["status"];
-
-    // Static scalar envelope is pinned to the golden.
-    assert_eq!(body["status"], expected_status["status"]);
-    assert_eq!(body["version"], expected_status["version"]);
-
-    // The golden records only that a `queue` key is present (its live contents
-    // are out of scope); assert the same here — a `queue` object must exist.
-    assert_eq!(expected_status["queue_key_present"], Value::Bool(true));
-    assert!(
-        body.get("queue").is_some_and(Value::is_object),
-        "GET /status must carry a `queue` object, got: {body}"
-    );
+    assert_json_eq(&body, &expected["status"]);
 }

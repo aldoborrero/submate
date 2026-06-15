@@ -43,18 +43,18 @@ use `large-v3` for the best quality on hard audio or CJK.
 ## Quick start
 
 ```sh
-# Transcribe a file in one shot (writes movie.srt next to it)
+# Transcribe a file (writes movie.srt next to it)
 SUBMATE__WHISPER__MODEL=/models/ggml-large-v3-turbo.bin \
-  submate transcribe movie.mkv --sync
+  submate transcribe movie.mkv
 
 # …choosing the audio track, output format, and a Silero VAD model
-submate transcribe movie.mkv --sync \
+submate transcribe movie.mkv \
   --audio lang:ja --format srt --vad-model /models/ggml-silero-v5.1.2.bin
 
 # Translate an existing subtitle with an LLM
 submate translate movie.ja.srt --target-lang en --backend claude
 
-# Run the server (Bazarr ASR provider, embedded processing node)
+# Run the Bazarr ASR provider server
 SUBMATE__WHISPER__MODEL=/models/ggml-large-v3-turbo.bin submate server
 ```
 
@@ -83,7 +83,8 @@ config file (`-c config.toml`/`.env`/JSON). Common knobs:
 | `SUBMATE__TRANSLATION__<X>_API_KEY` | per-backend API key |
 
 The CLI also exposes per-run overrides: `--model`, `--language`, `--format`,
-`--audio`, `--translate-to`, `--backend`, `--vad-model`, `--sync`, …
+`--audio`, `--translate-to`, `--backend`, `--vad-model`, the whisper decoding
+knobs (`--initial-prompt`, `--beam-size`, …), …
 
 ## GPU
 
@@ -102,11 +103,10 @@ A GPU-built binary uses the GPU automatically (no runtime flag).
 
 ## Architecture
 
-A broker-less server + processing-node design (FileFlows/Unmanic-style): the
-server owns media I/O and a durable SQLite queue and ships extracted audio to
-nodes that pull work; a single box runs an embedded node by default. Bazarr is
-served by a direct, synchronous transcription path rather than the queue. See
-[docs/architecture.md](docs/architecture.md).
+A Bazarr ASR server and a local CLI sharing one in-process transcription core: a
+`Dispatcher` (a semaphore-bounded `spawn_blocking` into whisper.cpp) that both
+`/bazarr/asr` and `submate transcribe` run through. No queue, no broker, no
+distributed nodes. See [docs/architecture.md](docs/architecture.md).
 
 ## Development
 

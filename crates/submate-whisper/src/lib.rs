@@ -9,7 +9,12 @@
 //! the default build, so CI without a model still compiles the crate and runs
 //! the non-model tests.
 
+use std::sync::Arc;
+use std::sync::Once;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 
 /// A single recognized word and the time span it occupies, in seconds.
 ///
@@ -111,6 +116,120 @@ pub enum WhisperError {
     /// The blocking inference task panicked or was cancelled.
     #[error("transcription task did not complete: {0}")]
     Join(String),
+}
+
+/// Caps concurrent transcriptions to a fixed runner count.
+///
+/// A `Semaphore` gates every transcription behind a permit, so at most
+/// `runners` clips transcribe at once and the rest wait. Shared by the
+/// in-process CLI (`submate transcribe`) and the Bazarr server path. Clone is
+/// cheap: every clone shares the same underlying semaphore.
+#[derive(Clone)]
+pub struct Dispatcher {
+    semaphore: Arc<Semaphore>,
+    runners: usize,
+}
+
+impl Dispatcher {
+    /// Build a dispatcher that allows `runners` transcriptions to run at once.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `runners` is zero — nothing could ever make progress, so it is
+    /// a configuration error rather than a runtime state.
+    pub fn new(runners: usize) -> Self {
+        assert!(runners > 0, "a dispatcher must have at least one runner");
+        Self {
+            semaphore: Arc::new(Semaphore::new(runners)),
+            runners,
+        }
+    }
+
+    /// The configured runner count (the concurrency ceiling).
+    pub fn runners(&self) -> usize {
+        self.runners
+    }
+
+    /// Permits currently available — how many more transcriptions could start
+    /// right now without waiting.
+    pub fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+
+    /// Run a blocking transcription step under a runner permit.
+    ///
+    /// Acquires a permit (waiting if all `runners` are busy), then runs `job`
+    /// on a blocking thread via [`tokio::task::spawn_blocking`]. The permit is
+    /// held for the entire duration of `job`, so the cap covers the actual work.
+    ///
+    /// `job` is the injectable blocking step: real callers invoke whisper.cpp
+    /// inference; tests pass a closure that blocks on a barrier and bumps a
+    /// counter to observe the cap.
+    pub async fn transcribe_with<F>(&self, job: F) -> Result<WhisperResult, WhisperError>
+    where
+        F: FnOnce() -> Result<WhisperResult, WhisperError> + Send + 'static,
+    {
+        // Holding the owned permit alive until the blocking task finishes keeps
+        // the slot reserved for the whole transcription.
+        let permit = Arc::clone(&self.semaphore)
+            .acquire_owned()
+            .await
+            .expect("dispatcher semaphore is never closed");
+
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            job()
+        })
+        .await
+        .map_err(|e| WhisperError::Join(e.to_string()))?
+    }
+
+    /// Transcribe a PCM clip through [`transcribe_pcm`] under a runner permit.
+    ///
+    /// Available only with the `model` feature, which pulls in whisper.cpp. The
+    /// permit is held across the whole inference call so concurrency stays
+    /// capped at the runner count.
+    #[cfg(feature = "model")]
+    pub async fn transcribe_pcm(
+        &self,
+        model_path: impl Into<String>,
+        pcm: Vec<f32>,
+        options: TranscribeOptions,
+    ) -> Result<WhisperResult, WhisperError> {
+        install_whisper_logging();
+        let model_path = model_path.into();
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .expect("dispatcher semaphore is never closed");
+        transcribe_pcm(model_path, pcm, options).await
+    }
+}
+
+static WHISPER_LOG_HOOK: Once = Once::new();
+static WHISPER_LOG_HOOK_INSTALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Redirect whisper.cpp's process-global stderr logging through `tracing`.
+///
+/// whisper.cpp installs a process-global log callback, so this must run exactly
+/// once; the [`Once`] makes repeated calls a no-op. With the redirection in
+/// place the C library's chatter becomes `tracing` events — hidden at the
+/// default `INFO` level — so a normal transcribe run no longer floods the
+/// terminal. Defined regardless of the `model` feature so the install path
+/// stays testable without linking whisper.cpp.
+pub fn install_whisper_logging() {
+    WHISPER_LOG_HOOK.call_once(|| {
+        #[cfg(feature = "model")]
+        whisper_rs::install_logging_hooks();
+        WHISPER_LOG_HOOK_INSTALLS.fetch_add(1, Ordering::SeqCst);
+    });
+}
+
+/// How many times [`install_whisper_logging`] has installed the redirection
+/// (`0` before the first call, `1` forever after).
+pub fn whisper_logging_install_count() -> usize {
+    WHISPER_LOG_HOOK_INSTALLS.load(Ordering::SeqCst)
 }
 
 /// PCM sample rate expected by whisper.cpp: 16 kHz, mono, f32 in `-1.0..=1.0`.
@@ -1131,5 +1250,173 @@ mod tests {
                 assert!(word.end >= word.start, "word end must not precede start");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dispatcher_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+
+    fn lang_result(language: &str) -> WhisperResult {
+        WhisperResult {
+            language: language.to_string(),
+            text: String::new(),
+            segments: Vec::new(),
+        }
+    }
+
+    /// A gate the blocking jobs park on synchronously (they run off the async
+    /// runtime, so they use std primitives, not tokio ones). The test opens the
+    /// gate once it has confirmed the third job is still waiting for a permit.
+    #[derive(Default)]
+    struct Gate {
+        open: Mutex<bool>,
+        cv: Condvar,
+    }
+
+    impl Gate {
+        fn wait(&self) {
+            let mut open = self.open.lock().unwrap();
+            while !*open {
+                open = self.cv.wait(open).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            *self.open.lock().unwrap() = true;
+            self.cv.notify_all();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dispatcher_caps_concurrency() {
+        let dispatcher = Dispatcher::new(2);
+
+        // Counters observe how many jobs are inside the blocking step at once.
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Gate::default());
+
+        let spawn = |id: usize| {
+            let dispatcher = dispatcher.clone();
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let started = Arc::clone(&started);
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                dispatcher
+                    .transcribe_with(move || {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_active.fetch_max(now, Ordering::SeqCst);
+                        // Park inside the blocking step (and thus while holding a
+                        // permit) until the test opens the gate.
+                        gate.wait();
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(lang_result(&format!("lang{id}")))
+                    })
+                    .await
+            })
+        };
+
+        let h1 = spawn(1);
+        let h2 = spawn(2);
+        let h3 = spawn(3);
+
+        // Wait until two jobs are parked holding permits, then confirm the third
+        // is still blocked: only `runners` (2) permits exist, so exactly two can
+        // be inside the blocking step. If the cap leaked, all three would start.
+        let two_running = timeout(Duration::from_secs(5), async {
+            loop {
+                if started.load(Ordering::SeqCst) >= 2 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(two_running.is_ok(), "first two jobs never both started");
+
+        // Give a leaked third job a chance to also start before we assert.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            2,
+            "a third job ran while both permits were held — concurrency cap leaked"
+        );
+        assert_eq!(dispatcher.available_permits(), 0);
+
+        // Release every parked job. As the first two drain they free permits and
+        // the third finally acquires one and runs.
+        gate.release();
+        let results = timeout(Duration::from_secs(5), async {
+            let r1 = h1.await.expect("task 1 panicked");
+            let r2 = h2.await.expect("task 2 panicked");
+            let r3 = h3.await.expect("task 3 panicked");
+            (r1, r2, r3)
+        })
+        .await
+        .expect("dispatcher deadlocked or starved a permit");
+
+        // Results return correctly for all three submissions.
+        let (r1, r2, r3) = results;
+        let langs: Vec<String> = [r1, r2, r3]
+            .into_iter()
+            .map(|r| r.expect("transcription failed").language)
+            .collect();
+        for want in ["lang1", "lang2", "lang3"] {
+            assert!(langs.contains(&want.to_string()), "missing result {want}");
+        }
+
+        // Never more than `runners` jobs ran the blocking step at once.
+        assert!(
+            max_active.load(Ordering::SeqCst) <= 2,
+            "concurrency exceeded the runner cap: saw {} active",
+            max_active.load(Ordering::SeqCst)
+        );
+        // Permits are all returned after the work drains.
+        assert_eq!(dispatcher.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn runners_reports_configured_count() {
+        let dispatcher = Dispatcher::new(3);
+        assert_eq!(dispatcher.runners(), 3);
+        assert_eq!(dispatcher.available_permits(), 3);
+    }
+
+    #[tokio::test]
+    async fn errors_propagate_and_release_permit() {
+        let dispatcher = Dispatcher::new(1);
+        let result = dispatcher
+            .transcribe_with(|| Err(WhisperError::Inference("boom".into())))
+            .await;
+        assert!(matches!(result, Err(WhisperError::Inference(_))));
+        // The permit is returned even when the job errors.
+        assert_eq!(dispatcher.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "at least one runner")]
+    async fn zero_runners_panics() {
+        let _ = Dispatcher::new(0);
+    }
+
+    /// The whisper.cpp logging redirection installs exactly once, even across
+    /// repeated calls — whisper.cpp's log callback is process-global.
+    #[test]
+    fn whisper_logging_installs_once() {
+        install_whisper_logging();
+        assert_eq!(whisper_logging_install_count(), 1);
+        for _ in 0..5 {
+            install_whisper_logging();
+        }
+        assert_eq!(whisper_logging_install_count(), 1);
     }
 }

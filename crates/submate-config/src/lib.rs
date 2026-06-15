@@ -156,28 +156,6 @@ pub struct PathMappingSettings {
     pub to_path: String,
 }
 
-/// Queue and retry settings.
-///
-/// `db_path` defaults to the unexpanded form `${XDG_DATA_HOME}/subgen/queue.db`;
-/// the actual expansion happens during downstream resolution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct QueueSettings {
-    pub db_path: String,
-    pub max_retries: u32,
-    pub retry_delay: u32,
-}
-
-impl Default for QueueSettings {
-    fn default() -> Self {
-        Self {
-            db_path: "${XDG_DATA_HOME}/subgen/queue.db".to_string(),
-            max_retries: 3,
-            retry_delay: 5,
-        }
-    }
-}
-
 /// Translation settings for LLM-backed subtitle translation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -219,7 +197,6 @@ pub struct Config {
     pub stable_ts: StableTsSettings,
     pub server: ServerSettings,
     pub path_mapping: PathMappingSettings,
-    pub queue: QueueSettings,
     pub translation: TranslationSettings,
     pub debug: bool,
 }

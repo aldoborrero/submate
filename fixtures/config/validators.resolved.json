@@ -5,11 +5,6 @@
     "from_path": "",
     "to_path": ""
   },
-  "queue": {
-    "db_path": "${XDG_DATA_HOME}/subgen/queue.db",
-    "max_retries": 3,
-    "retry_delay": 5
-  },
   "server": {
     "address": "0.0.0.0",
     "concurrent_transcriptions": 2,

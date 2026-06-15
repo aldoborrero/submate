@@ -4,14 +4,12 @@
     "endpoints": {
       "bazarr_asr": "/bazarr/asr",
       "bazarr_detect_language": "/bazarr/detect-language",
-      "queue": "/queue",
       "status": "/status"
     },
     "name": "Submate Server",
     "version": "1.0.0"
   },
   "status": {
-    "queue_key_present": true,
     "status": "ok",
     "version": "1.0.0"
   }

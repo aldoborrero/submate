@@ -18,7 +18,6 @@
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use submate_config::Config;
@@ -26,10 +25,9 @@ use submate_media::{AudioSelector, AudioTrack};
 
 /// User-selectable subtitle output format for `submate transcribe` (`-F/--format`).
 ///
-/// Mirrors [`submate_proto::OutputFormat`] for the wire/job side; kept as a
-/// separate clap `ValueEnum` so the `--help` value list and parsing live with
-/// the CLI. [`From`] converts it into the proto enum at the job build site, and
-/// [`OutputFormat::extension`] drives the `--sync` output filename.
+/// A clap `ValueEnum` so the `--help` value list and parsing live with the CLI;
+/// [`From`] converts it into [`submate_types::OutputFormat`] for rendering, and
+/// [`OutputFormat::extension`] drives the output filename.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 enum OutputFormat {
     /// SubRip subtitles (`.srt`).
@@ -47,13 +45,13 @@ enum OutputFormat {
 
 impl OutputFormat {
     /// File extension including the leading dot (e.g. `".srt"`), used to name the
-    /// `--sync` output next to the input file.
+    /// output next to the input file.
     fn extension(self) -> &'static str {
-        submate_proto::OutputFormat::from(self).extension()
+        submate_types::OutputFormat::from(self).extension()
     }
 }
 
-impl From<OutputFormat> for submate_proto::OutputFormat {
+impl From<OutputFormat> for submate_types::OutputFormat {
     fn from(f: OutputFormat) -> Self {
         match f {
             OutputFormat::Srt => Self::Srt,
@@ -109,10 +107,8 @@ enum Command {
     Transcribe(TranscribeArgs),
     /// Translate subtitle files to a target language using an LLM backend.
     Translate(TranslateArgs),
-    /// Run the coordinator server (with an embedded processing node by default).
+    /// Run the Bazarr ASR provider HTTP server.
     Server(ServerArgs),
-    /// Run a processing node that pulls work from a coordinator.
-    Node(NodeArgs),
     /// List the audio tracks in a media file.
     Probe(ProbeArgs),
     /// Inspect and manage configuration.
@@ -214,10 +210,6 @@ struct TranscribeArgs {
     #[arg(long, visible_alias = "yes")]
     non_interactive: bool,
 
-    /// Process files immediately in-process instead of queueing them.
-    #[arg(long)]
-    sync: bool,
-
     #[command(flatten)]
     logging: LoggingOpts,
 }
@@ -267,32 +259,10 @@ struct ServerArgs {
     #[arg(short = 'p', long)]
     port: Option<u16>,
 
-    /// Path to a Silero VAD model for the embedded node (sets
-    /// `SUBMATE__WHISPER__VAD_MODEL` for all transcription on this server).
+    /// Path to a Silero VAD model (sets `SUBMATE__WHISPER__VAD_MODEL` for all
+    /// transcription on this server).
     #[arg(long, value_name = "PATH")]
     vad_model: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-struct NodeArgs {
-    /// Coordinator base URL to pull work from (e.g. `http://submate:9000`).
-    #[arg(short = 's', long, value_name = "URL")]
-    server: String,
-
-    /// Maximum concurrent transcriptions this node will run.
-    #[arg(short = 'w', long, default_value_t = 2)]
-    runners: u32,
-
-    /// Advertise a usable GPU to the coordinator.
-    #[arg(long)]
-    gpu: bool,
-
-    /// Path to a Silero VAD model (sets `SUBMATE__WHISPER__VAD_MODEL`).
-    #[arg(long, value_name = "PATH")]
-    vad_model: Option<PathBuf>,
-
-    #[command(flatten)]
-    logging: LoggingOpts,
 }
 
 #[derive(Debug, Args)]
@@ -327,10 +297,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cmd_transcribe(cli.config_file.as_deref(), args)
         }
         Command::Server(args) => cmd_server(cli.config_file.as_deref(), args),
-        Command::Node(args) => {
-            init_logging(&args.logging.log_level, args.logging.log_file.as_deref());
-            cmd_node(cli.config_file.as_deref(), args)
-        }
         Command::Probe(args) => cmd_probe(args),
     }
 }
@@ -542,19 +508,7 @@ fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend + Send +
     })
 }
 
-/// Build the node's translation post-step from `config.translation`.
-///
-/// Pairs the configured [`build_backend`] with the config `chunk_size`, so a job
-/// carrying a `target_language` is translated through the same backend the
-/// standalone `submate translate` command uses.
-fn build_translation_step(config: &Config) -> submate_node::TranslationStep {
-    submate_node::TranslationStep::new(
-        build_backend(config),
-        config.translation.chunk_size.max(1) as usize,
-    )
-}
-
-/// Resolve where a `transcribe --sync` result is written next to its input.
+/// Resolve where a `transcribe` result is written next to its input.
 ///
 /// A plain transcribe targets `<stem>.<ext>` (the format's extension replacing
 /// the media extension): `movie.mkv` + SRT → `movie.srt`. When translating, the
@@ -617,12 +571,11 @@ fn collect_files(dir: &Path, recursive: bool, visit: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// `submate transcribe` — enqueue media files for transcription.
+/// `submate transcribe` — transcribe media files in-process.
 ///
-/// Without `--sync` this enqueues jobs into the durable store for a separately
-/// running node to drain. With `--sync` it spins up an in-process coordinator +
-/// embedded node, enqueues the files, and waits for each to finish before
-/// returning — the one-shot local path that needs no standalone node.
+/// Extracts each file's audio, transcribes it through the shared [`Dispatcher`]
+/// (capped at `server.concurrent_transcriptions`), assembles the subtitle, and
+/// writes it next to the input — optionally LLM-translating with `--translate-to`.
 fn cmd_transcribe(config_file: Option<&Path>, args: TranscribeArgs) -> anyhow::Result<()> {
     apply_vad_model(args.vad_model.as_deref());
     let mut config = load_config(config_file)?;
@@ -716,51 +669,33 @@ fn audio_selector_to_string(sel: &AudioSelector) -> String {
     }
 }
 
-/// Async core of `transcribe`: enqueue every file, and in `--sync` mode run a
-/// local coordinator + embedded node and wait for each job to complete.
+/// Async core of `transcribe`: transcribe every file in-process through the
+/// shared [`Dispatcher`], writing each subtitle next to its input.
 async fn transcribe_files(
     config: &Config,
     args: &TranscribeArgs,
     files: &[PathBuf],
 ) -> anyhow::Result<()> {
-    use submate_node::Dispatcher;
-    use submate_proto::JobOpts;
-    use submate_queue::JobStore;
-    use submate_server::{AudioSource, EmbeddedNodeSettings, NodeCoordinator, spawn_embedded_node};
-    use submate_types::{Device, TranscriptionTask, WhisperModel};
+    // Resolve the model path up front (an actionable error rather than a
+    // model-load panic when nothing is configured).
+    let model_path = resolve_model(args.model.as_deref(), &config.whisper.model)?;
 
-    let store = if args.sync {
-        // One-shot local run: an in-memory store is enough; nothing outlives it.
-        JobStore::open_in_memory()
-    } else {
-        JobStore::open(&config.queue.db_path)
-    }
-    .map_err(|e| anyhow::anyhow!("failed to open job store: {e}"))?;
+    // The Dispatcher caps how many files transcribe at once (a batch/recursive
+    // run shares the runner count); a single file uses one runner.
+    let dispatcher =
+        submate_whisper::Dispatcher::new(config.server.concurrent_transcriptions.max(1) as usize);
 
-    let coord = Arc::new(NodeCoordinator::new(store));
-
-    // `config.whisper.model` is a free-form size string ("medium", ...) while a
-    // `JobOpts` carries the typed `WhisperModel`; an unrecognized size falls back
-    // to the same default the config uses. `device` is already the typed enum.
-    let model = config
-        .whisper
-        .model
-        .parse::<WhisperModel>()
-        .unwrap_or(WhisperModel::Medium);
-    let device: Device = config.whisper.device;
-
-    let task = if args.translate_to.is_some() {
-        TranscriptionTask::Translate
-    } else {
-        TranscriptionTask::Transcribe
-    };
+    // The LLM backend is built once and shared (Arc) across files; only needed
+    // when `--translate-to` is given.
+    let backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>> = args
+        .translate_to
+        .as_ref()
+        .map(|_| std::sync::Arc::new(build_backend(config)));
 
     // `--audio` is the typed selector; `--audio-language` is a hidden deprecated
-    // alias that maps to `Lang(..)`. Prefer `--audio` when both are given. Both
-    // the selector and its wire string are mutable so the single-file picker
-    // below can pin the chosen track; the selector flows downstream as that
-    // string (`prepare_audio_for_transcription` re-parses it), while the whisper
-    // decode-language hint is resolved separately per file further down.
+    // alias that maps to `Lang(..)`. Prefer `--audio` when both are given. The
+    // selector flows to `prepare_audio_for_transcription` as a string; the
+    // whisper decode-language hint is resolved separately per file below.
     let mut selector: Option<AudioSelector> = match (&args.audio, &args.audio_language) {
         (Some(sel), _) => Some(sel.clone()),
         (None, Some(lang)) => {
@@ -773,10 +708,8 @@ async fn transcribe_files(
 
     // Interactive track picker — single file only. Multi-file / recursive runs
     // always take the deterministic rule (we never block a batch on a prompt),
-    // and the prompt is further gated on stderr being a TTY. When the selection
-    // is ambiguous and a human is present, ask; otherwise fall through with the
-    // rule pick (and note it). Resolving here pins the chosen track via a
-    // `track:<n>` selector so the downstream node skips its own guess.
+    // and the prompt is further gated on stderr being a TTY. Resolving here pins
+    // the chosen track via a `track:<n>` selector.
     if files.len() == 1 {
         let file = &files[0];
         let tracks = submate_media::get_audio_tracks(file)
@@ -794,49 +727,16 @@ async fn transcribe_files(
                 selector = Some(AudioSelector::Index(index));
                 selector_str = selector.as_ref().map(audio_selector_to_string);
             }
-            // No tracks / unresolved-but-non-fatal: leave the selector as-is and
-            // let the downstream resolver handle it (it degrades to auto-detect).
             Ok(None) => {}
             Err(e) => return Err(e),
         }
     }
 
-    // In sync mode, bring up an embedded node draining only the jobs we enqueue.
-    let node = if args.sync {
-        let settings = EmbeddedNodeSettings {
-            enabled: true,
-            node_id: "local".into(),
-            gpu: matches!(device, Device::Cuda),
-            runners: config.server.concurrent_transcriptions.max(1),
-            tasks: vec![TranscriptionTask::Transcribe, TranscriptionTask::Translate],
-        };
-        // A coordinator served over loopback is what the embedded node pulls
-        // from; reuse the server crate's spawn helper with a real Whisper
-        // processor sized to the same dispatcher. The model path is resolved
-        // from `--model` > config > env, surfacing an actionable error rather
-        // than a model-load panic when nothing is configured.
-        let model_path = resolve_model(args.model.as_deref(), &config.whisper.model)?;
-        let dispatcher = Dispatcher::new(settings.runners.max(1) as usize);
-        let processor = make_processor(dispatcher, &model_path.to_string_lossy());
-        // Only attach the translation step when this run actually translates, so
-        // a plain `transcribe --sync` keeps the node transcription-only.
-        let translation = args
-            .translate_to
-            .is_some()
-            .then(|| build_translation_step(config));
-        let addr = serve_loopback(coord.clone()).await?;
-        spawn_embedded_node(format!("http://{addr}"), &settings, processor, translation)
-    } else {
-        None
-    };
-
     let mut failed = 0usize;
     for file in files {
         // The decode-language hint is independent of track selection: an
         // explicit `--language` wins; otherwise it defaults to the selected
-        // track's language tag. The default needs the file's tracks, so probe
-        // here — a probe failure degrades to auto-detect (`None`), matching the
-        // downstream `prepare_audio_for_transcription` fallback.
+        // track's language tag (a probe failure degrades to auto-detect).
         let decode_language = if args.language.is_some() {
             submate_media::resolve_decode_language(&[], selector.as_ref(), args.language.as_deref())
         } else {
@@ -846,13 +746,11 @@ async fn transcribe_files(
             submate_media::resolve_decode_language(&tracks, selector.as_ref(), None)
         };
 
-        let opts = JobOpts {
-            model,
-            device,
-            source_language: decode_language,
-            target_language: args.translate_to.clone(),
-            translation_backend: None,
-            output_format: args.format.into(),
+        // whisper always transcribes in the source language; `--translate-to`
+        // is an LLM step applied to the rendered subtitle below.
+        let options = submate_whisper::TranscribeOptions {
+            language: decode_language,
+            task: submate_whisper::Task::Transcribe,
             // CLI flags override the `SUBMATE__WHISPER__*` config defaults.
             initial_prompt: args
                 .initial_prompt
@@ -867,78 +765,137 @@ async fn transcribe_files(
             logprob_threshold: args.logprob_threshold.or(config.whisper.logprob_threshold),
             max_len: args.max_len.or(config.whisper.max_len),
         };
-        let source = AudioSource::File {
-            path: file.clone(),
-            language: selector_str.clone(),
-        };
-        let job_id = coord
-            .enqueue_with_audio(task, &opts, source)
-            .map_err(|e| anyhow::anyhow!("failed to enqueue {}: {e}", file.display()))?;
 
-        if args.sync {
-            // Subscribe to the job's progress stream before awaiting its result,
-            // then render live updates (spinner+% on a TTY, plain lines when
-            // piped) until the terminal outcome arrives.
-            let mut progress_rx = coord.subscribe_progress(job_id);
-            let is_tty = std::io::stderr().is_terminal();
-            let mut renderer = ProgressRenderer::for_stderr(file, is_tty);
+        let result = transcribe_one(
+            &dispatcher,
+            &model_path,
+            file,
+            selector_str.as_deref(),
+            options,
+            args.format,
+            args.translate_to.as_deref(),
+            backend.clone(),
+            config.translation.chunk_size,
+        )
+        .await;
 
-            let result_fut = coord.wait_for_result(job_id);
-            tokio::pin!(result_fut);
-            let outcome = loop {
-                tokio::select! {
-                    // Bias toward draining progress so the final 100% paints
-                    // before the result line, but the result still wins once the
-                    // stream closes.
-                    biased;
-                    update = progress_rx.recv() => {
-                        match update {
-                            Some(p) => renderer.update(p.pct),
-                            // Stream closed: the result is imminent; fall through
-                            // to await it.
-                            None => break (&mut result_fut).await,
-                        }
-                    }
-                    outcome = &mut result_fut => break outcome,
-                }
-            };
-            renderer.finish();
-
-            match outcome {
-                Some(submate_proto::JobOutcome::Ok { output }) => {
-                    // Persist the produced subtitle next to the input. A plain
-                    // transcribe targets `movie.<ext>`; when translating, the
-                    // output is language-suffixed (`movie.<lang>.<ext>`) so the
-                    // translated subtitle never overwrites the source-language one.
-                    let out_path =
-                        transcribe_output_path(file, args.format, args.translate_to.as_deref());
-                    let (count, noun) = output_count(&output, args.format);
-                    std::fs::write(&out_path, output).map_err(|e| {
-                        anyhow::anyhow!("failed to write {}: {e}", out_path.display())
-                    })?;
-                    println!("{}", result_summary(file, &out_path, count, noun));
-                }
-                other => {
-                    failed += 1;
-                    println!("  Failed: {} ({other:?})", file.display());
-                    if args.fail_fast {
-                        break;
-                    }
+        match result {
+            Ok(content) => {
+                // A plain transcribe targets `movie.<ext>`; when translating, the
+                // output is language-suffixed so it never overwrites the source.
+                let out_path =
+                    transcribe_output_path(file, args.format, args.translate_to.as_deref());
+                let (count, noun) = output_count(&content, args.format);
+                std::fs::write(&out_path, &content)
+                    .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out_path.display()))?;
+                println!("{}", result_summary(file, &out_path, count, noun));
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  Failed: {} ({e})", file.display());
+                if args.fail_fast {
+                    break;
                 }
             }
-        } else {
-            println!("  Queued: {}", file.display());
         }
-    }
-
-    if let Some(node) = node {
-        node.abort();
     }
 
     if failed > 0 {
         anyhow::bail!("{failed} file(s) failed to process");
     }
     Ok(())
+}
+
+/// Transcribe one media file in-process: extract the selected track's PCM,
+/// run whisper under the dispatcher's runner cap, assemble the subtitle, and
+/// LLM-translate it when `translate_to` differs from the detected language.
+#[cfg(feature = "model")]
+#[expect(clippy::too_many_arguments)]
+async fn transcribe_one(
+    dispatcher: &submate_whisper::Dispatcher,
+    model_path: &Path,
+    file: &Path,
+    selector: Option<&str>,
+    options: submate_whisper::TranscribeOptions,
+    format: OutputFormat,
+    translate_to: Option<&str>,
+    backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>>,
+    chunk_size: u32,
+) -> anyhow::Result<String> {
+    use submate_media::{
+        PreparedAudio, extract_audio_track_to_memory, prepare_audio_for_transcription,
+    };
+
+    // Extract the selected audio track to mono 16 kHz f32 PCM.
+    let pcm = match prepare_audio_for_transcription(file, selector).await {
+        PreparedAudio::Pcm(bytes) => submate_bazarr::pcm_s16le_to_f32(&bytes),
+        PreparedAudio::Path(path) => {
+            let bytes = extract_audio_track_to_memory(&path, 0)
+                .await
+                .map_err(|e| anyhow::anyhow!("audio extraction failed: {e}"))?;
+            submate_bazarr::pcm_s16le_to_f32(&bytes)
+        }
+    };
+
+    let raw = dispatcher
+        .transcribe_pcm(
+            model_path.to_string_lossy().to_string(),
+            pcm.clone(),
+            options,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let assembled = submate_whisper::assemble_result(&raw, submate_whisper::DEFAULT_REGROUP, &pcm)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let detected = raw.language.clone();
+
+    let target_format: submate_types::OutputFormat = format.into();
+    let mut content = match target_format {
+        submate_types::OutputFormat::Srt => assembled.to_srt_vtt(false),
+        submate_types::OutputFormat::Vtt => assembled.to_srt_vtt(true),
+        submate_types::OutputFormat::Ass => assembled.to_ass(),
+        submate_types::OutputFormat::Json => assembled.to_json(),
+        submate_types::OutputFormat::Txt => assembled.to_txt(),
+    };
+
+    // LLM-translate when a different target language is requested; any error
+    // degrades to the untranslated content (`translate_content` absorbs it).
+    if let (Some(target), Some(backend)) = (translate_to, backend)
+        && target != detected
+    {
+        let mut complete = move |prompt: String| {
+            let backend = backend.clone();
+            async move { backend.complete(&prompt).await }
+        };
+        content = submate_translate::translate_content(
+            &content,
+            &detected,
+            target,
+            target_format,
+            chunk_size.max(1) as usize,
+            &mut complete,
+        )
+        .await;
+    }
+
+    Ok(content)
+}
+
+/// Without the `model` feature there is no whisper.cpp to run.
+#[cfg(not(feature = "model"))]
+#[expect(clippy::too_many_arguments)]
+async fn transcribe_one(
+    _dispatcher: &submate_whisper::Dispatcher,
+    _model_path: &Path,
+    _file: &Path,
+    _selector: Option<&str>,
+    _options: submate_whisper::TranscribeOptions,
+    _format: OutputFormat,
+    _translate_to: Option<&str>,
+    _backend: Option<std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>>,
+    _chunk_size: u32,
+) -> anyhow::Result<String> {
+    anyhow::bail!("model support not built in (rebuild with --features model)")
 }
 
 /// Count the entries in a produced output string, with the unit noun for the
@@ -994,92 +951,6 @@ fn result_summary(input: &Path, output: &Path, count: usize, noun: &str) -> Stri
     format!("✓ {} → {} ({count} {unit})", name(input), name(output))
 }
 
-/// Live progress display for a single `transcribe --sync` job.
-///
-/// Two render modes, picked from whether stderr is a terminal:
-///
-/// * **TTY** — an [`indicatif`] spinner + percentage on a single redrawn line.
-/// * **plain** — periodic `"<name>: NN%"` lines to a writer, emitted only when
-///   the rounded percentage advances so a piped log is not flooded. This is the
-///   shape the `progress_non_tty_plain` test pins: no ANSI/control codes.
-///
-/// The plain branch is generic over the writer so tests can drive it with an
-/// in-memory buffer; production wires it to a stderr lock.
-enum ProgressRenderer<W: std::io::Write> {
-    Tty {
-        bar: indicatif::ProgressBar,
-    },
-    Plain {
-        out: W,
-        name: String,
-        /// Last whole percentage emitted, so a line is written only on change.
-        last_pct: Option<u8>,
-    },
-}
-
-impl ProgressRenderer<std::io::Stderr> {
-    /// Build a renderer for `file`, choosing TTY vs. plain from whether stderr is
-    /// a terminal. `is_tty` is taken explicitly (rather than probed inside) so
-    /// the decision is testable and overridable.
-    fn for_stderr(file: &Path, is_tty: bool) -> Self {
-        let name = display_name(file);
-        if is_tty {
-            // `draw_target` on stderr; the template renders e.g.
-            // `⠹ movie.mkv  42%`. Indicatif owns the redraw/control codes here.
-            let bar = indicatif::ProgressBar::new(100);
-            bar.set_draw_target(indicatif::ProgressDrawTarget::stderr());
-            bar.set_style(
-                indicatif::ProgressStyle::with_template("{spinner} {prefix} {pos:>3}%")
-                    .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner()),
-            );
-            bar.set_prefix(name);
-            Self::Tty { bar }
-        } else {
-            Self::Plain {
-                out: std::io::stderr(),
-                name,
-                last_pct: None,
-            }
-        }
-    }
-}
-
-impl<W: std::io::Write> ProgressRenderer<W> {
-    /// Render a fractional-progress update (`pct` in `[0.0, 1.0]`). In plain mode
-    /// a line is emitted only when the whole-percent value changes.
-    fn update(&mut self, pct: f32) {
-        let whole = (pct.clamp(0.0, 1.0) * 100.0).round() as u8;
-        match self {
-            Self::Tty { bar } => {
-                bar.set_position(whole as u64);
-            }
-            Self::Plain {
-                out,
-                name,
-                last_pct,
-            } => {
-                if *last_pct != Some(whole) {
-                    *last_pct = Some(whole);
-                    // Plain text only — the non-TTY contract is no control codes.
-                    let _ = writeln!(out, "{name}: {whole}%");
-                }
-            }
-        }
-    }
-
-    /// Tear down the display once the job is terminal. The TTY bar is cleared so
-    /// the caller's result line is not split by a leftover spinner; the plain
-    /// writer is flushed.
-    fn finish(self) {
-        match self {
-            Self::Tty { bar } => bar.finish_and_clear(),
-            Self::Plain { mut out, .. } => {
-                let _ = out.flush();
-            }
-        }
-    }
-}
-
 /// Short, human display name for a path (final component, falling back to the
 /// full `display()` form for paths with no final component).
 fn display_name(path: &Path) -> String {
@@ -1088,29 +959,9 @@ fn display_name(path: &Path) -> String {
         .map_or_else(|| path.display().to_string(), str::to_owned)
 }
 
-/// Bind an ephemeral loopback port and serve the coordinator's router on it,
-/// returning the bound address. Used by `--sync` so the embedded node has a
-/// real coordinator URL to pull from.
-async fn serve_loopback(
-    coord: Arc<submate_server::NodeCoordinator>,
-) -> anyhow::Result<std::net::SocketAddr> {
-    use submate_server::{AppState, app};
-
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let addr = listener.local_addr()?;
-    let router = app(AppState::with_coordinator(coord));
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
-    });
-    Ok(addr)
-}
-
-/// `submate server` — run the coordinator with an embedded node by default.
+/// `submate server` — run the Bazarr ASR provider HTTP server.
 fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()> {
-    use submate_queue::JobStore;
-    use submate_server::{
-        AppState, EmbeddedNodeSettings, NodeCoordinator, app, spawn_embedded_node,
-    };
+    use submate_server::{AppState, app};
 
     apply_vad_model(args.vad_model.as_deref());
     let config = load_config(config_file)?;
@@ -1119,40 +970,19 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
     let host = args.host.unwrap_or_else(|| config.server.address.clone());
     let port = args.port.unwrap_or(config.server.port);
 
-    let store = JobStore::open(&config.queue.db_path)
-        .map_err(|e| anyhow::anyhow!("failed to open job store: {e}"))?;
-    let coord = Arc::new(NodeCoordinator::new(store));
-
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        // Reclaim any leases left dangling by a previous crash before serving.
-        if let Err(e) = coord.reclaim_stale_leases() {
-            tracing::warn!("failed to reclaim stale leases: {e}");
-        }
-
         let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
         let addr = listener.local_addr()?;
         tracing::info!("submate server listening on {addr}");
 
-        // Embedded node: a single-box deployment processes its own queue. Its
-        // Dispatcher is shared with the direct Bazarr path (below) so Bazarr and
-        // the queue drain share one runner cap.
-        let node_settings = EmbeddedNodeSettings::from_server(&config.server);
-        let (_node, bazarr) = if node_settings.enabled {
-            let base_url = format!("http://{addr}");
-            let dispatcher = submate_node::Dispatcher::new(node_settings.runners.max(1) as usize);
-            let processor = make_processor(dispatcher.clone(), &config.whisper.model);
-            let translation = build_translation_step(&config);
-            let node = spawn_embedded_node(base_url, &node_settings, processor, Some(translation));
-            let bazarr = build_bazarr_transcriber(dispatcher, &config)?;
-            (node, bazarr)
-        } else {
-            (None, None)
-        };
-
-        let mut state =
-            AppState::with_coordinator(coord).with_server_settings(config.server.clone());
-        if let Some(bazarr) = bazarr {
+        // One Dispatcher caps concurrent Bazarr transcriptions to the configured
+        // runner count.
+        let dispatcher = submate_whisper::Dispatcher::new(
+            config.server.concurrent_transcriptions.max(1) as usize,
+        );
+        let mut state = AppState::default();
+        if let Some(bazarr) = build_bazarr_transcriber(dispatcher, &config)? {
             state = state.with_bazarr(bazarr);
         }
         let router = app(state);
@@ -1161,13 +991,13 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
     })
 }
 
-/// Production [`BazarrTranscriber`]: the real whisper + translate pipeline,
-/// sharing the embedded node's [`Dispatcher`] so a Bazarr request waits for a
-/// runner under load rather than oversubscribing. Model-gated; without the
-/// feature [`build_bazarr_transcriber`] returns `None` and the routes degrade.
+/// Production [`BazarrTranscriber`]: the real whisper + translate pipeline over
+/// the shared [`Dispatcher`], so concurrent Bazarr requests share a runner cap.
+/// Model-gated; without the feature [`build_bazarr_transcriber`] returns `None`
+/// and the routes degrade gracefully.
 #[cfg(feature = "model")]
 struct WhisperBazarrTranscriber {
-    dispatcher: submate_node::Dispatcher,
+    dispatcher: submate_whisper::Dispatcher,
     model_path: String,
     backend: std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>,
     chunk_size: usize,
@@ -1184,7 +1014,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         opts: submate_server::BazarrTranscribeOpts,
         pcm: Vec<u8>,
     ) -> Result<submate_server::BazarrOutput, String> {
-        use submate_proto::OutputFormat;
+        use submate_types::OutputFormat;
         let samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
         let task = match opts.task {
             submate_types::TranscriptionTask::Translate => submate_whisper::Task::Translate,
@@ -1260,12 +1090,11 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
     }
 }
 
-/// Build the production Bazarr transcriber sharing `dispatcher` (and the same
-/// model + translation backend the embedded node uses). `None` without the
+/// Build the production Bazarr transcriber over `dispatcher`. `None` without the
 /// `model` feature — the `/bazarr/*` routes then degrade gracefully.
 #[cfg(feature = "model")]
 fn build_bazarr_transcriber(
-    dispatcher: submate_node::Dispatcher,
+    dispatcher: submate_whisper::Dispatcher,
     config: &Config,
 ) -> anyhow::Result<Option<std::sync::Arc<dyn submate_server::BazarrTranscriber>>> {
     Ok(Some(std::sync::Arc::new(WhisperBazarrTranscriber {
@@ -1289,44 +1118,10 @@ fn build_bazarr_transcriber(
 
 #[cfg(not(feature = "model"))]
 fn build_bazarr_transcriber(
-    _dispatcher: submate_node::Dispatcher,
+    _dispatcher: submate_whisper::Dispatcher,
     _config: &Config,
 ) -> anyhow::Result<Option<std::sync::Arc<dyn submate_server::BazarrTranscriber>>> {
     Ok(None)
-}
-
-/// `submate node --server <url>` — run a processing node that pulls work from a
-/// remote coordinator.
-fn cmd_node(config_file: Option<&Path>, args: NodeArgs) -> anyhow::Result<()> {
-    use submate_node::{Agent, Dispatcher};
-    use submate_proto::NodeRegister;
-    use submate_types::TranscriptionTask;
-
-    apply_vad_model(args.vad_model.as_deref());
-    let config = load_config(config_file)?;
-
-    let register = NodeRegister {
-        id: hostname_node_id(),
-        gpu: args.gpu,
-        runners: args.runners,
-        tasks: vec![TranscriptionTask::Transcribe, TranscriptionTask::Translate],
-    };
-
-    let runners = args.runners.max(1) as usize;
-    let dispatcher = Dispatcher::new(runners);
-    let processor = make_processor(Dispatcher::new(runners), &config.whisper.model);
-    // A standalone node may be handed translation jobs, so it builds the same
-    // translation post-step from its own config as the embedded node does.
-    let translation = build_translation_step(&config);
-    let agent = Agent::new(args.server.clone(), register, dispatcher, processor)
-        .with_translation(translation);
-
-    tracing::info!("submate node pulling work from {}", args.server);
-
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime
-        .block_on(agent.run())
-        .map_err(|e| anyhow::anyhow!("node agent stopped: {e}"))
 }
 
 /// `submate probe <file>` — list the file's audio tracks.
@@ -1577,42 +1372,6 @@ fn prompt_for_track(
     }
 }
 
-/// Build the node's [`JobProcessor`].
-///
-/// With the `model` feature it forwards to the real whisper.cpp pipeline via
-/// [`submate_node::whisper_processor`]. Without it — the default, model-less
-/// build — every job resolves to a failure string, so the pull loop, queue
-/// lifecycle, and HTTP transport are fully exercisable (and the CLI builds and
-/// tests) without loading a model.
-#[cfg(feature = "model")]
-fn make_processor(
-    dispatcher: submate_node::Dispatcher,
-    model: &str,
-) -> impl submate_node::JobProcessor + use<> {
-    submate_node::whisper_processor(dispatcher, model.to_string())
-}
-
-#[cfg(not(feature = "model"))]
-fn make_processor(
-    _dispatcher: submate_node::Dispatcher,
-    _model: &str,
-) -> impl submate_node::JobProcessor + use<> {
-    |_opts: &submate_proto::JobOpts, _pcm: Vec<u8>| async {
-        Err::<String, String>(
-            "model support not built in (rebuild with --features model)".to_string(),
-        )
-    }
-}
-
-/// A stable-ish node id for registration: the machine hostname, falling back to
-/// `"node"`. The coordinator only requires uniqueness per server.
-fn hostname_node_id() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "node".to_string())
-}
-
 #[cfg(test)]
 mod cli {
     use super::*;
@@ -1648,32 +1407,23 @@ mod cli {
         Cli::command().debug_assert();
     }
 
-    /// The subcommand surface is the expected set of user-facing commands, with
-    /// `node` present and no `worker` command.
+    /// The subcommand surface is the expected set of user-facing commands; the
+    /// distributed `node` command is gone with the queue.
     #[test]
     fn cli_help_subcommands() {
         let cmd = Cli::command();
         let names: Vec<&str> = cmd.get_subcommands().map(clap::Command::get_name).collect();
 
-        for expected in [
-            "transcribe",
-            "translate",
-            "server",
-            "node",
-            "probe",
-            "config",
-        ] {
+        for expected in ["transcribe", "translate", "server", "probe", "config"] {
             assert!(names.contains(&expected), "missing subcommand `{expected}`");
         }
-        assert!(
-            !names.contains(&"worker"),
-            "`worker` must be replaced by `node`"
-        );
+        for gone in ["node", "worker"] {
+            assert!(!names.contains(&gone), "`{gone}` must not be a subcommand");
+        }
     }
 
     /// The global `--config-file` flag is present and global, and the
-    /// subcommands carry their distinguishing flags (`node --server`,
-    /// `transcribe --sync`, `translate --target-lang`).
+    /// subcommands carry their distinguishing flags.
     #[test]
     fn cli_help_flags() {
         let cmd = Cli::command();
@@ -1691,16 +1441,10 @@ mod cli {
         };
 
         assert!(
-            sub("node")
-                .get_arguments()
-                .any(|a| a.get_long() == Some("server")),
-            "`node` must expose --server"
-        );
-        assert!(
             sub("transcribe")
                 .get_arguments()
-                .any(|a| a.get_long() == Some("sync")),
-            "`transcribe` must expose --sync"
+                .any(|a| a.get_long() == Some("initial-prompt")),
+            "`transcribe` must expose --initial-prompt"
         );
         assert!(
             sub("translate")
@@ -1778,19 +1522,19 @@ mod cli {
     #[test]
     fn output_format_extension_mapping() {
         for (fmt, ext, proto) in [
-            (OutputFormat::Srt, ".srt", submate_proto::OutputFormat::Srt),
-            (OutputFormat::Vtt, ".vtt", submate_proto::OutputFormat::Vtt),
-            (OutputFormat::Ass, ".ass", submate_proto::OutputFormat::Ass),
+            (OutputFormat::Srt, ".srt", submate_types::OutputFormat::Srt),
+            (OutputFormat::Vtt, ".vtt", submate_types::OutputFormat::Vtt),
+            (OutputFormat::Ass, ".ass", submate_types::OutputFormat::Ass),
             (
                 OutputFormat::Json,
                 ".json",
-                submate_proto::OutputFormat::Json,
+                submate_types::OutputFormat::Json,
             ),
-            (OutputFormat::Txt, ".txt", submate_proto::OutputFormat::Txt),
+            (OutputFormat::Txt, ".txt", submate_types::OutputFormat::Txt),
         ] {
             assert_eq!(fmt.extension(), ext, "wrong extension for {fmt:?}");
             assert_eq!(
-                submate_proto::OutputFormat::from(fmt),
+                submate_types::OutputFormat::from(fmt),
                 proto,
                 "wrong proto selector for {fmt:?}"
             );
@@ -2345,46 +2089,5 @@ mod cli {
             ),
             TrackDecision::Error(_)
         ));
-    }
-
-    /// In non-TTY mode the renderer emits plain `"<name>: NN%"` lines with no
-    /// ANSI/control codes, one per distinct whole-percent value (so a 0 -> 100
-    /// sweep is a readable log, not a flood and not a redrawn spinner line).
-    #[test]
-    fn progress_non_tty_plain() {
-        let mut buf: Vec<u8> = Vec::new();
-        let mut renderer = ProgressRenderer::Plain {
-            out: &mut buf,
-            name: "movie.mkv".to_string(),
-            last_pct: None,
-        };
-
-        // Drive a 0 -> 100 sweep; duplicate fractions for the same whole percent
-        // must collapse to a single line.
-        for pct in [0.0f32, 0.0, 0.25, 0.252, 0.5, 0.75, 1.0] {
-            renderer.update(pct);
-        }
-        renderer.finish();
-
-        let out = String::from_utf8(buf).expect("plain output is UTF-8");
-
-        // No terminal control codes: no ESC (`\x1b`) and no carriage returns.
-        assert!(
-            !out.contains('\x1b') && !out.contains('\r'),
-            "non-TTY output must be plain, got: {out:?}"
-        );
-
-        // One line per distinct rounded percentage, in order.
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(
-            lines,
-            vec![
-                "movie.mkv: 0%",
-                "movie.mkv: 25%",
-                "movie.mkv: 50%",
-                "movie.mkv: 75%",
-                "movie.mkv: 100%",
-            ],
-        );
     }
 }

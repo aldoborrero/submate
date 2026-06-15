@@ -11,30 +11,26 @@ name = "submate"
 path = "src/main.rs"
 
 [features]
-# `model` forwards the embedded/remote node's processor to submate-node's real
-# whisper.cpp inference (`whisper_processor`, itself gated on `submate-node/model`).
-# Off by default so the CLI builds and tests without a model — the node then runs
-# a processor that reports "model support not built in" for any job.
+# `model` forwards to submate-whisper's real whisper.cpp inference. Off by
+# default so the CLI builds and tests without a model — `transcribe` then reports
+# "model support not built in".
 default = []
-model = ["submate-node/model"]
-# GPU backends — build the CLI (and its embedded node) with whisper.cpp GPU
-# acceleration. Pick the one matching the host GPU; needs the backend toolkit at
-# build time. `nix build .#docker-gpu` builds with `cuda`.
-cuda = ["model", "submate-node/cuda"]
-metal = ["model", "submate-node/metal"]
-hipblas = ["model", "submate-node/hipblas"]
-vulkan = ["model", "submate-node/vulkan"]
-intel-sycl = ["model", "submate-node/intel-sycl"]
+model = ["submate-whisper/model"]
+# GPU backends — build the CLI with whisper.cpp GPU acceleration. Pick the one
+# matching the host GPU; needs the backend toolkit at build time.
+# `nix build .#docker-gpu` builds with `cuda`.
+cuda = ["model", "submate-whisper/cuda"]
+metal = ["model", "submate-whisper/metal"]
+hipblas = ["model", "submate-whisper/hipblas"]
+vulkan = ["model", "submate-whisper/vulkan"]
+intel-sycl = ["model", "submate-whisper/intel-sycl"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }
 submate-config = { path = "../submate-config" }
 submate-types = { path = "../submate-types" }
-submate-proto = { path = "../submate-proto" }
-submate-queue = { path = "../submate-queue" }
 submate-media = { path = "../submate-media" }
 submate-server = { path = "../submate-server" }
-submate-node = { path = "../submate-node" }
 submate-paths = { path = "../submate-paths" }
 submate-subtitle = { path = "../submate-subtitle" }
 submate-translate = { path = "../submate-translate" }
@@ -43,7 +39,6 @@ submate-bazarr = { path = "../submate-bazarr" }
 axum = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
-indicatif = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

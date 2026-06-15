@@ -20,18 +20,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-submate-node = { path = "../submate-node" }
-submate-proto = { path = "../submate-proto" }
-submate-queue = { path = "../submate-queue" }
 submate-types = { path = "../submate-types" }
-submate-media = { path = "../submate-media" }
-submate-config = { path = "../submate-config" }
 
 [dev-dependencies]
 parity = { path = "../parity" }
 http-body-util = "0.1"
-sha2 = { workspace = true }
-hex = { workspace = true }
 
 [lints]
 workspace = true
