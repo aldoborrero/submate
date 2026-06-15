@@ -358,6 +358,7 @@ pub fn resolve_decode_language(
 /// Runs `ffprobe -show_streams -select_streams a -of json <path>` and parses
 /// the result. Returns a [`ProbeError`] if `ffprobe` cannot be run, exits
 /// non-zero, or emits unparseable output.
+#[tracing::instrument(skip_all, fields(video = %video_path.display()))]
 pub async fn get_audio_tracks(video_path: &Path) -> Result<Vec<AudioTrack>, ProbeError> {
     let output = tokio::process::Command::new("ffprobe")
         .args(["-show_streams", "-select_streams", "a", "-of", "json"])
@@ -415,6 +416,7 @@ pub enum ExtractError {
 /// feeding whisper / streaming to nodes, both of which want this exact raw
 /// layout, so the `format` parameter is dropped rather than carried as dead
 /// generality.
+#[tracing::instrument(skip_all, fields(video = %video_path.display(), track = track_index))]
 pub async fn extract_audio_track_to_memory(
     video_path: &Path,
     track_index: usize,
@@ -463,6 +465,7 @@ pub enum PreparedAudio {
 /// Any failure (probe or extraction) is swallowed and degrades to
 /// [`PreparedAudio::Path`] with the original path, so transcription can still
 /// proceed against the whole file.
+#[tracing::instrument(skip_all, fields(file = %file_path.display(), selector = selector.unwrap_or("auto")))]
 pub async fn prepare_audio_for_transcription(
     file_path: &Path,
     selector: Option<&str>,

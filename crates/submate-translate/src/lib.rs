@@ -310,6 +310,7 @@ impl Backend for OpenAiCompatBackend {
         self.id
     }
 
+    #[tracing::instrument(skip_all, fields(backend = self.id, model = %self.model))]
     async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let request = CreateChatCompletionRequestArgs::default()
             .model(&self.model)
@@ -485,6 +486,7 @@ impl Backend for AnthropicBackend {
         "claude"
     }
 
+    #[tracing::instrument(skip_all, fields(backend = "claude", model = %self.model))]
     async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let body = ClaudeRequest {

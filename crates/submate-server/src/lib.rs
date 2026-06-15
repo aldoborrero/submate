@@ -250,6 +250,11 @@ fn empty_asr_response() -> Response {
 /// subtitle as the response body with the `Source` header on success, and an
 /// **empty body** on any failure (see [`empty_asr_response`]).
 #[cfg(feature = "bazarr")]
+#[tracing::instrument(
+    name = "bazarr_asr",
+    skip_all,
+    fields(task = %params.task, output = %params.output)
+)]
 async fn bazarr_asr(
     State(state): State<AppState>,
     Query(params): Query<AsrParams>,
@@ -261,6 +266,7 @@ async fn bazarr_asr(
     let Some(pcm) = read_audio_file(multipart).await else {
         return empty_asr_response();
     };
+    tracing::debug!(pcm_bytes = pcm.len(), "received asr request");
     let Some(output_format) = parse_output_format(&params.output) else {
         return empty_asr_response();
     };
@@ -294,6 +300,7 @@ async fn bazarr_asr(
 /// `{detected_language, language_code}` on success and the `{"Unknown","und"}`
 /// envelope on any failure (Bazarr maps a non-conforming reply to "undetected").
 #[cfg(feature = "bazarr")]
+#[tracing::instrument(name = "bazarr_detect_language", skip_all)]
 async fn bazarr_detect_language(
     State(state): State<AppState>,
     Query(_params): Query<DetectParams>,

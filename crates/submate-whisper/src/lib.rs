@@ -165,6 +165,7 @@ impl Dispatcher {
     /// `job` is the injectable blocking step: real callers invoke whisper.cpp
     /// inference; tests pass a closure that blocks on a barrier and bumps a
     /// counter to observe the cap.
+    #[tracing::instrument(skip_all, fields(runners = self.runners))]
     pub async fn transcribe_with<F>(&self, job: F) -> Result<WhisperResult, WhisperError>
     where
         F: FnOnce() -> Result<WhisperResult, WhisperError> + Send + 'static,
@@ -190,6 +191,7 @@ impl Dispatcher {
     /// permit is held across the whole inference call so concurrency stays
     /// capped at the runner count.
     #[cfg(feature = "model")]
+    #[tracing::instrument(skip_all, fields(runners = self.runners, samples = pcm.len()))]
     pub async fn transcribe_pcm(
         &self,
         model_path: impl Into<String>,
@@ -695,6 +697,7 @@ mod inference {
     /// The heavy whisper.cpp work runs on a blocking thread via
     /// [`tokio::task::spawn_blocking`], so this is safe to call from an async
     /// context without stalling the runtime.
+    #[tracing::instrument(skip_all, fields(samples = pcm.len()))]
     pub async fn transcribe_pcm(
         model_path: impl Into<String>,
         pcm: std::sync::Arc<[f32]>,
@@ -1180,31 +1183,25 @@ mod tests {
     #[cfg(feature = "model")]
     #[tokio::test]
     async fn transcribe_smoke() {
-        let model_path = match std::env::var("SUBMATE_WHISPER_MODEL") {
-            Ok(p) => p,
-            Err(_) => {
-                eprintln!("skipping transcribe_smoke: set SUBMATE_WHISPER_MODEL");
-                return;
-            }
+        let Ok(model_path) = std::env::var("SUBMATE_WHISPER_MODEL") else {
+            eprintln!("skipping transcribe_smoke: set SUBMATE_WHISPER_MODEL");
+            return;
         };
 
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/stablets/clipA/audio.f32"
         );
-        let bytes = match std::fs::read(fixture) {
-            Ok(b) => b,
-            Err(_) => {
-                eprintln!("skipping transcribe_smoke: fixture {fixture} missing");
-                return;
-            }
+        let Ok(bytes) = std::fs::read(fixture) else {
+            eprintln!("skipping transcribe_smoke: fixture {fixture} missing");
+            return;
         };
         let pcm: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
 
-        let result = transcribe_pcm(model_path, pcm, TranscribeOptions::default())
+        let result = transcribe_pcm(model_path, pcm.into(), TranscribeOptions::default())
             .await
             .expect("transcription should succeed");
 
