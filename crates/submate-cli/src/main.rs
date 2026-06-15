@@ -883,8 +883,9 @@ async fn transcribe_one(
         PreparedAudio, extract_audio_track_to_memory, prepare_audio_for_transcription,
     };
 
-    // Extract the selected audio track to mono 16 kHz f32 PCM.
-    let pcm = match prepare_audio_for_transcription(file, selector).await {
+    // Extract the selected audio track to mono 16 kHz f32 PCM. The samples are
+    // shared (Arc) with the assembly stage rather than deep-copied.
+    let pcm: std::sync::Arc<[f32]> = match prepare_audio_for_transcription(file, selector).await {
         PreparedAudio::Pcm(bytes) => submate_bazarr::pcm_s16le_to_f32(&bytes),
         PreparedAudio::Path(path) => {
             let bytes = extract_audio_track_to_memory(&path, 0)
@@ -892,7 +893,8 @@ async fn transcribe_one(
                 .map_err(|e| anyhow::anyhow!("audio extraction failed: {e}"))?;
             submate_bazarr::pcm_s16le_to_f32(&bytes)
         }
-    };
+    }
+    .into();
 
     let raw = dispatcher
         .transcribe_pcm(
@@ -1054,7 +1056,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         opts: submate_server::BazarrTranscribeOpts,
         pcm: Vec<u8>,
     ) -> Result<submate_server::BazarrOutput, String> {
-        let samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
+        let samples: std::sync::Arc<[f32]> = submate_bazarr::pcm_s16le_to_f32(&pcm).into();
         let task = match opts.task {
             submate_types::TranscriptionTask::Translate => submate_whisper::Task::Translate,
             submate_types::TranscriptionTask::Transcribe => submate_whisper::Task::Transcribe,
@@ -1097,7 +1099,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         let options = self.decode.clone();
         let raw = self
             .dispatcher
-            .transcribe_pcm(self.model_path.clone(), samples, options)
+            .transcribe_pcm(self.model_path.clone(), samples.into(), options)
             .await
             .map_err(|e| e.to_string())?;
         let detected = submate_bazarr::detect_language(Some(&raw.language));

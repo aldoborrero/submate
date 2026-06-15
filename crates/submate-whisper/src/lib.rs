@@ -193,7 +193,7 @@ impl Dispatcher {
     pub async fn transcribe_pcm(
         &self,
         model_path: impl Into<String>,
-        pcm: Vec<f32>,
+        pcm: Arc<[f32]>,
         options: TranscribeOptions,
     ) -> Result<WhisperResult, WhisperError> {
         install_whisper_logging();
@@ -697,7 +697,7 @@ mod inference {
     /// context without stalling the runtime.
     pub async fn transcribe_pcm(
         model_path: impl Into<String>,
-        pcm: Vec<f32>,
+        pcm: std::sync::Arc<[f32]>,
         options: TranscribeOptions,
     ) -> Result<WhisperResult, WhisperError> {
         let model_path = model_path.into();
