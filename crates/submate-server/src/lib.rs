@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Multipart, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Query, State},
     http::{HeaderName, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -153,6 +153,12 @@ fn bazarr_router() -> Router<AppState> {
     Router::new()
         .route("/bazarr/asr", post(bazarr_asr))
         .route("/bazarr/detect-language", post(bazarr_detect_language))
+        // Bazarr uploads the whole extracted audio stream (16 kHz mono PCM) as a
+        // multipart `audio_file`. A full episode/movie is tens to hundreds of MB,
+        // far past axum's 2 MB default body limit — without this, large uploads
+        // are rejected and the handler sees no audio, returning an empty subtitle
+        // instantly (Bazarr logs "Completed in 0:00:00" + "subtitles isn't valid").
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
 }
 
 /// `Source` response header the `/bazarr/asr` handler sets.
