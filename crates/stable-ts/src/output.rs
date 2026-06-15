@@ -1,10 +1,10 @@
-//! Stage D — SRT/VTT output formatting.
+//! SRT/VTT output formatting.
 //!
-//! Port of the slice of `stable_whisper.text_output` submate's pipeline emits
-//! at the end: [`to_srt_vtt`], the [`sec2srt`] / [`sec2vtt`] timestamp
-//! formatters, and the word-level highlight / cue-timing tagging (the SRT
-//! `<font>` path via `words2segments`, the VTT `<timestamp>`-marker path via
-//! `to_vtt_word_level_segments`) with the inter-word gap filling upstream does.
+//! The slice of output the pipeline emits at the end: [`to_srt_vtt`], the
+//! [`sec2srt`] / [`sec2vtt`] timestamp formatters, and the word-level highlight
+//! / cue-timing tagging (the SRT `<font>` path via `words2segments`, the VTT
+//! `<timestamp>`-marker path via `to_vtt_word_level_segments`) with the
+//! inter-word gap filling upstream does.
 //!
 //! ## Parity scope
 //!
@@ -44,14 +44,14 @@ const SRT_TAG: (&str, &str) = ("<font color=\"#00ff00\">", "</font>");
 /// `min_dur` default `result_to_srt_vtt` passes to `apply_min_dur`.
 ///
 /// Kept for documentation parity; the falsifier exercises the post-pipeline
-/// final result whose segments already exceed this, and the ported
-/// [`to_srt_vtt`] takes its segments verbatim from the [`WhisperResult`] (the
-/// `apply_min_dur` merge pass is its own stage, not part of D).
+/// final result whose segments already exceed this, and [`to_srt_vtt`] takes
+/// its segments verbatim from the [`WhisperResult`] (the `apply_min_dur` merge
+/// pass is its own stage, not part of output formatting).
 pub const DEFAULT_MIN_DUR: f64 = 0.02;
 
-/// `sec2hhmmss`: split seconds into `(hh, mm, ss)` the way Python's nested
-/// `divmod` does, keeping `ss` (and the integer-valued `hh`/`mm`) as floats so
-/// the downstream format specifiers round identically.
+/// `sec2hhmmss`: split seconds into `(hh, mm, ss)` via nested `divmod`, keeping
+/// `ss` (and the integer-valued `hh`/`mm`) as floats so the downstream format
+/// specifiers round identically.
 fn sec2hhmmss(seconds: f64) -> (f64, f64, f64) {
     let mm = seconds.div_euclid(60.0);
     let ss = seconds.rem_euclid(60.0);
@@ -92,7 +92,7 @@ pub fn sec2ass(seconds: f64) -> String {
 
 /// ASS header: the `[Script Info]`, `[V4+ Styles]`, and `[Events]` sections
 /// upstream emits verbatim, ending with the blank line before the first
-/// `Dialogue`. Matches `result_to_ass`'s default-style branch exactly.
+/// `Dialogue`. Matches the default-style branch exactly.
 const ASS_HEADER: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 384\nPlayResY: 288\nScaledBorderAndShadow: yes\n\n\
 [V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
 Style: Default,Arial,24,&H00ff00,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,0\n\n\
@@ -144,8 +144,8 @@ fn segment2vttblock(start: f64, end: f64, text: &str) -> String {
 
 /// A flattened output cue: `start`/`end` timing plus the (already tagged) text.
 ///
-/// Mirrors the `dict(text=..., start=..., end=...)` rows the upstream
-/// `to_word_level_*` / `words2segments` helpers build before block assembly.
+/// One `{text, start, end}` row, as the `to_word_level_*` / `words2segments`
+/// helpers build before block assembly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutCue {
     /// Cue text (may carry highlight tags / cue-timing markers).
@@ -302,7 +302,7 @@ pub fn to_srt_vtt(result: &WhisperResult, word_level: bool, vtt: bool) -> String
 /// `"\n"`. Returns the joined string (no trailing newline), matching
 /// `result_to_any` when `filepath is None`.
 ///
-/// The word-level (karaoke) path is a separate future item.
+/// The word-level (karaoke) path is not implemented.
 #[must_use]
 pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
     if word_level {
@@ -318,18 +318,18 @@ pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
 }
 
 /// `OutputFormat.JSON`: serialize the full result `to_dict()` to a compact
-/// single-line JSON string, matching submate's `json.dumps(result.to_dict())`.
+/// single-line JSON string.
 ///
 /// Value-parity (not byte-parity): `serde_json` emits canonical separators
-/// (`,`/`:`) and may order keys differently from Python's `json.dumps`, but the
-/// emitted string parses back to the same `Value` as the golden `to_dict()`.
+/// (`,`/`:`) and may order keys differently from the golden, but the emitted
+/// string parses back to the same `Value` as the golden `to_dict()`.
 #[must_use]
 pub fn to_json(result: &WhisperResult) -> String {
     serde_json::to_string(&result.to_dict()).expect("to_dict() Value always serializes")
 }
 
 /// `OutputFormat.TXT`: the result's full transcript text (concatenated segment
-/// text, no timestamps), matching submate's plain-text export.
+/// text, no timestamps).
 #[must_use]
 pub fn to_txt(result: &WhisperResult) -> String {
     result.text()

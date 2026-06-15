@@ -1,4 +1,4 @@
-//! Parity tests against golden fixtures captured.
+//! Parity tests against golden fixtures.
 
 use parity::{assert_str_eq, golden};
 use serde_json::Value;

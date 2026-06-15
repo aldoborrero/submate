@@ -1,9 +1,9 @@
-//! Port of stable-ts's regroup DSL parser (`WhisperResult.parse_regroup_algo`).
+//! The regroup DSL parser.
 //!
 //! The regroup algorithm is configured by a single string such as
 //! `"cm_sl=84_sl=42++++++1"`. [`parse_regroup_algo`] turns that string into an
 //! ordered list of [`RegroupOp`]s — each a method name plus the keyword
-//! arguments to call it with — which the apply stage (B2) then binds to the
+//! arguments to call it with — which the apply stage then binds to the
 //! actual regroup methods on [`crate::WhisperResult`].
 //!
 //! ## Grammar
@@ -35,15 +35,14 @@ use serde_json::{Map, Number, Value};
 
 /// The upstream default expansion for the `da` ("default algorithm") code.
 ///
-/// Mirrors `parse_regroup_algo`'s `default_calls`; substituted in place of any
-/// `da` token before the per-operation parse.
+/// Substituted in place of any `da` token before the per-operation parse.
 const DEFAULT_ALGO: &str = "cm_sp=,* /，_sg=.5_mg=.3+3_sp=.* /。/?/？";
 
 /// One parsed regroup operation: the resolved method name and its keyword args.
 ///
 /// `kwargs` preserves the order arguments were bound in (the method's parameter
 /// order), and each value is the [`str_to_valid_type`]-coerced JSON form so the
-/// emitted parity JSON matches Python's `to_dict()`-style numbers exactly.
+/// emitted parity JSON matches the golden's number forms exactly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegroupOp {
     /// The full method name (e.g. `clamp_max`, `split_by_length`).
@@ -53,7 +52,7 @@ pub struct RegroupOp {
 }
 
 impl RegroupOp {
-    /// Emit `{"method": ..., "kwargs": {...}}`, matching the capture script.
+    /// Emit `{"method": ..., "kwargs": {...}}`.
     #[must_use]
     pub fn to_value(&self) -> Value {
         let mut kwargs = Map::new();
@@ -92,9 +91,8 @@ impl std::error::Error for UnknownMethod {}
 
 /// The method-code table: `(code, full_name, positional_parameter_names)`.
 ///
-/// Mirrors the `methods` dict in `parse_regroup_algo`, in declaration order.
-/// The parameter names are the methods' positional parameters (after `self`),
-/// used to bind the positional `+`-split arguments to keyword names.
+/// The parameter names are the methods' positional parameters, used to bind the
+/// positional `+`-split arguments to keyword names.
 const METHODS: &[(&str, &str, &[&str])] = &[
     ("sg", "split_by_gap", &["max_gap", "lock", "newline"]),
     (
@@ -227,7 +225,7 @@ const METHODS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Coerce one DSL argument to its value, mirroring `utils.str_to_valid_type`.
+/// Coerce one DSL argument to its value.
 ///
 /// * empty string → [`None`] ("absent" — dropped when binding kwargs);
 /// * contains `/` → a list value, where each `/`-segment that contains `*` is
@@ -266,10 +264,10 @@ pub fn str_to_valid_type(val: &str) -> Option<Value> {
 
 /// Parse a regroup algorithm string into an ordered list of [`RegroupOp`]s.
 ///
-/// Mirrors `WhisperResult.parse_regroup_algo`: split on `_`, expand any `da`
-/// token to [`DEFAULT_ALGO`], then for each operation split off the method code
-/// and `+`-split/coerce its arguments and bind them positionally onto the
-/// method's parameter names (dropping "absent" empty slots).
+/// Split on `_`, expand any `da` token to [`DEFAULT_ALGO`], then for each
+/// operation split off the method code and `+`-split/coerce its arguments and
+/// bind them positionally onto the method's parameter names (dropping "absent"
+/// empty slots).
 ///
 /// Returns [`UnknownMethod`] if any operation names a code not in [`METHODS`].
 pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownMethod> {
@@ -325,19 +323,19 @@ pub fn parse_regroup_algo(regroup_algo: &str) -> Result<Vec<RegroupOp>, UnknownM
 }
 
 // ---------------------------------------------------------------------------
-// B2 apply stage: bind a parsed `RegroupOp` to the regroup method it names and
-// run it against a `WhisperResult`. The split/merge apply family that parses in
-// B1 is implemented here — `clamp_max`, `split_by_length`, `split_by_duration`,
-// `split_by_gap`, `split_by_punctuation`, `merge_by_gap`, `merge_by_punctuation`,
-// and `merge_all_segments` — along with the segment-split/merge helpers they
-// share. Other method codes parse fine (B1) but are not yet runnable here and
-// return `UnsupportedMethod`.
+// Apply stage: bind a parsed `RegroupOp` to the regroup method it names and run
+// it against a `WhisperResult`. The split/merge apply family is implemented
+// here — `clamp_max`, `split_by_length`, `split_by_duration`, `split_by_gap`,
+// `split_by_punctuation`, `merge_by_gap`, `merge_by_punctuation`, and
+// `merge_all_segments` — along with the segment-split/merge helpers they share.
+// Other method codes parse fine but are not runnable here and return
+// `UnsupportedMethod`.
 // ---------------------------------------------------------------------------
 
 use crate::model::{Segment, WhisperResult, WordTiming};
 
-/// Error returned when [`apply_regroup_op`] is handed a method that B2 parses
-/// but does not yet execute (everything outside the split/merge family —
+/// Error returned when [`apply_regroup_op`] is handed a method that parses but
+/// does not execute (everything outside the split/merge family —
 /// `clamp_max`/`split_by_length`/`split_by_duration`/`split_by_gap`/
 /// `split_by_punctuation`/`merge_by_gap`/`merge_by_punctuation`/
 /// `merge_all_segments`).
@@ -358,9 +356,8 @@ impl std::error::Error for UnsupportedMethod {}
 
 /// Apply every op in a parsed regroup list to `result`, in order.
 ///
-/// Mirrors the loop `WhisperResult.regroup` runs over `parse_regroup_algo`'s
-/// output: each op is a method name plus the bound kwargs, called on the
-/// result in turn. Returns [`UnsupportedMethod`] for any op B2 doesn't yet run.
+/// Each op is a method name plus the bound kwargs, called on the result in
+/// turn. Returns [`UnsupportedMethod`] for any op that isn't runnable.
 pub fn apply_regroup(
     result: &mut WhisperResult,
     ops: &[RegroupOp],
@@ -380,8 +377,8 @@ pub fn apply_regroup_op(
 ) -> Result<(), UnsupportedMethod> {
     match op.method.as_str() {
         "clamp_max" => {
-            // Defaults from `WhisperResult.clamp_max`: medium_factor=2.5,
-            // max_dur=None, clip_start=None, verbose=False.
+            // Defaults: medium_factor=2.5, max_dur=None, clip_start=None,
+            // verbose=False.
             let medium_factor = op.kwarg_f64("medium_factor").unwrap_or(Some(2.5));
             let max_dur = op.kwarg_f64("max_dur").unwrap_or(None);
             let clip_start = op.kwarg_bool("clip_start").unwrap_or(None);
@@ -389,9 +386,8 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "split_by_length" => {
-            // Defaults from `WhisperResult.split_by_length`: max_chars=None,
-            // max_words=None, even_split=True, force_len=False, lock=False,
-            // include_lock=False, newline=False.
+            // Defaults: max_chars=None, max_words=None, even_split=True,
+            // force_len=False, lock=False, include_lock=False, newline=False.
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
             let even_split = op
@@ -429,11 +425,11 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "split_by_duration" => {
-            // Defaults from `WhisperResult.split_by_duration`: max_dur=None,
-            // even_split=True, force_len=False, lock=False, include_lock=False,
-            // newline=False. `max_dur` is the lone required positional upstream;
-            // when absent the parsed `sd` op simply carries no `max_dur` kwarg,
-            // mirroring the `sl` arm's optional-`max_chars` handling.
+            // Defaults: max_dur=None, even_split=True, force_len=False,
+            // lock=False, include_lock=False, newline=False. `max_dur` is the
+            // lone required positional; when absent the parsed `sd` op simply
+            // carries no `max_dur` kwarg, mirroring the `sl` arm's
+            // optional-`max_chars` handling.
             let max_dur = op.kwarg_value("max_dur");
             let even_split = op
                 .kwarg_bool("even_split")
@@ -469,10 +465,10 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "split_by_gap" => {
-            // Defaults from `WhisperResult.split_by_gap`: max_gap=0.1, lock=False,
-            // newline=False. `max_gap` is kept as the raw coerced JSON value so the
-            // history string reproduces the DSL form (e.g. `0.5`) exactly, mirroring
-            // the `split_by_duration` arm's handling of `max_dur`.
+            // Defaults: max_gap=0.1, lock=False, newline=False. `max_gap` is
+            // kept as the raw coerced JSON value so the history string
+            // reproduces the DSL form (e.g. `0.5`) exactly, mirroring the
+            // `split_by_duration` arm's handling of `max_dur`.
             let max_gap = op.kwarg_value("max_gap");
             let lock = op
                 .kwarg_bool("lock")
@@ -493,9 +489,9 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "split_by_punctuation" => {
-            // Defaults from `WhisperResult.split_by_punctuation`: lock=False,
-            // newline=False, min_words=None, min_chars=None, min_dur=None.
-            // `punctuation` is required upstream; absent here leaves the op a no-op.
+            // Defaults: lock=False, newline=False, min_words=None,
+            // min_chars=None, min_dur=None. `punctuation` is required; absent
+            // here leaves the op a no-op.
             let punctuation = op.kwarg_value("punctuation");
             let lock = op
                 .kwarg_bool("lock")
@@ -522,11 +518,11 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "merge_by_gap" => {
-            // Defaults from `WhisperResult.merge_by_gap`: min_gap=0.1,
-            // max_words=None, max_chars=None, is_sum_max=False, lock=False,
-            // newline=False. `min_gap` is kept as the raw coerced JSON value so
-            // the history string reproduces the DSL form (e.g. `0.3`) exactly,
-            // mirroring the `split_by_gap` arm's handling of `max_gap`.
+            // Defaults: min_gap=0.1, max_words=None, max_chars=None,
+            // is_sum_max=False, lock=False, newline=False. `min_gap` is kept as
+            // the raw coerced JSON value so the history string reproduces the
+            // DSL form (e.g. `0.3`) exactly, mirroring the `split_by_gap` arm's
+            // handling of `max_gap`.
             let min_gap = op.kwarg_value("min_gap");
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
@@ -556,10 +552,9 @@ pub fn apply_regroup_op(
             Ok(())
         }
         "merge_by_punctuation" => {
-            // Defaults from `WhisperResult.merge_by_punctuation`: max_words=None,
-            // max_chars=None, is_sum_max=False, lock=False, newline=False.
-            // `punctuation` is required upstream; absent here leaves the op a
-            // no-op (mirroring the `split_by_punctuation` arm).
+            // Defaults: max_words=None, max_chars=None, is_sum_max=False,
+            // lock=False, newline=False. `punctuation` is required; absent here
+            // leaves the op a no-op (mirroring the `split_by_punctuation` arm).
             let punctuation = op.kwarg_value("punctuation");
             let max_words = op.kwarg_usize("max_words").unwrap_or(None);
             let max_chars = op.kwarg_usize("max_chars").unwrap_or(None);
@@ -628,8 +623,8 @@ impl RegroupOp {
     }
 }
 
-/// Format an `f64` the way Python's `str()`/`f'{x}'` does for the small floats
-/// the regroup history records (e.g. `2.5` -> `"2.5"`, `3.0` -> `"3.0"`).
+/// Format an `f64` the way the regroup history records small floats
+/// (e.g. `2.5` -> `"2.5"`, `3.0` -> `"3.0"`).
 fn py_float(v: f64) -> String {
     if v == v.trunc() && v.is_finite() {
         format!("{v:.1}")
@@ -638,9 +633,9 @@ fn py_float(v: f64) -> String {
     }
 }
 
-/// Format a coerced DSL numeric value for a history entry the way Python's
-/// `f'{x}'` does. An integer (`sd=4`) renders as `4`; a float (`sd=4.0`) renders
-/// via [`py_float`] (`4.0`). Falls back to the value's display for any non-number.
+/// Format a coerced DSL numeric value for a history entry. An integer (`sd=4`)
+/// renders as `4`; a float (`sd=4.0`) renders via [`py_float`] (`4.0`). Falls
+/// back to the value's display for any non-number.
 fn py_number(v: &Value) -> String {
     match v {
         Value::Number(n) if n.is_f64() => n.as_f64().map_or_else(|| n.to_string(), py_float),
@@ -649,8 +644,8 @@ fn py_number(v: &Value) -> String {
     }
 }
 
-/// Append one regroup op's encoded form to the history string, mirroring the
-/// `if self._regroup_history: += '_'` join upstream uses.
+/// Append one regroup op's encoded form to the history string, joining onto any
+/// prior entry with `_`.
 fn push_history(result: &mut WhisperResult, entry: &str) {
     if !result.regroup_history.is_empty() {
         result.regroup_history.push('_');
@@ -658,12 +653,12 @@ fn push_history(result: &mut WhisperResult, entry: &str) {
     result.regroup_history.push_str(entry);
 }
 
-/// `WhisperResult.has_words`: any segment carries word timings.
+/// True when any segment carries word timings.
 fn result_has_words(result: &WhisperResult) -> bool {
     result.segments.iter().any(Segment::has_words)
 }
 
-/// Port of `WhisperResult.clamp_max` (median-based per-segment duration clamp).
+/// Median-based per-segment word-duration clamp.
 ///
 /// Clamps word durations above `medium_factor * median_word_duration` per
 /// segment (only when the segment has >1 word), falling back to / additionally
@@ -743,8 +738,8 @@ fn clamp_max(
     push_history(result, &entry);
 }
 
-/// Port of `WordTiming.clamp_max`: shrink a word whose duration exceeds
-/// `max_dur` by moving its start (`clip_start = true`) or end inward.
+/// Shrink a word whose duration exceeds `max_dur` by moving its start
+/// (`clip_start = true`) or end inward.
 fn clamp_word(word: &mut WordTiming, max_dur: f64, clip_start: bool) {
     if word.duration() > max_dur {
         if clip_start {
@@ -755,8 +750,7 @@ fn clamp_word(word: &mut WordTiming, max_dur: f64, clip_start: bool) {
     }
 }
 
-/// Bound parameters for [`split_by_length`], matching the Python method's
-/// keyword arguments.
+/// Bound parameters for [`split_by_length`].
 struct SplitByLength {
     max_chars: Option<usize>,
     max_words: Option<usize>,
@@ -767,8 +761,8 @@ struct SplitByLength {
     newline: bool,
 }
 
-/// Port of `WhisperResult.split_by_length`: split (or insert line breaks in)
-/// any segment exceeding `max_chars`/`max_words`.
+/// Split (or insert line breaks in) any segment exceeding
+/// `max_chars`/`max_words`.
 fn split_by_length(result: &mut WhisperResult, p: SplitByLength) {
     if p.force_len {
         // Upstream collapses everything into one segment first so each piece
@@ -795,9 +789,9 @@ fn split_by_length(result: &mut WhisperResult, p: SplitByLength) {
     push_history(result, &entry);
 }
 
-/// Bound parameters for [`split_by_duration`], matching the Python method's
-/// keyword arguments. `max_dur` is kept as the raw coerced JSON value so the
-/// history string reproduces the DSL form (int vs float) exactly.
+/// Bound parameters for [`split_by_duration`]. `max_dur` is kept as the raw
+/// coerced JSON value so the history string reproduces the DSL form (int vs
+/// float) exactly.
 struct SplitByDuration {
     max_dur: Option<Value>,
     even_split: bool,
@@ -807,16 +801,16 @@ struct SplitByDuration {
     newline: bool,
 }
 
-/// Port of `WhisperResult.split_by_duration`: split (or insert line breaks in)
-/// any segment whose total word duration exceeds `max_dur`.
+/// Split (or insert line breaks in) any segment whose total word duration
+/// exceeds `max_dur`.
 ///
 /// Same shape as [`split_by_length`] — it runs the shared `split_segments`
 /// driver with `get_duration_indices` as the per-segment index function, then
 /// appends the `sd=...` history entry.
 fn split_by_duration(result: &mut WhisperResult, p: SplitByDuration) {
     if p.force_len {
-        // `merge_all_segments()` is now implemented; mirror split_by_length by
-        // collapsing first so each piece gets a constant length.
+        // Mirror split_by_length: collapse everything into one segment first so
+        // each piece gets a constant length.
         merge_all_segments_inner(result);
     }
     let max_dur = p.max_dur.as_ref().and_then(Value::as_f64);
@@ -839,9 +833,8 @@ fn split_by_duration(result: &mut WhisperResult, p: SplitByDuration) {
     push_history(result, &entry);
 }
 
-/// Port of `Segment.get_duration_indices` (stable-ts 2.17.5): the word indices
-/// after which to split so each piece's total word duration stays near
-/// `max_dur`.
+/// The word indices after which to split so each piece's total word duration
+/// stays near `max_dur` (stable-ts 2.17.5 `get_duration_indices`).
 ///
 /// Returns no splits when the segment is wordless, `max_dur` is absent, or the
 /// segment's total duration is already within `max_dur`. With `even_split` the
@@ -900,17 +893,17 @@ fn get_duration_indices(
     }
 }
 
-/// Bound parameters for [`split_by_gap`], matching the Python method's keyword
-/// arguments. `max_gap` is kept as the raw coerced JSON value so the history
-/// string reproduces the DSL form (int vs float) exactly.
+/// Bound parameters for [`split_by_gap`]. `max_gap` is kept as the raw coerced
+/// JSON value so the history string reproduces the DSL form (int vs float)
+/// exactly.
 struct SplitByGap {
     max_gap: Option<Value>,
     lock: bool,
     newline: bool,
 }
 
-/// Port of `WhisperResult.split_by_gap`: split (or insert line breaks in) any
-/// segment where the gap between two adjacent words exceeds `max_gap`.
+/// Split (or insert line breaks in) any segment where the gap between two
+/// adjacent words exceeds `max_gap`.
 ///
 /// Same shape as [`split_by_length`]/[`split_by_duration`] — it runs the shared
 /// `split_segments` driver with `get_gap_indices` as the per-segment index
@@ -941,9 +934,9 @@ fn split_by_gap(result: &mut WhisperResult, p: SplitByGap) {
     push_history(result, &entry);
 }
 
-/// Port of `Segment.get_gap_indices` (stable-ts 2.19.1): the word indices after
-/// which to split where the gap between word `i`'s end and word `i+1`'s start
-/// exceeds `max_gap`, excluding locked boundaries.
+/// The word indices after which to split where the gap between word `i`'s end
+/// and word `i+1`'s start exceeds `max_gap`, excluding locked boundaries
+/// (stable-ts 2.19.1 `get_gap_indices`).
 fn get_gap_indices(seg: &Segment, max_gap: f64) -> Vec<usize> {
     let Some(words) = seg.words.as_ref() else {
         return Vec::new();
@@ -962,9 +955,8 @@ fn get_gap_indices(seg: &Segment, max_gap: f64) -> Vec<usize> {
         .collect()
 }
 
-/// Bound parameters for [`split_by_punctuation`], matching the Python method's
-/// keyword arguments. `punctuation` is kept as the raw coerced JSON value so the
-/// history string reproduces the DSL form exactly.
+/// Bound parameters for [`split_by_punctuation`]. `punctuation` is kept as the
+/// raw coerced JSON value so the history string reproduces the DSL form exactly.
 struct SplitByPunctuation {
     punctuation: Option<Value>,
     lock: bool,
@@ -983,9 +975,9 @@ enum PunctToken {
     Pair(String, String),
 }
 
-/// Port of `WhisperResult.split_by_punctuation`: split (or insert line breaks
-/// in) segments at words bordering `punctuation`, optionally gated so only
-/// segments meeting `min_words`/`min_chars`/`min_dur` are touched.
+/// Split (or insert line breaks in) segments at words bordering `punctuation`,
+/// optionally gated so only segments meeting `min_words`/`min_chars`/`min_dur`
+/// are touched.
 fn split_by_punctuation(result: &mut WhisperResult, p: SplitByPunctuation) {
     let Some(punct_value) = p.punctuation.as_ref() else {
         return;
@@ -1053,9 +1045,8 @@ fn parse_punctuation(value: &Value) -> Vec<PunctToken> {
     }
 }
 
-/// Port of `Segment.get_punctuation_indices` (stable-ts 2.19.1): the word
-/// indices after which to split given the punctuation tokens, excluding locked
-/// boundaries.
+/// The word indices after which to split given the punctuation tokens,
+/// excluding locked boundaries (stable-ts 2.19.1 `get_punctuation_indices`).
 fn get_punctuation_indices(seg: &Segment, tokens: &[PunctToken]) -> Vec<usize> {
     let Some(words) = seg.words.as_ref() else {
         return Vec::new();
@@ -1124,9 +1115,9 @@ fn punct_str(tokens: &[PunctToken]) -> String {
         .join("/")
 }
 
-/// Bound parameters for [`merge_by_gap`], matching the Python method's keyword
-/// arguments. `min_gap` is kept as the raw coerced JSON value so the history
-/// string reproduces the DSL form (int vs float) exactly.
+/// Bound parameters for [`merge_by_gap`]. `min_gap` is kept as the raw coerced
+/// JSON value so the history string reproduces the DSL form (int vs float)
+/// exactly.
 struct MergeByGap {
     min_gap: Option<Value>,
     max_words: Option<usize>,
@@ -1136,8 +1127,8 @@ struct MergeByGap {
     newline: bool,
 }
 
-/// Port of `WhisperResult.merge_by_gap`: merge a segment into the next when the
-/// gap between them is `<= min_gap`, subject to the `max_words`/`max_chars` cap.
+/// Merge a segment into the next when the gap between them is `<= min_gap`,
+/// subject to the `max_words`/`max_chars` cap.
 ///
 /// Computes the merge-candidate boundary indices with `get_merge_gap_indices`
 /// (the result-level `get_gap_indices` for merging), runs the shared
@@ -1179,9 +1170,8 @@ fn merge_by_gap(result: &mut WhisperResult, p: MergeByGap) {
     push_history(result, &entry);
 }
 
-/// Bound parameters for [`merge_by_punctuation`], matching the Python method's
-/// keyword arguments. `punctuation` is kept as the raw coerced JSON value so the
-/// history string reproduces the DSL form exactly.
+/// Bound parameters for [`merge_by_punctuation`]. `punctuation` is kept as the
+/// raw coerced JSON value so the history string reproduces the DSL form exactly.
 struct MergeByPunctuation {
     punctuation: Option<Value>,
     max_words: Option<usize>,
@@ -1191,9 +1181,9 @@ struct MergeByPunctuation {
     newline: bool,
 }
 
-/// Port of `WhisperResult.merge_by_punctuation`: merge across a segment boundary
-/// when the earlier segment ends with (or the later begins with) one of the
-/// `punctuation` tokens, subject to the `max_words`/`max_chars` cap.
+/// Merge across a segment boundary when the earlier segment ends with (or the
+/// later begins with) one of the `punctuation` tokens, subject to the
+/// `max_words`/`max_chars` cap.
 ///
 /// Computes the merge-candidate boundary indices with
 /// `get_merge_punctuation_indices` (the result-level `get_punctuation_indices`
@@ -1241,20 +1231,18 @@ fn max_cap_str(cap: Option<usize>) -> String {
         .map_or(String::new(), |n| n.to_string())
 }
 
-/// The `max_words`/`max_chars`/`is_sum_max` cap that gates each merge, mirroring
-/// the corresponding kwargs of `WhisperResult._merge_segments`.
+/// The `max_words`/`max_chars`/`is_sum_max` cap that gates each merge.
 struct MergeCaps {
     max_words: Option<usize>,
     max_chars: Option<usize>,
     is_sum_max: bool,
 }
 
-/// Port of `WhisperResult.get_locked_indices` (the result-level overload used
-/// for merging): boundary `i` is locked when segment `i+1`'s left edge or
-/// segment `i`'s right edge is locked.
+/// The result-level locked-index check used for merging: boundary `i` is locked
+/// when segment `i+1`'s left edge or segment `i`'s right edge is locked.
 fn get_segment_locked_indices(result: &WhisperResult) -> Vec<usize> {
-    // Python zips segments[1:] with segments[:-1]; index i covers the boundary
-    // after segment i (between segment i and segment i+1).
+    // Index i covers the boundary after segment i (between segment i and
+    // segment i+1).
     if result.segments.len() < 2 {
         return Vec::new();
     }
@@ -1263,9 +1251,8 @@ fn get_segment_locked_indices(result: &WhisperResult) -> Vec<usize> {
         .collect()
 }
 
-/// Port of `WhisperResult.get_gap_indices` (for merging): boundary indices where
-/// the gap between segment `i`'s end and segment `i+1`'s start is `<= min_gap`,
-/// excluding locked boundaries.
+/// Merge-candidate boundary indices where the gap between segment `i`'s end and
+/// segment `i+1`'s start is `<= min_gap`, excluding locked boundaries.
 fn get_merge_gap_indices(result: &WhisperResult, min_gap: f64) -> Vec<usize> {
     if result.segments.len() < 2 {
         return Vec::new();
@@ -1282,9 +1269,9 @@ fn get_merge_gap_indices(result: &WhisperResult, min_gap: f64) -> Vec<usize> {
     indices
 }
 
-/// Port of `WhisperResult.get_punctuation_indices` (for merging): boundary
-/// indices where the earlier segment's text ends with (or, for a plain token,
-/// the later begins with) a punctuation token, excluding locked boundaries.
+/// Merge-candidate boundary indices where the earlier segment's text ends with
+/// (or, for a plain token, the later begins with) a punctuation token,
+/// excluding locked boundaries.
 fn get_merge_punctuation_indices(result: &WhisperResult, tokens: &[PunctToken]) -> Vec<usize> {
     if result.segments.len() < 2 {
         return Vec::new();
@@ -1326,9 +1313,9 @@ fn get_merge_punctuation_indices(result: &WhisperResult, tokens: &[PunctToken]) 
     indices
 }
 
-/// Port of `WhisperResult._merge_segments`: for each candidate boundary index
-/// (in reverse order), fuse segment `i` into segment `i+1` unless the
-/// `max_words`/`max_chars` cap forbids it, then drop any now-wordless segments.
+/// For each candidate boundary index (in reverse order), fuse segment `i` into
+/// segment `i+1` unless the `max_words`/`max_chars` cap forbids it, then drop
+/// any now-wordless segments.
 fn merge_segments(
     result: &mut WhisperResult,
     indices: &[usize],
@@ -1351,13 +1338,13 @@ fn merge_segments(
     remove_no_word_segments(result);
 }
 
-/// Port of the `_merge_segments` skip guard: true when the `max_words`/
-/// `max_chars` cap forbids merging segments `seg` and `next_seg`.
+/// The merge skip guard: true when the `max_words`/`max_chars` cap forbids
+/// merging segments `seg` and `next_seg`.
 ///
 /// With `is_sum_max` the cap applies to the merged segment (the sum of both
 /// counts); otherwise it forbids the merge only when *both* segments already
-/// exceed the cap. A falsy (`None`/`0`) cap never gates (Python `max_words and
-/// ...`). The `max_words` branch additionally requires `seg.has_words` upstream.
+/// exceed the cap. A falsy (`None`/`0`) cap never gates. The `max_words` branch
+/// additionally requires `seg.has_words`.
 fn merge_capped(seg: &Segment, next_seg: &Segment, caps: &MergeCaps) -> bool {
     let words_blocks = caps.max_words.is_some_and(|m| m != 0) && seg.has_words() && {
         let a = seg_word_count(seg);
@@ -1382,9 +1369,8 @@ fn merge_capped(seg: &Segment, next_seg: &Segment, caps: &MergeCaps) -> bool {
     words_blocks || chars_blocks
 }
 
-/// Port of `Segment.add` plus the `add_segments` lock handling: fuse two
-/// adjacent word-bearing segments by concatenating their word lists (so the
-/// merged `start`/`end`/`text` derive from the words), cloning the first
+/// Fuse two adjacent word-bearing segments by concatenating their word lists
+/// (so the merged `start`/`end`/`text` derive from the words), cloning the first
 /// segment's per-segment metadata. With `newline`, append `\n` to the boundary
 /// word; with `lock`, lock the right edge of the first segment's last word and
 /// the left edge of the second segment's first word across the seam.
@@ -1432,7 +1418,7 @@ fn merge_two_segments(seg: &Segment, next_seg: &Segment, lock: bool, newline: bo
     merged
 }
 
-/// Port of `WhisperResult.merge_all_segments`: collapse every segment into one.
+/// Collapse every segment into one.
 ///
 /// Concatenates all words (in order) into a single segment cloned from the
 /// first (so its per-segment metadata carries over), recomputing `start`/`end`/
@@ -1477,11 +1463,10 @@ fn merge_all_segments_inner(result: &mut WhisperResult) {
     result.segments = vec![merged];
 }
 
-/// Port of `Segment.get_locked_indices`: positions where word `i` and `i+1`
-/// must stay together (either side locked across the boundary).
+/// Positions where word `i` and `i+1` must stay together (either side locked
+/// across the boundary).
 fn get_locked_indices(words: &[WordTiming]) -> Vec<usize> {
-    // Python zips words[1:] with words[:-1]; index i covers the boundary after
-    // word i (between word i and word i+1).
+    // Index i covers the boundary after word i (between word i and word i+1).
     words
         .windows(2)
         .enumerate()
@@ -1489,8 +1474,8 @@ fn get_locked_indices(words: &[WordTiming]) -> Vec<usize> {
         .collect()
 }
 
-/// Port of `Segment.get_length_indices`: the word indices after which to split
-/// the segment so each piece stays within `max_chars`/`max_words`.
+/// The word indices after which to split the segment so each piece stays within
+/// `max_chars`/`max_words`.
 fn get_length_indices(
     seg: &Segment,
     max_chars: Option<usize>,
@@ -1604,10 +1589,9 @@ fn uneven_length_indices(
     indices
 }
 
-/// Port of `WhisperResult._split_segments`: for each segment (in reverse order)
-/// compute the split indices, then either insert `\n` (`newline`) at those word
-/// boundaries or replace the segment with the sub-segments `Segment.split`
-/// produces.
+/// For each segment (in reverse order) compute the split indices, then either
+/// insert `\n` (`newline`) at those word boundaries or replace the segment with
+/// the sub-segments [`split_segment`] produces.
 fn split_segments<F>(result: &mut WhisperResult, get_indices: F, lock: bool, newline: bool)
 where
     F: Fn(&Segment) -> Vec<usize>,
@@ -1630,9 +1614,9 @@ where
     remove_no_word_segments(result);
 }
 
-/// The `newline` branch of `_split_segments`: append `\n` to the word at each
-/// split index (skipping the final-word index and any word that already ends in
-/// a newline), optionally locking across each break.
+/// The `newline` branch of the split: append `\n` to the word at each split
+/// index (skipping the final-word index and any word that already ends in a
+/// newline), optionally locking across each break.
 fn apply_newline(seg: &mut Segment, indices: &mut Vec<usize>, lock: bool) {
     let Some(words) = seg.words.as_mut() else {
         return;
@@ -1656,8 +1640,8 @@ fn apply_newline(seg: &mut Segment, indices: &mut Vec<usize>, lock: bool) {
     }
 }
 
-/// Port of `Segment.split`: cut the segment's words at each split index into
-/// new word-bearing segments (cloning the parent's per-segment metadata).
+/// Cut the segment's words at each split index into new word-bearing segments
+/// (cloning the parent's per-segment metadata).
 fn split_segment(seg: &Segment, mut indices: Vec<usize>, lock: bool) -> Vec<Segment> {
     let words = seg
         .words
@@ -1703,9 +1687,8 @@ fn split_segment(seg: &Segment, mut indices: Vec<usize>, lock: bool) -> Vec<Segm
     new_segments
 }
 
-/// Port of `WhisperResult.remove_no_word_segments`: drop any segment that
-/// originally had words but now has none. (`reassign_ids` is a no-op for parity
-/// since ids are not serialized.)
+/// Drop any segment that originally had words but now has none. (`reassign_ids`
+/// is a no-op for parity since ids are not serialized.)
 fn remove_no_word_segments(result: &mut WhisperResult) {
     result
         .segments

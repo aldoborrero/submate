@@ -2,9 +2,9 @@
 //!
 //! This is the coordination substrate the whole server↔node system runs on
 //! (see `docs/architecture.md`). It is a **server-local** SQLite-backed
-//! queue — nodes pull work over HTTP and never open this file. It is **not** a
-//! Huey clone and **not** apalis; it is a hand-rolled `jobs` table with an
-//! atomic claim, exponential-backoff retry, and startup lease reclaim.
+//! queue — nodes pull work over HTTP and never open this file. It is a
+//! hand-rolled `jobs` table with an atomic claim, exponential-backoff retry,
+//! and startup lease reclaim.
 //!
 //! ## Schema
 //!

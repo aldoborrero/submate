@@ -1,6 +1,6 @@
-//! Parity tests against golden fixtures captured from `stable_whisper.result`.
+//! Parity tests against the frozen golden fixtures.
 //!
-//! Each test parses a captured `to_dict()` JSON golden into the ported
+//! Each test parses a captured `to_dict()` JSON golden into the
 //! [`WhisperResult`] and re-emits it via [`WhisperResult::to_dict`]; the result
 //! must equal the golden JSON value exactly (`parity::assert_json_eq` does a
 //! structural, float-aware comparison — the capture writes sorted-key/pretty
@@ -38,10 +38,9 @@ fn suppress_roundtrip() {
     assert_json_eq(&actual, &raw);
 }
 
-/// `audio2loudness(audio.f32)` must match the Python-captured `loudness.f32`
-/// (dumped straight from `stable_whisper.stabilization.nonvad.audio2loudness`)
-/// within `1e-6`. This pins the abs -> 0.1%-topk threshold -> normalize ->
-/// `f32` linear-interpolate-to-token-count chain against torch's exact output.
+/// `audio2loudness(audio.f32)` must match the golden `loudness.f32` within
+/// `1e-6`. This pins the abs -> 0.1%-topk threshold -> normalize -> `f32`
+/// linear-interpolate-to-token-count chain against torch's exact output.
 #[test]
 fn audio2loudness() {
     let audio = load_f32("stablets/clipA/audio.f32");
@@ -50,9 +49,9 @@ fn audio2loudness() {
     assert_f32_close(&actual, &golden, 1e-6);
 }
 
-/// `wav2mask(audio.f32)` must match the Python-captured `mask.f32` (the bool
-/// mask `nonvad.wav2mask` returns, dumped as `0.0`/`1.0`) within `1e-6`. This
-/// pins the avg-pool (`k=5`, reflect) -> quantize (`q_levels=20`) -> timing
+/// `wav2mask(audio.f32)` must match the golden `mask.f32` (the bool mask
+/// `nonvad.wav2mask` returns, dumped as `0.0`/`1.0`) within `1e-6`. This pins
+/// the avg-pool (`k=5`, reflect) -> quantize (`q_levels=20`) -> timing
 /// roundtrip -> invert chain.
 #[test]
 fn wav2mask() {
@@ -71,13 +70,13 @@ fn regroup_parse() {
     assert_json_eq(&ops_to_value(&ops), &golden_ops);
 }
 
-/// B2 apply falsifier: each staged regroup op, applied *in isolation* to a fresh
+/// Apply falsifier: each staged regroup op, applied *in isolation* to a fresh
 /// `WhisperResult` parsed from `00_raw.json`, must reproduce its golden exactly.
 ///
-/// This mirrors `capture_stablets.py`, which rebuilds a fresh result from
-/// `raw_dict` per op (so stages don't compound) and dumps `to_dict()`. The op
-/// list comes from the same `REGROUP` string `parse_regroup_algo` parses, and
-/// the golden filename per op is `01_regroup_<i>_<method>.json`.
+/// Each golden was produced by rebuilding a fresh result from `raw_dict` per op
+/// (so stages don't compound) and dumping `to_dict()`. The op list comes from
+/// the same `REGROUP` string `parse_regroup_algo` parses, and the golden
+/// filename per op is `01_regroup_<i>_<method>.json`.
 #[test]
 fn regroup_apply() {
     let raw = golden("stablets/clipA/00_raw.json");
@@ -94,12 +93,12 @@ fn regroup_apply() {
     }
 }
 
-/// B2 apply falsifier for the split-by-duration (`sd`) and merge-all-segments
-/// (`ms`) ops, which parse (B1) but were unrunnable until this port.
+/// Apply falsifier for the split-by-duration (`sd`) and merge-all-segments
+/// (`ms`) ops.
 ///
 /// Each op string is parsed by the same `parse_regroup_algo` the rest of the
 /// pipeline uses and applied in isolation to a fresh `WhisperResult` rebuilt
-/// from `00_raw.json`, exactly as `capture_stablets.py` produced the golden
+/// from `00_raw.json`, exactly as the golden was produced
 /// (`fresh.split_by_duration(max_dur=4)` / `fresh.merge_all_segments()`). The
 /// re-emitted `to_dict()` must match the captured golden value.
 #[test]
@@ -122,12 +121,12 @@ fn regroup_apply_duration_merge() {
     }
 }
 
-/// B2 apply falsifier for the split-by-gap (`sg`) and split-by-punctuation
-/// (`sp`) ops, which parse (B1) but were unrunnable until this port.
+/// Apply falsifier for the split-by-gap (`sg`) and split-by-punctuation (`sp`)
+/// ops.
 ///
 /// Each op string is parsed by the same `parse_regroup_algo` the rest of the
 /// pipeline uses and applied in isolation to a fresh `WhisperResult` rebuilt
-/// from `00_raw.json`, exactly as `capture_stablets.py` produced the golden
+/// from `00_raw.json`, exactly as the golden was produced
 /// (`fresh.split_by_gap(max_gap=0.5)` / `fresh.split_by_punctuation([(",", " "),
 /// "，"])`). The re-emitted `to_dict()` must match the captured golden value.
 #[test]
@@ -150,12 +149,12 @@ fn regroup_apply_split() {
     }
 }
 
-/// B2 apply falsifier for the merge-by-gap (`mg`) and merge-by-punctuation
-/// (`mp`) ops, which parse (B1) but were unrunnable until this port.
+/// Apply falsifier for the merge-by-gap (`mg`) and merge-by-punctuation (`mp`)
+/// ops.
 ///
 /// Each op string is parsed by the same `parse_regroup_algo` the rest of the
 /// pipeline uses and applied in isolation to a fresh `WhisperResult` rebuilt
-/// from `00_raw.json`, exactly as `capture_stablets.py` produced the golden
+/// from `00_raw.json`, exactly as the golden was produced
 /// (`fresh.merge_by_gap(min_gap=0.3, max_words=3)` /
 /// `fresh.merge_by_punctuation([(".", " "), "。", "?", "？"])`). The re-emitted
 /// `to_dict()` must match the captured golden value byte-for-byte.
@@ -179,17 +178,17 @@ fn regroup_apply_merge() {
     }
 }
 
-/// C2 apply falsifier: the full non-VAD suppress-silence stage.
+/// Apply falsifier: the full non-VAD suppress-silence stage.
 ///
-/// `capture_stablets.py` produces `02_suppress.json` by re-running the engine
-/// with `regroup=False, suppress_silence=True` — i.e. it applies suppression to
-/// the *unregrouped* result (`00_raw`), not to a regroup stage. So this rebuilds
-/// `00_raw`, derives the silence ranges from `audio.f32` via
-/// [`audio2timings`] (= `mask2timing(wav2mask(..))`), applies the per-word
-/// [`suppress_silence`] and [`update_nonspeech_sections`] with the same defaults
-/// `transcribe_stable` uses (`min_word_dur=0.1`, `nonspeech_error=0.1`,
-/// `word_level=True`, `use_word_position=True`), and checks the result against
-/// the golden — pinning both the clipped word timings and the populated
+/// The `02_suppress.json` golden was produced with `regroup=False,
+/// suppress_silence=True` — i.e. suppression applied to the *unregrouped*
+/// result (`00_raw`), not to a regroup stage. So this rebuilds `00_raw`,
+/// derives the silence ranges from `audio.f32` via [`audio2timings`]
+/// (= `mask2timing(wav2mask(..))`), applies the per-word [`suppress_silence`]
+/// and [`update_nonspeech_sections`] with the pipeline defaults
+/// (`min_word_dur=0.1`, `nonspeech_error=0.1`, `word_level=True`,
+/// `use_word_position=True`), and checks the result against the golden —
+/// pinning both the clipped word timings and the populated
 /// `nonspeech_sections`.
 #[test]
 fn suppress() {
@@ -202,8 +201,8 @@ fn suppress() {
     let mut result = WhisperResult::from_value(&raw);
     suppress_silence(&mut result, &starts, &ends, DEFAULT_MIN_WORD_DUR, 0.1);
     update_nonspeech_sections(&mut result, &starts, &ends);
-    // transcribe_stable snapshots the suppressed state into `ori_dict` right
-    // after the stage, so the golden's `ori_dict` is itself suppressed.
+    // The pipeline snapshots the suppressed state into `ori_dict` right after
+    // the stage, so the golden's `ori_dict` is itself suppressed.
     set_current_as_orig(&mut result);
 
     assert_json_eq(&result.to_dict(), &expected);
@@ -213,11 +212,11 @@ fn suppress() {
 /// `03.srt` / `03.vtt` goldens byte-for-byte.
 ///
 /// Those goldens are dumped from a *separate* end-to-end transcription run
-/// (`capture_stablets.py`'s `final = model.transcribe_stable(regroup=REGROUP,
-/// suppress_silence=True)`), whose non-deterministic Whisper decode produced
-/// different text than the `00_raw`/`02_suppress` JSON goldens — so the final
-/// result is not byte-reproducible from any captured JSON, and (being
-/// `word_level=False`) the goldens carry only segment-level timing+text.
+/// (with `regroup=REGROUP, suppress_silence=True`), whose non-deterministic
+/// Whisper decode produced different text than the `00_raw`/`02_suppress` JSON
+/// goldens — so the final result is not byte-reproducible from any captured
+/// JSON, and (being `word_level=False`) the goldens carry only segment-level
+/// timing+text.
 ///
 /// We therefore reconstruct the final segments from `03.srt` (its blocks are
 /// exactly `{start, end, text}`), build a [`WhisperResult`] from them, and

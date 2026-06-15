@@ -13,9 +13,8 @@ use serde::{Deserialize, Serialize};
 
 /// A single recognized word and the time span it occupies, in seconds.
 ///
-/// Mirrors the per-word entries stable-whisper attaches to each segment
-/// (`WordTiming`): `word`, `start`, `end`, plus the model's average token
-/// probability for the word.
+/// Per-word timing attached to each segment: `word`, `start`, `end`, plus the
+/// model's average token probability for the word.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhisperWord {
     /// Word text, including any leading space the tokenizer emitted.
@@ -816,8 +815,8 @@ pub enum PipelineError {
     UnsupportedRegroupMethod(String),
 }
 
-/// The finished transcription, shaped like the Python `TranscriptionResult`
-/// the CLI and queue consume: `.text`, `.language`, `.segments`, and
+/// The finished transcription the CLI and queue consume: `.text`,
+/// `.language`, `.segments`, and
 /// `.to_srt_vtt()`.
 ///
 /// Built by [`assemble_result`] from a raw [`WhisperResult`] (whisper.cpp
@@ -1001,7 +1000,7 @@ pub async fn transcribe(
     use submate_media::{PreparedAudio, prepare_audio_for_transcription};
 
     // Prepare audio: extract a track to PCM only when the file has several,
-    // otherwise hand whisper the file path directly (matches the Python helper).
+    // otherwise hand whisper the file path directly.
     let prepared = prepare_audio_for_transcription(media_path, options.language.as_deref()).await;
     let pcm = match prepared {
         PreparedAudio::Pcm(bytes) => pcm_s16le_to_f32(&bytes),

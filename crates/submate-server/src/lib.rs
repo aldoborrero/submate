@@ -9,9 +9,7 @@
 //!
 //! The queue-stats *shape* (`pending` / `running` / `done` / `nodes`) follows
 //! the FileFlows/Unmanic-style node topology described in
-//! `docs/architecture.md`, **not** Huey's `pending` / `scheduled`. It is a
-//! new design verified behaviorally, so it is not a Python-golden parity case.
-//! Python's top-level *route names and response keys* are matched exactly.
+//! `docs/architecture.md`. It is a new design verified behaviorally.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,9 +39,8 @@ use tokio::task::JoinHandle;
 
 /// Server version reported by the ops routes.
 ///
-/// This mirrors Python's `submate.__version__` (the user-facing product
-/// version), which is intentionally distinct from the Rust workspace crate
-/// version. The two version lines move independently.
+/// This is the user-facing product version, intentionally distinct from the
+/// Rust workspace crate version. The two version lines move independently.
 pub const VERSION: &str = "1.0.0";
 
 /// Node-topology queue statistics surfaced by `GET /queue` and embedded in
@@ -67,9 +64,8 @@ pub struct QueueStats {
 /// Source of live [`QueueStats`] for the ops routes.
 ///
 /// The server owns the durable queue and the node registry; this trait lets the
-/// ops routes read a snapshot without depending on those concretes, which are
-/// wired in by later backlog items. The default state (no queue/registry yet)
-/// reports zeroed counts.
+/// ops routes read a snapshot without depending on those concretes. The default
+/// state (no queue/registry) reports zeroed counts.
 pub trait StatsSource: Send + Sync + 'static {
     /// Take a current snapshot of the queue/node statistics.
     fn stats(&self) -> QueueStats;
@@ -116,7 +112,7 @@ pub struct BazarrTranscribeOpts {
     pub task: TranscriptionTask,
     /// Desired subtitle language. Bazarr sends this as `language`; when it
     /// differs from the detected source, the transcriber LLM-translates to it.
-    /// Source language is always auto-detected (mirrors the Python handler).
+    /// Source language is always auto-detected.
     pub target_language: Option<String>,
     /// Subtitle format to render.
     pub output_format: OutputFormat,
@@ -163,7 +159,7 @@ impl AppState {
     /// Build state from a [`StatsSource`] with no node coordinator wired up.
     /// The `/nodes/*` and `/jobs/*` routes return `503` until a coordinator is
     /// attached via [`AppState::with_coordinator`]. Server processing settings
-    /// default to the Python defaults (`process_on_add = true`).
+    /// default to `process_on_add = true`.
     pub fn new(stats: impl StatsSource) -> Self {
         Self {
             stats: Arc::new(stats),
@@ -215,8 +211,8 @@ impl Default for AppState {
 /// Errors surfaced by the server, rendered by the global error handler.
 ///
 /// Every variant maps to a JSON body `{"detail": "<message>"}` plus an HTTP
-/// status, matching FastAPI's `HTTPException` envelope, so clients see a single,
-/// predictable error envelope regardless of which handler failed.
+/// status, so clients see a single, predictable error envelope regardless of
+/// which handler failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
     /// A requested resource does not exist.
@@ -290,9 +286,8 @@ pub enum AudioSource {
 /// What this server knows about a registered processing node.
 ///
 /// The token authorises the node's subsequent coordination calls; `runners` and
-/// `gpu`/`tasks` are the advertised capabilities the dispatcher uses for routing
-/// (capability filtering is refined by later backlog items). The registry is the
-/// `nodes` count surfaced by `GET /queue`.
+/// `gpu`/`tasks` are the advertised capabilities the dispatcher uses for routing.
+/// The registry is the `nodes` count surfaced by `GET /queue`.
 #[derive(Debug, Clone)]
 struct NodeInfo {
     token: String,
@@ -467,8 +462,7 @@ impl NodeCoordinator {
     /// If the claimed job's kind is not in the node's advertised `tasks`, the
     /// claim is rolled back (the job returns to `queued`) and `None` is
     /// returned, so a translation-only node never strands a transcribe job. GPU
-    /// affinity is advertised via [`NodeInfo::gpu`] for the routing refinement
-    /// in later backlog items.
+    /// affinity is advertised via [`NodeInfo::gpu`] for routing.
     fn request_work(&self, node_id: &str) -> Result<Option<WorkResponse>, ServerError> {
         let caps = self
             .nodes
@@ -851,7 +845,7 @@ async fn jobs_result(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /` — server-info object (matches Python's `root`).
+/// `GET /` — server-info object.
 async fn root() -> Json<serde_json::Value> {
     Json(json!({
         "name": "Submate Server",
@@ -866,7 +860,7 @@ async fn root() -> Json<serde_json::Value> {
     }))
 }
 
-/// `GET /status` — health + version + queue snapshot (matches Python's `status`).
+/// `GET /status` — health + version + queue snapshot.
 async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({
         "status": "ok",
@@ -875,15 +869,15 @@ async fn status(State(state): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-/// `GET /queue` — node-topology queue statistics (matches Python's `queue_status`).
+/// `GET /queue` — node-topology queue statistics.
 async fn queue(State(state): State<AppState>) -> Json<QueueStats> {
     Json(state.stats.stats())
 }
 
-/// The Bazarr routes (`POST /bazarr/asr`, `POST /bazarr/detect-language`),
-///. They run a **direct**
-/// transcription via the [`BazarrTranscriber`] seam — Bazarr's Whisper provider
-/// is synchronous, so the durable queue is deliberately off this path.
+/// The Bazarr routes (`POST /bazarr/asr`, `POST /bazarr/detect-language`). They
+/// run a **direct** transcription via the [`BazarrTranscriber`] seam — Bazarr's
+/// Whisper provider is synchronous, so the durable queue is deliberately off
+/// this path.
 #[cfg(feature = "bazarr")]
 fn bazarr_router() -> Router<AppState> {
     Router::new()
@@ -891,11 +885,11 @@ fn bazarr_router() -> Router<AppState> {
         .route("/bazarr/detect-language", post(bazarr_detect_language))
 }
 
-/// `Source` response header the Python `/bazarr/asr` handler sets.
+/// `Source` response header the `/bazarr/asr` handler sets.
 #[cfg(feature = "bazarr")]
 const BAZARR_SOURCE: &str = "Transcribed using stable-ts from Submate";
 
-/// `POST /bazarr/asr` query params (wire-exact with the Python `Query(...)`).
+/// `POST /bazarr/asr` query params.
 ///
 /// Fields are typed leniently (optional / string) so a well-formed Bazarr
 /// request never trips axum's `422` query-rejection — Bazarr reads the body
@@ -906,7 +900,7 @@ struct AsrParams {
     #[serde(default = "default_task")]
     task: String,
     /// Desired subtitle language (Bazarr's `language`) — the *target*, not a
-    /// Whisper decode hint; source is auto-detected (mirrors the Python handler).
+    /// Whisper decode hint; source is auto-detected.
     #[serde(default)]
     language: Option<String>,
     #[serde(default = "default_output")]
@@ -1075,12 +1069,12 @@ mod tests {
     }
 
     // The literal `GET /` and `GET /status` bodies (server name, version, docs,
-    // and all five `endpoints` paths) are pinned against the Python-captured
-    // golden in `tests/parity.rs` (`core_router::root` / `core_router::status`),
-    // not hand-encoded here, so the Rust handlers cannot silently drift from the
-    // `core/router.py` SPEC. This inline test keeps only the *structural* guard
-    // that is local to the Rust shape: `GET /status` has exactly the three
-    // top-level keys and its `queue` value is an object.
+    // and all five `endpoints` paths) are pinned against the golden in
+    // `tests/parity.rs` (`core_router::root` / `core_router::status`), not
+    // hand-encoded here, so the handlers cannot silently drift. This inline test
+    // keeps only the *structural* guard that is local to the Rust shape: `GET
+    // /status` has exactly the three top-level keys and its `queue` value is an
+    // object.
     #[tokio::test]
     async fn ops_routes_status_top_level_shape() {
         let (status, body) = get_json(app(AppState::default()), "/status").await;
@@ -1150,7 +1144,7 @@ mod tests {
         let res = ServerError::Unavailable("nope".into()).into_response();
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-        // The 500 envelope matches FastAPI's global handler: `{"detail": ...}`.
+        // The 500 envelope is `{"detail": ...}`.
         let res = ServerError::Internal("boom".into()).into_response();
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
@@ -1847,7 +1841,7 @@ mod tests {
 }
 
 /// Bazarr Whisper-provider contract tests — drive `app()` with a fake
-/// [`BazarrTranscriber`] (no model) and pin the behaviors `whisperai.py`
+/// [`BazarrTranscriber`] (no model) and pin the behaviors Bazarr's provider
 /// depends on: SRT-in-body + `Source` header, an **empty body** on failure
 /// (never an error envelope, which the provider would save as a corrupt
 /// subtitle), and detect-language as `200` JSON / `200`-`Unknown` on failure.

@@ -3,8 +3,7 @@
 //! The dispatcher is the per-node execution core. It holds a [`tokio::sync::Semaphore`]
 //! sized to the node's runner count and gates every transcription behind a permit,
 //! so at most `runners` clips transcribe concurrently — the rest wait for a permit
-//! to free. This is the in-process concurrency cap that Python's queue worked around
-//! with a separate worker process.
+//! to free. This is the in-process concurrency cap.
 //!
 //! The heavy CPU work runs on a blocking thread via [`tokio::task::spawn_blocking`],
 //! keeping the async runtime responsive. The blocking step is injectable so tests can
@@ -830,7 +829,7 @@ pub fn whisper_logging_install_count() -> usize {
 /// Available with the `model` feature, which links whisper.cpp. The dispatcher
 /// holds a runner permit across the whole inference so per-node concurrency
 /// stays capped; the subtitle assembly (regroup / output) is the
-/// `submate-subtitle` slice and is wired in by its own backlog item.
+/// `submate-subtitle` slice.
 ///
 /// Building the processor also installs the whisper.cpp logging redirection
 /// (once per process) so the C library's stderr spam routes through `tracing`
@@ -871,8 +870,8 @@ pub fn whisper_processor(
             };
             // Decode, then run the full subtitle assembly (regroup -> suppress ->
             // output formatting) so the job output is a real assembled result, not
-            // raw text. The assembly stages are the stable-ts slice (already
-            // ported); the final serialization honors the job's requested format.
+            // raw text. The assembly stages are the stable-ts slice; the final
+            // serialization honors the job's requested format.
             let raw = dispatcher
                 .transcribe_pcm(model_path, samples.clone(), options)
                 .await

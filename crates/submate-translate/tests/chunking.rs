@@ -1,24 +1,23 @@
-//! Parity: the chunking machinery reproduces the Python-recorded batch strings.
+//! Parity: the chunking machinery reproduces the recorded batch strings.
 //!
 //! `fixtures/translate/chunking.json` records, in order, every `combined`
-//! string the Python `TranslationService` passed to `backend.translate` while
-//! translating `sampleA.in.srt` with the default `chunk_size`. Each entry is
+//! string passed to the backend while translating `sampleA.in.srt` with the
+//! default `chunk_size`. Each entry is
 //! `("\n---BREAK---\n").join(cue_contents_for_that_batch)`. This test takes the
 //! same cue contents, runs them through [`chunk_ranges`] + [`join_batch`], and
 //! asserts byte-for-byte equality against the golden `batches`.
 
 use submate_translate::{SRT_SEPARATOR_TOKEN, chunk_ranges, join_batch};
 
-/// Python default `chunk_size` (`TranslationSettings.chunk_size`).
+/// Default `chunk_size`.
 const DEFAULT_CHUNK_SIZE: usize = 50;
 
 /// Extract SRT cue contents from a minimal SRT string.
 ///
-/// Test-local reader (the shipped SRT parser is a separate port item): SRT
-/// blocks are separated by blank lines; within a block the first line is the
-/// index, the second the timing, and the remainder is the cue content. This is
-/// sufficient for the committed `sampleA.in.srt` fixture, whose cues are single
-/// lines.
+/// Test-local reader: SRT blocks are separated by blank lines; within a block
+/// the first line is the index, the second the timing, and the remainder is the
+/// cue content. This is sufficient for the committed `sampleA.in.srt` fixture,
+/// whose cues are single lines.
 fn srt_cue_contents(srt: &str) -> Vec<String> {
     let normalized = srt.replace("\r\n", "\n");
     normalized
@@ -37,7 +36,7 @@ mod parity {
     use super::*;
 
     /// Falsifier `cargo test -p submate-translate parity::chunking`: the
-    /// chunk boundaries + separator-token joins match the Python golden.
+    /// chunk boundaries + separator-token joins match the golden.
     #[test]
     fn chunking() {
         let srt = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.in.srt"))

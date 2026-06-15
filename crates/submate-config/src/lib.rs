@@ -1,8 +1,7 @@
 //! Layered configuration via figment.
 //!
-//! This crate defines the settings structs that mirror the Pydantic
-//! `BaseModel`/`BaseSettings` classes (each struct's `impl Default` carrying the
-//! Python defaults byte-for-byte) *and* the figment provider chain that resolves
+//! This crate defines the settings structs (each struct's `impl Default`
+//! carrying the defaults) *and* the figment provider chain that resolves
 //! them from the `SUBMATE__` environment and an optional `--config-file`.
 //!
 //! Defaults live in one place per struct: the `impl Default`. A container-level
@@ -10,19 +9,18 @@
 //! defaults are never restated as per-field serde attributes.
 //!
 //! Enums are reused from [`submate_types`] rather than redefined, so their
-//! string forms stay in lockstep with the rest of the port.
+//! string forms stay in lockstep with the rest of the crates.
 //!
 //! # Precedence
 //!
-//! Mirrors Pydantic-Settings' source order (`settings_customise_sources` in
-//! the config layer): environment variables win over the config file, which
+//! Source order: environment variables win over the config file, which
 //! wins over the built-in defaults. In figment terms the chain merges, in
 //! order, `Serialized::defaults(Config::default())`, then the `--config-file`
 //! JSON (if any), then `Env::prefixed("SUBMATE__").split("__")` — figment's
 //! merge lets later providers override earlier ones.
 //!
 //! Nested settings use the `__` delimiter, e.g. `SUBMATE__WHISPER__MODEL` maps
-//! to `whisper.model`, exactly as the Python `env_nested_delimiter="__"`.
+//! to `whisper.model`.
 //!
 //! # Parity
 //!
@@ -44,11 +42,11 @@ use figment::{
     providers::{Env, Format, Json, Serialized},
 };
 
-/// A field that is either a string or a bool (`str | bool` in Python).
+/// A field that is either a string or a bool.
 ///
 /// Used by [`StableTsSettings::custom_regroup`]: a regroup pattern string, or
 /// `false` to disable. `#[serde(untagged)]` serializes the inner value
-/// directly, so the JSON form is a bare string or bare bool — matching Python.
+/// directly, so the JSON form is a bare string or bare bool.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StrOrBool {
@@ -58,7 +56,7 @@ pub enum StrOrBool {
     Bool(bool),
 }
 
-/// Whisper model and transcription settings (`WhisperSettings`).
+/// Whisper model and transcription settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WhisperSettings {
@@ -108,7 +106,7 @@ impl Default for WhisperSettings {
     }
 }
 
-/// Stable-ts subtitle generation settings (`StableTsSettings`).
+/// Stable-ts subtitle generation settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StableTsSettings {
@@ -130,7 +128,7 @@ impl Default for StableTsSettings {
     }
 }
 
-/// Server and processing settings (`ServerSettings`).
+/// Server and processing settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerSettings {
@@ -149,7 +147,7 @@ impl Default for ServerSettings {
     }
 }
 
-/// Path mapping settings for Docker deployments (`PathMappingSettings`).
+/// Path mapping settings for Docker deployments.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PathMappingSettings {
@@ -158,12 +156,10 @@ pub struct PathMappingSettings {
     pub to_path: String,
 }
 
-/// Queue and retry settings (`QueueSettings`).
+/// Queue and retry settings.
 ///
-/// The Python default for `db_path` is empty, with a root `model_validator`
-/// later filling in `{XDG_DATA_HOME}/subgen/queue.db`. The captured golden
-/// records the resolved-but-unexpanded form `${XDG_DATA_HOME}/subgen/queue.db`;
-/// the actual expansion is part of the downstream resolution item.
+/// `db_path` defaults to the unexpanded form `${XDG_DATA_HOME}/subgen/queue.db`;
+/// the actual expansion happens during downstream resolution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueSettings {
@@ -182,7 +178,7 @@ impl Default for QueueSettings {
     }
 }
 
-/// Translation settings for LLM-backed subtitle translation (`TranslationSettings`).
+/// Translation settings for LLM-backed subtitle translation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranslationSettings {
@@ -215,7 +211,7 @@ impl Default for TranslationSettings {
     }
 }
 
-/// Root application configuration (`Config`).
+/// Root application configuration.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -236,27 +232,26 @@ impl Config {
     fn figment(config_file: Option<&Path>) -> Figment {
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
 
-        // Optional `--config-file` JSON layer. Ports `get_config(config_file)`:
-        // a file supplies overrides on top of the defaults, but the env still
-        // wins. `Json::file` is a no-op if the path is absent, so a missing
-        // file simply contributes nothing rather than erroring.
+        // Optional `--config-file` JSON layer: a file supplies overrides on top
+        // of the defaults, but the env still wins. `Json::file` is a no-op if
+        // the path is absent, so a missing file simply contributes nothing
+        // rather than erroring.
         if let Some(path) = config_file {
             figment = figment.merge(Json::file(path));
         }
 
         // `SUBMATE__WHISPER__MODEL` -> `whisper.model`. `split("__")` turns the
-        // nested delimiter into figment key-path components, matching Pydantic's
-        // `env_nested_delimiter="__"`. Env is merged last, so it has the final
-        // say — Pydantic's env-over-file precedence.
+        // nested delimiter into figment key-path components. Env is merged last,
+        // so it has the final say — env-over-file precedence.
         figment.merge(Env::prefixed("SUBMATE__").split("__"))
     }
 
     /// Resolve configuration from the `SUBMATE__` environment plus an optional
     /// `--config-file` JSON path.
     ///
-    /// Ports `submate.config.get_config`. Precedence is env > file > defaults
-    /// (see the module-level docs). Returns a figment error if a value fails to
-    /// coerce into its field type (e.g. a non-numeric `SUBMATE__SERVER__PORT`).
+    /// Precedence is env > file > defaults (see the module-level docs). Returns
+    /// a figment error if a value fails to coerce into its field type (e.g. a
+    /// non-numeric `SUBMATE__SERVER__PORT`).
     ///
     /// The error is boxed: `figment::Error` is a large enum, so an unboxed
     /// `Result` would bloat every caller's stack frame on the happy path.
@@ -274,10 +269,9 @@ impl Config {
 /// Coerce a regroup env value into a [`StrOrBool`], or pass through an
 /// already-typed bool/string.
 ///
-/// Ports `StableTsSettings.parse_regroup`: a string in `{false, off, 0, no, ""}`
-/// (case-insensitive) disables regrouping (`Bool(false)`); any other string is a
-/// regroup pattern (`Str(_)`). A real bool from the file/defaults layer passes
-/// through unchanged.
+/// A string in `{false, off, 0, no, ""}` (case-insensitive) disables regrouping
+/// (`Bool(false)`); any other string is a regroup pattern (`Str(_)`). A real
+/// bool from the file/defaults layer passes through unchanged.
 fn deserialize_regroup<'de, D>(deserializer: D) -> Result<StrOrBool, D::Error>
 where
     D: Deserializer<'de>,

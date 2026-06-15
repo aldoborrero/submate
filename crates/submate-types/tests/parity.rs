@@ -1,10 +1,10 @@
-//! Falsifier `parity::enum_values`: every enum variant serializes to the exact
-//! Python `.value` string, and parses back, in both `Display`/`FromStr` and
-//! serde directions.
+//! Falsifier `parity::enum_values`: every enum variant serializes to its exact
+//! recorded string, and parses back, in both `Display`/`FromStr` and serde
+//! directions.
 //!
-//! The golden `types/enum_values.json` records the Python `StrEnum`s as
-//! `{EnumName: {PYTHON_VARIANT_NAME: value}}`. Each Rust variant is paired with
-//! its Python variant name here so a divergence in either set of strings — or a
+//! The golden `types/enum_values.json` records the enums as
+//! `{EnumName: {VARIANT_NAME: value}}`. Each Rust variant is paired with its
+//! recorded variant name here so a divergence in either set of strings — or a
 //! missing/extra variant on either side — fails loudly.
 
 use std::collections::BTreeMap;
@@ -21,12 +21,12 @@ use submate_types::{
     WhisperModel,
 };
 
-/// Assert one enum against its golden `{python_name: value}` table.
+/// Assert one enum against its golden `{variant_name: value}` table.
 ///
-/// `pairs` lists `(python_variant_name, rust_variant)` for the full enum. We
-/// rebuild the golden table from the Rust side and compare byte-for-byte
-/// against the captured JSON, then round-trip every string through `FromStr`
-/// and serde to prove both decode directions agree too.
+/// `pairs` lists `(variant_name, rust_variant)` for the full enum. We rebuild
+/// the golden table from the Rust side and compare byte-for-byte against the
+/// recorded JSON, then round-trip every string through `FromStr` and serde to
+/// prove both decode directions agree too.
 fn check_enum<T>(enum_name: &str, pairs: &[(&str, T)])
 where
     T: Copy
@@ -57,7 +57,7 @@ where
 
     let mut built = serde_json::Map::new();
     for (py_name, variant) in pairs {
-        // Display (strum) and serde must emit the same Python string.
+        // Display (strum) and serde must emit the same string.
         let via_display = variant.to_string();
         let via_serde = serde_json::to_value(variant).unwrap();
         assert_eq!(
@@ -164,7 +164,7 @@ fn enum_values() {
     );
 }
 
-/// Guard against the golden gaining an enum the Rust port forgot to cover.
+/// Guard against the golden gaining an enum the tests forgot to cover.
 #[test]
 fn no_uncovered_enums_in_golden() {
     let golden_table = golden("types/enum_values.json");

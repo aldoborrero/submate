@@ -1,4 +1,4 @@
-//! Port of the non-VAD silence DSP from `stable_whisper.stabilization.nonvad`.
+//! The non-VAD silence DSP.
 //!
 //! This is the deterministic signal-processing core of stable-ts's
 //! `suppress_silence` (with `vad=False`, the submate default): no ML model, just
@@ -40,8 +40,8 @@ pub const N_SAMPLES_PER_TOKEN: usize = 320;
 /// that width (see [`wav2mask`]).
 pub const TOKENS_PER_SECOND: f64 = 50.0;
 
-/// Per-token loudness envelope, mirroring `nonvad.audio2loudness` with the
-/// default `samples_per_unit = N_SAMPLES_PER_TOKEN`.
+/// Per-token loudness envelope (`nonvad.audio2loudness`) with the default
+/// `samples_per_unit = N_SAMPLES_PER_TOKEN`.
 ///
 /// Returns `None` for clips too short to produce more than two tokens (upstream
 /// falls through to an implicit `None`), matching the `token_count > 2` guard.
@@ -118,8 +118,8 @@ fn interpolate_linear(x: &[f32], out_len: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Per-token silence-suppression mask, mirroring `nonvad.wav2mask` for already
-/// 16 kHz mono audio (`q_levels = 20`, `k_size = 5`).
+/// Per-token silence-suppression mask (`nonvad.wav2mask`) for already 16 kHz
+/// mono audio (`q_levels = 20`, `k_size = 5`).
 ///
 /// Returns a boolean vector aligned to the loudness/token grid where `true`
 /// marks tokens to *keep* (audible). The two `None`-like upstream returns are
@@ -232,8 +232,8 @@ fn mask_runs(mask: &[bool]) -> Vec<(usize, usize)> {
     runs
 }
 
-/// `stable_whisper.stabilization.utils.mask2timing`: convert a per-token silence
-/// mask into the `(silent_starts, silent_ends)` pair of *seconds*.
+/// Convert a per-token silence mask into the `(silent_starts, silent_ends)`
+/// pair of *seconds*.
 ///
 /// Each contiguous `true` run becomes one half-open `[start, end)` range whose
 /// token indices are divided by [`TOKENS_PER_SECOND`] (upstream `silent_ends` is
@@ -256,8 +256,7 @@ pub fn mask2timing(silence_mask: &[bool]) -> Option<(Vec<f64>, Vec<f64>)> {
     Some((starts, ends))
 }
 
-/// `stable_whisper.stabilization.nonvad.audio2timings`: the full non-VAD silence
-/// detector, `mask2timing(wav2mask(audio))`.
+/// The full non-VAD silence detector, `mask2timing(wav2mask(audio))`.
 ///
 /// Returns the `(silent_starts, silent_ends)` second ranges fed into per-word
 /// [`suppress`], or `None` when there is no suppressible silence (either
@@ -267,30 +266,29 @@ pub fn audio2timings(audio: &[f32]) -> Option<(Vec<f64>, Vec<f64>)> {
     mask2timing(&wav2mask(audio)?)
 }
 
-/// `stable_whisper.default.DEFAULT_VALUES['min_word_dur']`.
+/// The default minimum word duration (`min_word_dur`).
 pub const DEFAULT_MIN_WORD_DUR: f64 = 0.1;
 
-/// `stable_whisper.default.DEFAULT_KWARGS['append_punctuations']` — the trailing
-/// punctuation that, when it ends a word, flips `keep_end` to `false` so the
-/// *end* timestamp is anchored to the punctuation instead of being pushed in.
+/// The default trailing punctuation that, when it ends a word, flips `keep_end`
+/// to `false` so the *end* timestamp is anchored to the punctuation instead of
+/// being pushed in.
 const APPEND_PUNCTUATIONS: &str = "\"'.。,，!！?？:：”)]}、」";
 
-/// Apply the non-VAD silence map to every word's timing, mirroring
-/// `WhisperResult.suppress_silence(..., word_level=True, use_word_position=True)`
-/// as it runs inside `transcribe_stable` (the submate default).
+/// Apply the non-VAD silence map to every word's timing, with
+/// `word_level=True, use_word_position=True` (the submate default).
 ///
 /// For each segment that has words, each word is clipped against the
 /// `(silent_starts, silent_ends)` ranges via [`suppress`] with `min_word_dur`
 /// and `nonspeech_error`, and `keep_end` derived from the word's position:
-/// upstream's `keep_end = not (word[-1] in append_punctuations or i == len(words))`
+/// `keep_end = not (word[-1] in append_punctuations or i == len(words))`
 /// — the last word in a segment (1-indexed `i == len`) and any word ending in
 /// append punctuation keep their *start* (`keep_end = false`); all others keep
 /// their *end*.
 ///
 /// Segments without words fall through to the segment-level [`suppress`]
-/// (`keep_end = true`), matching `Segment.suppress_silence`'s `else` branch.
-/// This mutates the result in place; the caller is responsible for
-/// `update_nonspeech_sections` (the verbatim `nonspeech_sections` payload).
+/// (`keep_end = true`), matching the `else` branch. This mutates the result in
+/// place; the caller is responsible for `update_nonspeech_sections` (the
+/// verbatim `nonspeech_sections` payload).
 pub fn suppress_silence(
     result: &mut crate::WhisperResult,
     silent_starts: &[f64],
@@ -340,12 +338,12 @@ pub fn suppress_silence(
     }
 }
 
-/// `WhisperResult.set_current_as_orig(keep_orig=False)`: overwrite `ori_dict`
-/// with the current serialized state, where that snapshot's own nested
-/// `ori_dict` is empty (`keep_orig=False`).
+/// `set_current_as_orig(keep_orig=False)`: overwrite `ori_dict` with the
+/// current serialized state, where that snapshot's own nested `ori_dict` is
+/// empty (`keep_orig=False`).
 ///
-/// `transcribe_stable` calls this immediately after the suppress stage, so the
-/// captured `02_suppress.json` carries a *suppressed* `ori_dict` (populated
+/// Upstream calls this immediately after the suppress stage, so the
+/// `02_suppress.json` golden carries a *suppressed* `ori_dict` (populated
 /// `nonspeech_sections`, clipped word timings, empty inner `ori_dict`) rather
 /// than the pre-suppress raw one. Run this after [`suppress_silence`] /
 /// [`update_nonspeech_sections`] to reproduce that shape.
@@ -357,13 +355,13 @@ pub fn set_current_as_orig(result: &mut crate::WhisperResult) {
     result.ori_dict = result.to_dict();
 }
 
-/// `WhisperResult.update_nonspeech_sections`: store the detected silence ranges
-/// verbatim as the `nonspeech_sections` list of `{start, end}` dicts, each
-/// timestamp `round(.., 3)` (numpy `float64` rounding, half-to-even).
+/// Store the detected silence ranges verbatim as the `nonspeech_sections` list
+/// of `{start, end}` dicts, each timestamp `round(.., 3)` (numpy `float64`
+/// rounding, half-to-even).
 ///
-/// Mirrors the call `transcribe_stable` makes right after `suppress_silence`, so
-/// running [`suppress_silence`] then this reproduces the populated
-/// `02_suppress.json` shape end to end.
+/// Upstream runs this right after `suppress_silence`, so running
+/// [`suppress_silence`] then this reproduces the populated `02_suppress.json`
+/// shape end to end.
 pub fn update_nonspeech_sections(
     result: &mut crate::WhisperResult,
     silent_starts: &[f64],
@@ -416,10 +414,9 @@ impl WordSpan {
     }
 }
 
-/// Port of `stable_whisper.stabilization.suppress_silence` (the per-object
-/// timestamp clip), operating on one [`WordSpan`].
+/// The per-object timestamp clip, operating on one [`WordSpan`].
 ///
-/// Mirrors the upstream control flow exactly:
+/// Follows the upstream control flow exactly:
 /// 1. no-op when there are no silences or the span is already `<= min_word_dur`;
 /// 2. **start overlap** (`keep_end`): if a silence brackets the start
 ///    (`silent_starts <= start < silent_ends <= end`), snap `start` to that

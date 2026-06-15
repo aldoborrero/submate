@@ -1,13 +1,12 @@
 //! Pure-data result-routing enums.
 //!
 //! These two enums are the vocabulary the whole server↔node system speaks
-//! when reporting transcription outcomes, so their wire strings must match
-//! Python's `.value` byte-for-byte. Each variant carries an explicit
-//! `#[serde(rename = "...")]` so a naive derive can never mangle a snake_case
-//! `not_skipped` into `NotSkipped`.
+//! when reporting transcription outcomes, so their wire strings are frozen.
+//! Each variant carries an explicit `#[serde(rename = "...")]` so a naive
+//! derive can never mangle a snake_case `not_skipped` into `NotSkipped`.
 //!
-//! Parity against the captured Python values is enforced by
-//! `tests/parity.rs` (falsifier `parity::queue_enum_values`).
+//! Parity against the captured values is enforced by `tests/parity.rs`
+//! (falsifier `parity::queue_enum_values`).
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
@@ -17,12 +16,11 @@ use strum::EnumIter;
 /// re-exported here so `submate_queue::OutputFormat` keeps resolving.
 pub use submate_types::OutputFormat;
 
-/// Reasons a transcription was skipped (`SkipReason` in
-/// `submate.queue.models`).
+/// Reasons a transcription was skipped.
 ///
-/// A Python `StrEnum`, so the `.value` strings are the literal `reason` field
-/// returned in the worker task envelope. Every variant's wire string is pinned
-/// with `#[serde(rename = "...")]`.
+/// The `.value` strings are the literal `reason` field returned in the worker
+/// task envelope. Every variant's wire string is pinned with
+/// `#[serde(rename = "...")]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum SkipReason {
     /// Not skipped.
@@ -58,7 +56,7 @@ pub enum SkipReason {
 }
 
 impl SkipReason {
-    /// The on-the-wire `.value` string (matches Python `SkipReason.value`).
+    /// The on-the-wire `.value` string.
     pub fn value(self) -> &'static str {
         match self {
             Self::NotSkipped => "not_skipped",

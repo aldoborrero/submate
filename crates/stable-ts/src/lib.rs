@@ -2,11 +2,6 @@
 //!
 //! The data model ([`model`]) is the foundation the regroup (B), suppress (C),
 //! and output (D) stages build on.
-//!
-//! All four stage modules are declared here up front (with stub files for the
-//! not-yet-ported stages) so each backlog item fills ONLY its own module file
-//! and never edits this crate root — avoiding the merge contention that
-//! repeatedly stranded the stable-ts cluster.
 
 pub mod model;
 pub mod output;

@@ -1,6 +1,5 @@
 //! Parity tests for on-disk subtitle discovery, driven by
-//! `fixtures/subtitle/discovery_cases.json` (captured from the live
-//! Python `submate.subtitle` helpers).
+//! `fixtures/subtitle/discovery_cases.json`.
 //!
 //! [`internal_probe`] additionally exercises the embedded-subtitle-stream
 //! language probe against a real muxed clip, gated behind an `ffprobe`-on-PATH
@@ -160,8 +159,7 @@ mod parity {
     }
 
     /// Probe the real embedded-subtitle fixture and assert the returned
-    /// `LanguageCode` list **exactly** equals the golden captured from the Python
-    /// `get_internal_subtitle_languages` reference run, then check the
+    /// `LanguageCode` list **exactly** equals the golden, then check the
     /// internal-vs-external / `only_subgen` matrix of `has_subtitle_language`.
     ///
     /// Skipped (passes as a no-op) when `ffprobe` is absent or the optional

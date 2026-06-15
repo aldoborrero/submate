@@ -13,21 +13,16 @@ use serde::Deserialize;
 use submate_lang::LanguageCode;
 
 /// Default language code used when a stream carries no `language` tag.
-///
-/// Matches the Python `stream.get("tags", {}).get("language", "und")` default.
 const UNKNOWN_LANGUAGE: &str = "und";
 
 /// Default codec name used when `codec_name` is absent.
-///
-/// Matches the Python `stream.get("codec_name", "unknown")` default.
 const UNKNOWN_CODEC: &str = "unknown";
 
 /// A single audio track in a media file.
 ///
-/// Ports the `AudioTrack` dataclass. `index` is the
-/// 0-based position among the *audio* streams (i.e. the enumeration index over
-/// the ffprobe-filtered stream list), not the global ffprobe `index` field —
-/// this mirrors the Python `enumerate(...)` semantics.
+/// `index` is the 0-based position among the *audio* streams (i.e. the
+/// enumeration index over the ffprobe-filtered stream list), not the global
+/// ffprobe `index` field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioTrack {
     /// Position among the audio streams, 0-based.
@@ -93,7 +88,7 @@ struct StreamDisposition {
 }
 
 /// The `tags` object of a stream. Absent tag objects deserialize to the
-/// default (no language, no title), matching Python's `.get("tags", {})`.
+/// default (no language, no title).
 #[derive(Debug, Default, Deserialize)]
 struct StreamTags {
     language: Option<String>,
@@ -105,7 +100,7 @@ struct StreamTags {
 ///
 /// Split out from [`get_audio_tracks`] so the parsing logic is testable
 /// without invoking the `ffprobe` binary. The `index` of each returned track
-/// is its position in the input stream list, mirroring Python's `enumerate`.
+/// is its position in the input stream list.
 pub fn parse_audio_tracks(json: &str) -> Result<Vec<AudioTrack>, ProbeError> {
     let probe: ProbeOutput = serde_json::from_str(json).map_err(ProbeError::Parse)?;
 
@@ -147,9 +142,9 @@ fn track_language_matches(track_language: &str, requested: LanguageCode) -> bool
 
 /// Find an audio track by language code, normalizing ISO 639 codes.
 ///
-/// Ports `get_audio_track_by_language`: returns the first
-/// track whose language matches, or `None`. Matching is done on the canonical
-/// [`LanguageCode`] (so `ja` matches a `jpn`-tagged track), not raw strings.
+/// Returns the first track whose language matches, or `None`. Matching is done
+/// on the canonical [`LanguageCode`] (so `ja` matches a `jpn`-tagged track),
+/// not raw strings.
 pub fn get_audio_track_by_language<'a>(
     tracks: &'a [AudioTrack],
     language: &str,
@@ -375,10 +370,9 @@ pub fn resolve_decode_language(
 
 /// Extract audio-track information from a media file via `ffprobe`.
 ///
-/// Ports `get_audio_tracks`. Runs
-/// `ffprobe -show_streams -select_streams a -of json <path>` and parses the
-/// result. Returns a [`ProbeError`] if `ffprobe` cannot be run, exits non-zero,
-/// or emits unparseable output.
+/// Runs `ffprobe -show_streams -select_streams a -of json <path>` and parses
+/// the result. Returns a [`ProbeError`] if `ffprobe` cannot be run, exits
+/// non-zero, or emits unparseable output.
 pub async fn get_audio_tracks(video_path: &Path) -> Result<Vec<AudioTrack>, ProbeError> {
     let output = tokio::process::Command::new("ffprobe")
         .args(["-show_streams", "-select_streams", "a", "-of", "json"])
@@ -400,9 +394,8 @@ pub async fn get_audio_tracks(video_path: &Path) -> Result<Vec<AudioTrack>, Prob
 
 /// Get the language code of every audio track in a media file.
 ///
-/// Ports `get_audio_languages`. On any probe failure it
-/// logs at debug level and returns an empty list rather than propagating the
-/// error, matching the Python helper's swallow-and-return-`[]` behaviour.
+/// On any probe failure it logs at debug level and returns an empty list rather
+/// than propagating the error.
 pub async fn get_audio_languages(video_path: &Path) -> Vec<String> {
     match get_audio_tracks(video_path).await {
         Ok(tracks) => tracks.into_iter().map(|track| track.language).collect(),
@@ -419,9 +412,7 @@ pub async fn get_audio_languages(video_path: &Path) -> Vec<String> {
 
 /// The audio format `ffmpeg` decodes a track to before it reaches whisper:
 /// signed 16-bit little-endian PCM (`s16le`), mono (`-ac 1`), 16 kHz
-/// (`-ar 16000`). Mirrors the keyword arguments the Python
-/// `extract_audio_track_to_memory` passes (`format="s16le"`, `ac=1`,
-/// `ar=16000`), which is the sample format speech models expect.
+/// (`-ar 16000`), which is the sample format speech models expect.
 const PCM_FORMAT: &str = "s16le";
 const PCM_CHANNELS: &str = "1";
 const PCM_SAMPLE_RATE: &str = "16000";
@@ -445,8 +436,7 @@ pub enum ExtractError {
 
 /// Extract one audio track from a media file to raw PCM held in memory.
 ///
-/// Ports `extract_audio_track_to_memory`. Runs
-/// `ffmpeg -i <path> -map 0:a:<track_index> -f s16le -ac 1 -ar 16000 pipe:`
+/// Runs `ffmpeg -i <path> -map 0:a:<track_index> -f s16le -ac 1 -ar 16000 pipe:`
 /// and returns the decoded bytes: signed 16-bit little-endian, mono, 16 kHz.
 ///
 /// `track_index` selects the track *among the audio streams* (the `0:a:N`
@@ -454,10 +444,10 @@ pub enum ExtractError {
 /// by [`get_audio_tracks`]. Returns an [`ExtractError`] if `ffmpeg` cannot be
 /// run or exits non-zero.
 ///
-/// Unlike the Python version, the output format is fixed to `s16le`: the only
-/// caller-visible use is feeding whisper / streaming to nodes, both of which
-/// want this exact raw layout, so the `format` parameter is dropped rather than
-/// carried as dead generality.
+/// The output format is fixed to `s16le`: the only caller-visible use is
+/// feeding whisper / streaming to nodes, both of which want this exact raw
+/// layout, so the `format` parameter is dropped rather than carried as dead
+/// generality.
 pub async fn extract_audio_track_to_memory(
     video_path: &Path,
     track_index: usize,
@@ -485,8 +475,7 @@ pub async fn extract_audio_track_to_memory(
     Ok(output.stdout)
 }
 
-/// The two ways audio can reach the transcription pipeline, mirroring the
-/// Python `Path | BytesIO` union returned by `prepare_audio_for_transcription`.
+/// The two ways audio can reach the transcription pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreparedAudio {
     /// The original media file should be handed to whisper directly (single- or
@@ -499,15 +488,14 @@ pub enum PreparedAudio {
 /// Prepare a media file for transcription, extracting a specific track only
 /// when one must be chosen.
 ///
-/// Ports `prepare_audio_for_transcription`. If the file
-/// has at most one audio track, returns [`PreparedAudio::Path`] with the
-/// original path (whisper can open it directly). With multiple tracks it picks
-/// one — by `language` when supplied and matched, otherwise the first track —
-/// and returns its extracted PCM as [`PreparedAudio::Pcm`].
+/// If the file has at most one audio track, returns [`PreparedAudio::Path`]
+/// with the original path (whisper can open it directly). With multiple tracks
+/// it picks one — by `language` when supplied and matched, otherwise the first
+/// track — and returns its extracted PCM as [`PreparedAudio::Pcm`].
 ///
-/// Like the Python helper, any failure (probe or extraction) is swallowed and
-/// degrades to [`PreparedAudio::Path`] with the original path, so transcription
-/// can still proceed against the whole file.
+/// Any failure (probe or extraction) is swallowed and degrades to
+/// [`PreparedAudio::Path`] with the original path, so transcription can still
+/// proceed against the whole file.
 pub async fn prepare_audio_for_transcription(
     file_path: &Path,
     selector: Option<&str>,
@@ -1102,8 +1090,7 @@ mod extract {
     use super::*;
 
     /// A probe failure (here: a path that does not exist, so `ffprobe` errors)
-    /// must degrade to the original path, not panic — matching the Python
-    /// helper's blanket `except: return file_path`.
+    /// must degrade to the original path, not panic.
     #[tokio::test]
     async fn prepare_falls_back_to_path_on_probe_failure() {
         let missing = Path::new("/nonexistent/submate-media/does-not-exist.mkv");
@@ -1112,9 +1099,8 @@ mod extract {
     }
 }
 
-/// Falsifier `extract_pcm_sha`: extract `clipA`'s first audio track to PCM with
-/// the real `ffmpeg` and assert its sha256 matches the golden captured from the
-/// Python `extract_audio_track_to_memory` (`media/clipA.pcm.sha256`).
+/// Extract `clipA`'s first audio track to PCM with the real `ffmpeg` and assert
+/// its sha256 matches the golden `media/clipA.pcm.sha256`.
 ///
 /// Skipped (passes as a no-op) when `ffmpeg` is not on `PATH` or the golden is
 /// absent — the `media/` sha256 golden is optional, so this test arms itself

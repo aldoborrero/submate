@@ -1,21 +1,20 @@
 //! Structural parity for the end-to-end transcription pipeline.
 //!
 //! The full pipeline is media → PCM → whisper.cpp decode → regroup →
-//! suppress-silence → SRT/VTT (ported from `WhisperModelWrapper.transcribe`).
+//! suppress-silence → SRT/VTT.
 //!
 //! ## `transcribe` — the structural pipeline falsifier (default build)
 //!
 //! Drives the post-decode assembly stages
 //! ([`submate_whisper::assemble_result`]) from the *captured* raw transcription
-//! (`stablets/clipA/00_raw.json`, a real faster-whisper decode) and the same
+//! (`stablets/clipA/00_raw.json`, a real decode) and the same
 //! `audio.f32` the silence stage reads, then compares the finished segments to
-//! the faster-whisper golden `transcribe/clipA.segments.json` within
+//! the golden `transcribe/clipA.segments.json` within
 //! [`SegTol`] (count ±1, time ±200 ms, text-ratio ≥ 0.9) — structural, not
-//! exact, because `whisper.cpp != faster-whisper`.
+//! exact, because the golden was produced by a different Whisper engine.
 //!
 //! The captured raw and the golden come from *separate* non-deterministic
-//! faster-whisper runs of the synthetic clip (the capture script
-//! `capture_stablets.py` decodes it three independent times). They agree on the
+//! decodes of the synthetic clip (decoded three independent times). They agree on the
 //! first two of three lines but diverge by one word in the last
 //! (own two ⇄ old into), so the comparison is split: count + per-segment timing
 //! are checked against the whole golden (the regroup re-splits the 2 raw
@@ -97,7 +96,7 @@ mod parity {
 
     /// Real end-to-end structural falsifier: decode `clipA.wav` with whisper.cpp,
     /// run the full pipeline, and assert the segments are structurally close to the
-    /// faster-whisper golden. Skipped (no-op) without the `model` feature + a model.
+    /// golden. Skipped (no-op) without the `model` feature + a model.
     #[cfg(feature = "model")]
     #[tokio::test]
     async fn transcribe_real_decode() {
@@ -135,7 +134,7 @@ mod parity {
             .collect();
         let golden_segs = segs_from_json(&golden("transcribe/clipA.segments.json"));
 
-        // Cross-engine sanity check. The golden is a faster-whisper decode; this
+        // Cross-engine sanity check. The golden is from a different Whisper engine; this
         // runs whisper.cpp. The two engines place segment BOUNDARIES differently
         // (drift up to ~700ms), so per-segment timing parity across engines is not
         // a meaningful assertion. What IS meaningful: a close segment count and an
@@ -175,7 +174,7 @@ mod parity {
     /// Structural pipeline falsifier (no model needed): the post-decode stages turn
     /// the captured raw transcription into the golden's segment *structure* — same
     /// count, same per-segment timing, same text for the segments the two
-    /// independent faster-whisper decodes agree on.
+    /// independent decodes agree on.
     #[test]
     fn transcribe() {
         let raw = raw_from_golden("stablets/clipA/00_raw.json");

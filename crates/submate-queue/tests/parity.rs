@@ -1,12 +1,12 @@
 //! Falsifier `parity::queue_enum_values`: every `OutputFormat` / `SkipReason`
-//! variant serializes to the exact Python `.value` string captured in
+//! variant serializes to the exact `.value` string captured in
 //! `queue/enum_values.json`.
 //!
 //! The golden uses its **own** file (not `types/enum_values.json`, whose
-//! `no_uncovered_enums_in_golden` guard requires exactly the six `types.py`
-//! enums). It is shaped `{EnumName: {PYTHON_VARIANT_NAME: value}}`; each Rust
-//! variant is paired with its Python variant name so a divergence in either
-//! set of strings — or a missing/extra variant — fails loudly.
+//! `no_uncovered_enums_in_golden` guard requires exactly the six `submate-types`
+//! enums). It is shaped `{EnumName: {VARIANT_NAME: value}}`; each Rust variant
+//! is paired with its variant name so a divergence in either set of strings —
+//! or a missing/extra variant — fails loudly.
 
 use std::collections::BTreeMap;
 
@@ -105,7 +105,7 @@ fn queue_enum_values() {
     );
 }
 
-/// Guard against the golden gaining a queue enum the Rust port forgot to cover.
+/// Guard against the golden gaining a queue enum the tests forgot to cover.
 #[test]
 fn no_uncovered_enums_in_golden() {
     let golden_table = golden("queue/enum_values.json");

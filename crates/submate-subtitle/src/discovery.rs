@@ -5,14 +5,14 @@
 //! dot-boundary stem match, the reversed filename-language scan, the LRC path
 //! helpers, plus the embedded-subtitle-stream language probe and the
 //! internal-OR-external combinator. The filesystem helpers depend only on
-//! `std` plus the already-ported [`submate_lang::LanguageCode`] table; the
-//! internal probe shells out to `ffprobe` (the convention `submate-media`'s
-//! audio-track probe already uses) instead of PyAV.
+//! `std` plus the [`submate_lang::LanguageCode`] table; the internal probe
+//! shells out to `ffprobe` (the convention `submate-media`'s audio-track probe
+//! already uses).
 //!
-//! Filename component semantics (`stem`/`suffix`/`with_suffix`) mirror Python
-//! `pathlib.PurePath` exactly, so they agree with the conventions the rest of
-//! the port (e.g. `submate-paths`) relies on. The implementation lives here
-//! rather than importing `camino` to keep this crate on `std` only.
+//! Filename component semantics (`stem`/`suffix`/`with_suffix`) follow
+//! `pathlib.PurePath` rules, so they agree with the conventions the rest of the
+//! crates (e.g. `submate-paths`) rely on. The implementation lives here rather
+//! than importing `camino` to keep this crate on `std` only.
 
 use std::path::{Path, PathBuf};
 
@@ -20,21 +20,20 @@ use serde::Deserialize;
 use submate_lang::LanguageCode;
 
 /// Subtitle file extensions used for on-disk discovery (lowercased, dot
-/// prefixed). Mirrors `submate.subtitle.SUBTITLE_EXTENSIONS` exactly — this is
-/// the WIDE discovery set, distinct from the narrower translate-path set in
-/// `cli/commands/translate.py`.
+/// prefixed). This is the WIDE discovery set, distinct from the narrower
+/// translate-path set.
 pub const SUBTITLE_EXTENSIONS: &[&str] = &[
     ".srt", ".vtt", ".sub", ".ass", ".ssa", ".idx", ".sbv", ".pgs", ".ttml", ".lrc",
 ];
 
-/// Python `PurePath.name`: the final path component as a string.
+/// `PurePath.name`: the final path component as a string.
 fn path_name(path: &Path) -> &str {
     path.file_name().and_then(|n| n.to_str()).unwrap_or("")
 }
 
-/// Python `PurePath.stem`: the final component without its last suffix.
+/// `PurePath.stem`: the final component without its last suffix.
 ///
-/// Matches CPython's rule: the suffix split point is the last `.` that is
+/// The suffix split point is the last `.` that is
 /// neither the first character of the name nor the final character. So
 /// `movie.en.srt` -> `movie.en`, `.hidden` -> `.hidden`, `trailing.` ->
 /// `trailing.`.
@@ -46,7 +45,7 @@ pub fn path_stem(path: &Path) -> &str {
     }
 }
 
-/// Python `PurePath.suffix`: the last `.`-segment of the final component
+/// `PurePath.suffix`: the last `.`-segment of the final component
 /// (including the leading dot), or `""` when there is none.
 pub fn path_suffix(path: &Path) -> &str {
     let name = path_name(path);
@@ -56,7 +55,7 @@ pub fn path_suffix(path: &Path) -> &str {
     }
 }
 
-/// Index of the suffix-introducing `.` in `name`, per CPython
+/// Index of the suffix-introducing `.` in `name`
 /// (`0 < i < len(name) - 1`), or `None` when `name` has no suffix.
 fn suffix_split(name: &str) -> Option<usize> {
     let i = name.rfind('.')?;
@@ -67,7 +66,7 @@ fn suffix_split(name: &str) -> Option<usize> {
     }
 }
 
-/// Python `PurePath.with_suffix(suffix)`: replace the final component's last
+/// `PurePath.with_suffix(suffix)`: replace the final component's last
 /// suffix with `suffix`, or append it when the component has no suffix.
 pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let name = path_name(path);
@@ -100,7 +99,7 @@ fn stem_matches(stem: &str, video_stem: &str) -> bool {
 /// Returns `[]` when `video_path` does not exist. Otherwise scans the parent
 /// directory, keeping regular files whose lowercased suffix is in
 /// [`SUBTITLE_EXTENSIONS`] and whose stem matches the video stem at a dot
-/// boundary. Scan order is not contractual (Python uses unordered `iterdir()`).
+/// boundary. Scan order is not contractual.
 pub fn get_external_subtitle_paths(video_path: &Path) -> Vec<PathBuf> {
     if !video_path.exists() {
         return Vec::new();
@@ -113,14 +112,14 @@ pub fn get_external_subtitle_paths(video_path: &Path) -> Vec<PathBuf> {
     let video_stem = path_stem(video_path);
 
     let Ok(entries) = std::fs::read_dir(&video_dir) else {
-        // Python swallows OSError from a failed scan and returns what it has.
+        // A failed scan returns what we have rather than erroring.
         return Vec::new();
     };
 
     let mut subtitle_paths = Vec::new();
     for entry in entries.flatten() {
         let file = entry.path();
-        // `is_file()` follows symlinks, matching pathlib's `Path.is_file`.
+        // `is_file()` follows symlinks.
         if !file.is_file() {
             continue;
         }
@@ -210,8 +209,7 @@ struct RawStream {
 }
 
 /// The `tags` object of a stream. An absent `tags` object deserializes to the
-/// default (no language), matching Python's `stream.metadata.get(...)` on an
-/// empty mapping.
+/// default (no language).
 #[derive(Debug, Default, Deserialize)]
 struct StreamTags {
     language: Option<String>,
@@ -227,8 +225,7 @@ struct StreamTags {
 ///
 /// Each subtitle stream's `tags.language` is mapped through
 /// [`LanguageCode::from_iso_639_2`], which already yields [`LanguageCode::None`]
-/// for an absent, empty, or unmappable tag — mirroring the Python
-/// `from_iso_639_2(lang_code) or LanguageCode.NONE`.
+/// for an absent, empty, or unmappable tag.
 fn parse_internal_subtitle_languages(json: &str) -> Option<Vec<LanguageCode>> {
     let probe: ProbeOutput = serde_json::from_str(json).ok()?;
     Some(
@@ -246,8 +243,8 @@ fn parse_internal_subtitle_languages(json: &str) -> Option<Vec<LanguageCode>> {
 /// Returns `None` on any failure (binary missing, spawn error, non-zero exit,
 /// non-UTF-8 output) so the public probe can fold every error into the empty
 /// fallback. Uses a synchronous `std::process::Command` to keep the subtitle
-/// crate off an async runtime — the Python helper is synchronous and the
-/// downstream queue skip-decision calls it as a plain predicate.
+/// crate off an async runtime — the downstream queue skip-decision calls it as
+/// a plain predicate.
 fn run_ffprobe_streams(file_path: &Path) -> Option<String> {
     let output = std::process::Command::new("ffprobe")
         .args(["-show_streams", "-of", "json"])
@@ -262,15 +259,12 @@ fn run_ffprobe_streams(file_path: &Path) -> Option<String> {
 
 /// Language of every embedded (internal) subtitle stream, in stream order.
 ///
-/// Ports `get_internal_subtitle_languages`. Python
-/// opens the file with PyAV and reads each `stream.metadata["language"]` for
-/// `stream.type == "subtitle"`; the port shells out to `ffprobe` instead,
-/// filtering `codec_type == "subtitle"` and mapping `tags.language` the same
-/// way. Stream order is contractual — one [`LanguageCode`] per subtitle stream.
+/// Shells out to `ffprobe`, filtering `codec_type == "subtitle"` and mapping
+/// `tags.language`. Stream order is contractual — one [`LanguageCode`] per
+/// subtitle stream.
 ///
 /// Every error (missing file, missing `ffprobe`, demux/parse failure) is
-/// swallowed and yields `[]`, mirroring the Python blanket
-/// `except Exception: return []`.
+/// swallowed and yields `[]`.
 pub fn get_internal_subtitle_languages(file_path: &Path) -> Vec<LanguageCode> {
     run_ffprobe_streams(file_path)
         .and_then(|json| parse_internal_subtitle_languages(&json))
@@ -278,28 +272,21 @@ pub fn get_internal_subtitle_languages(file_path: &Path) -> Vec<LanguageCode> {
 }
 
 /// Whether the video has an internal subtitle stream in `language`.
-///
-/// Ports `has_internal_subtitle_language` — `language in
-/// get_internal_subtitle_languages(video_path)`.
 pub fn has_internal_subtitle_language(video_path: &Path, language: LanguageCode) -> bool {
     get_internal_subtitle_languages(video_path).contains(&language)
 }
 
 /// Whether the video has any internal (embedded) subtitle stream.
-///
-/// Ports `has_any_internal_subtitle` —
-/// `len(get_internal_subtitle_languages(video_path)) > 0`.
 pub fn has_any_internal_subtitle(video_path: &Path) -> bool {
     !get_internal_subtitle_languages(video_path).is_empty()
 }
 
 /// Whether the video has a subtitle in `language`, internal OR external.
 ///
-/// Ports `has_subtitle_language`: the predicate the
-/// queue skip decision calls. Internal streams are checked first, but **only
-/// when** `!only_subgen` (internal tracks can never be "subgen"); then the
-/// external half ([`has_external_subtitle_language`]) is consulted with the
-/// same `only_subgen` flag.
+/// The predicate the queue skip decision calls. Internal streams are checked
+/// first, but **only when** `!only_subgen` (internal tracks can never be
+/// "subgen"); then the external half ([`has_external_subtitle_language`]) is
+/// consulted with the same `only_subgen` flag.
 pub fn has_subtitle_language(video_path: &Path, language: LanguageCode, only_subgen: bool) -> bool {
     if !only_subgen && has_internal_subtitle_language(video_path, language) {
         return true;
@@ -414,8 +401,7 @@ mod tests {
 
     #[test]
     fn internal_probe_maps_unmappable_and_missing_tag_to_none() {
-        // Empty tag, garbage tag, and absent `tags` all collapse to None,
-        // matching `from_iso_639_2(...) or LanguageCode.NONE`.
+        // Empty tag, garbage tag, and absent `tags` all collapse to None.
         let json = r#"{
             "streams": [
                 { "codec_type": "subtitle", "tags": { "language": "" } },

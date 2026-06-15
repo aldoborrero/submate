@@ -1,21 +1,20 @@
 //! Shared enums.
 //!
-//! Each enum mirrors a Python `StrEnum`. Variant string representations must
-//! match Python's `.value` byte-for-byte, because these strings cross the
-//! config/CLI/wire boundary (Pydantic-Settings env vars, JSON payloads, file
-//! suffixes). The non-identity cases are the dotted Whisper `.en` models, the
-//! hyphenated `*-whisper` implementations, and the `iso_639_*` language naming
-//! codes — see the literals below.
+//! Variant string representations are fixed: the string forms are part of the
+//! config/CLI/wire contract (env vars, JSON payloads, file suffixes), so they
+//! must stay byte-for-byte stable. The non-identity cases are the dotted
+//! Whisper `.en` models, the hyphenated `*-whisper` implementations, and the
+//! `iso_639_*` language naming codes — see the literals below.
 //!
 //! `Display`/`FromStr` come from `strum` and serde `Serialize`/`Deserialize`
 //! is derived from the same per-variant rename, so all four directions agree
-//! on the exact Python string. Parity against the captured Python values is
-//! enforced by `tests/parity.rs` (falsifier `parity::enum_values`).
+//! on the exact string. Parity against the recorded values is enforced by
+//! `tests/parity.rs` (falsifier `parity::enum_values`).
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
-/// Valid Whisper model sizes (`submate.types.WhisperModel`).
+/// Valid Whisper model sizes.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]
@@ -58,7 +57,7 @@ pub enum WhisperModel {
     LargeV3,
 }
 
-/// Valid Whisper implementations (`submate.types.WhisperImplementation`).
+/// Valid Whisper implementations.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]
@@ -74,7 +73,7 @@ pub enum WhisperImplementation {
     HfWhisper,
 }
 
-/// Valid compute devices (`submate.types.Device`).
+/// Valid compute devices.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]
@@ -90,7 +89,7 @@ pub enum Device {
     Auto,
 }
 
-/// Valid transcription tasks (`submate.types.TranscriptionTask`).
+/// Valid transcription tasks.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]
@@ -103,8 +102,7 @@ pub enum TranscriptionTask {
     Translate,
 }
 
-/// Language code format for subtitle filenames
-/// (`submate.types.LanguageNamingType`).
+/// Language code format for subtitle filenames.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]
@@ -131,7 +129,7 @@ pub enum LanguageNamingType {
     Native,
 }
 
-/// LLM backends for subtitle translation (`submate.types.TranslationBackend`).
+/// LLM backends for subtitle translation.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, Serialize, Deserialize,
 )]

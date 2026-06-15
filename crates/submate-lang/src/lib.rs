@@ -1,24 +1,23 @@
 //! `LanguageCode` enum and ISO-639 conversions.
 //!
-//! Port: The variant set, the
+//! The variant set, the
 //! `(iso_639_1, iso_639_2_t, iso_639_2_b, name_en, name_native)` table, and the
-//! lookup/conversion semantics match the Python implementation byte-for-byte,
-//! including ISO 639-2/B vs /T divergences (e.g. Tibetan `bod`/`tib`, German
-//! `deu`/`ger`) and non-Latin native names.
+//! lookup/conversion semantics include the ISO 639-2/B vs /T divergences (e.g.
+//! Tibetan `bod`/`tib`, German `deu`/`ger`) and non-Latin native names.
 //!
 //! The table is hand-rolled rather than sourced from a third-party language
-//! crate: those crates carry their own (differing) data, and downstream
-//! subtitle/path/config layers require exact parity with the Python tables.
+//! crate: those crates carry their own (differing) data, and the downstream
+//! subtitle/path/config code requires exact parity with this table.
 
 /// Comprehensive language code enum with ISO 639-1, ISO 639-2/T and ISO 639-2/B
 /// support, plus English and native names.
 ///
 /// [`LanguageCode::None`] represents an absent/unknown language; it maps to all
-/// `None` codes and names, mirroring the Python `NONE` member.
-// Variant identifiers deliberately match the Python `LanguageCode` member
-// names 1:1 (e.g. `HAITIAN_CREOLE`), which the parity test relies on for its
-// name-based fixture mapping. This trades Rust naming convention for exact,
-// auditable, stable correspondence.
+/// `None` codes and names.
+// Variant identifiers deliberately use the uppercase member names (e.g.
+// `HAITIAN_CREOLE`), which the parity test relies on for its name-based fixture
+// mapping. This trades Rust naming convention for exact, auditable, stable
+// correspondence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 pub enum LanguageCode {
@@ -137,12 +136,11 @@ struct LangEntry {
     name_native: Option<&'static str>,
 }
 
-/// The full language table, in Python definition order.
+/// The full language table, in definition order.
 ///
-/// Lookups iterate this slice front-to-back and return the first match, exactly
-/// matching the Python `for lang in LanguageCode` resolution order. The
-/// `NONE` member is intentionally excluded here; it is the fallback returned
-/// when nothing matches.
+/// Lookups iterate this slice front-to-back and return the first match, so the
+/// order is significant. [`LanguageCode::None`] is intentionally excluded here;
+/// it is the fallback returned when nothing matches.
 #[rustfmt::skip]
 const TABLE: &[LangEntry] = &[
     LangEntry { variant: LanguageCode::AFAR, iso_639_1: Some("aa"), iso_639_2_t: Some("aar"), iso_639_2_b: Some("aar"), name_en: Some("Afar"), name_native: Some("Afar") },
@@ -360,12 +358,12 @@ impl LanguageCode {
         Self::from_string(value) != Self::None
     }
 
-    /// Mirrors Python `bool(lang)`: true unless this is [`LanguageCode::None`].
+    /// True unless this is [`LanguageCode::None`].
     pub fn is_some(self) -> bool {
         self.to_iso_639_1().is_some()
     }
 
-    /// Mirrors Python `str(lang)`: the English name, or `"Unknown"`.
+    /// The English name, or `"Unknown"`.
     pub fn display_name(self) -> &'static str {
         self.name_en().unwrap_or("Unknown")
     }
@@ -377,8 +375,7 @@ impl std::fmt::Display for LanguageCode {
     }
 }
 
-/// Lowercase + trim, returning `None` for empty/absent input. Matches the
-/// Python guard `if not code: ...` followed by `code.lower().strip()`.
+/// Lowercase + trim, returning `None` for empty/absent input.
 fn normalize(s: Option<&str>) -> Option<String> {
     let s = s?;
     if s.is_empty() {

@@ -1,8 +1,8 @@
 //! Config parity falsifiers.
 //!
 //! * `parity::defaults` — a default-constructed [`Config`] serializes to exactly
-//!   the captured Python golden `config/defaults.resolved.json`, pinning every
-//!   field name and default value to the Pydantic model.
+//!   the golden `config/defaults.resolved.json`, pinning every field name and
+//!   default value.
 //! * `parity::env_nesting` — `config/nested.env` resolved through
 //!   [`Config::from_env`] equals `config/nested.resolved.json`, pinning the
 //!   `SUBMATE__` prefix, the `__` nesting delimiter, and env-coercion of scalar

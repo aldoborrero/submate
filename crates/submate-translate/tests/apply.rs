@@ -1,14 +1,13 @@
-//! Parity: the mocked-LLM SRT apply flow matches the Python golden EXACTLY.
+//! Parity: the mocked-LLM SRT apply flow matches the golden EXACTLY.
 //!
-//! This is the "mocked-LLM translation must match Python byte-for-byte" layer
-//! that `parity::chunking` does not cover. `chunking` stops at the joined batch
-//! string; this test drives the *whole* `TranslationService.translate_srt_content`
-//! flow through the ported
-//! [`submate_translate::translate_srt_content`], with completions served from
-//! `fixtures/translate/mock_llm.json` by exact prompt key (no HTTP), and
+//! This is the "mocked-LLM translation must match the golden byte-for-byte"
+//! layer that `parity::chunking` does not cover. `chunking` stops at the joined
+//! batch string; this test drives the *whole*
+//! [`submate_translate::translate_srt_content`] flow, with completions served
+//! from `fixtures/translate/mock_llm.json` by exact prompt key (no HTTP), and
 //! asserts the recomposed SRT equals `fixtures/translate/sampleA.out.srt`.
 //!
-//! Flow ported (en -> es, so the `source_lang == target_lang` short-circuit is
+//! Flow (en -> es, so the `source_lang == target_lang` short-circuit is
 //! NOT exercised):
 //! 1. `translate_srt_content` parses `sampleA.in.srt` into cues;
 //! 2. default `chunk_size = 50`, so the 3 cues form a single batch;
@@ -33,14 +32,14 @@ use std::convert::Infallible;
 
 use submate_translate::translate_srt_content;
 
-/// Python default `chunk_size` (`TranslationSettings.chunk_size`).
+/// Default `chunk_size`.
 const DEFAULT_CHUNK_SIZE: usize = 50;
 
 mod parity {
     use super::*;
 
     /// Falsifier `cargo test -p submate-translate parity::apply`: the
-    /// mocked-LLM SRT apply flow reproduces the Python golden byte-for-byte.
+    /// mocked-LLM SRT apply flow reproduces the golden byte-for-byte.
     #[tokio::test]
     async fn apply() {
         let input = std::fs::read_to_string(::parity::fixture_path("translate/sampleA.in.srt"))

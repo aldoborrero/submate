@@ -1,20 +1,20 @@
 //! Parity test helpers.
 //!
-//! The port is verified by diffing Rust output against *golden* output
-//! captured from the existing Python `submate` (see `fixtures/`). Two
-//! diff modes exist, and picking the right one per layer is the whole point:
+//! Behavior is verified by diffing output against *golden* fixtures (see
+//! `fixtures/`). Three diff modes exist, and picking the right one per layer is
+//! the whole point:
 //!
 //! * **Exact** ([`assert_json_eq`], [`assert_str_eq`]) — for deterministic
 //!   pure-data layers: config resolution, the language table, paths, subtitle
-//!   detection, mocked-LLM translation, and *all* of stable-ts regroup (B) and
-//!   output (D). The Rust value MUST equal the Python golden byte-for-byte.
-//! * **Float-tolerant** ([`assert_f32_close`]) — for the suppress-silence DSP
-//!   (C): same `audio.f32` in, word timings out; deterministic math, compared
-//!   at a tight epsilon.
+//!   detection, mocked-LLM translation, and *all* of stable-ts regroup and
+//!   output. The value MUST equal the golden byte-for-byte.
+//! * **Float-tolerant** ([`assert_f32_close`]) — for the suppress-silence DSP:
+//!   same `audio.f32` in, word timings out; deterministic math, compared at a
+//!   tight epsilon.
 //! * **Structural-within-tolerance** ([`assert_segments_close`]) — for full
-//!   transcription only, where whisper.cpp ≠ faster-whisper and byte-equality
-//!   is impossible. Compares segment count, per-segment timing, and text
-//!   similarity within an explicit [`SegTol`].
+//!   transcription only, where byte-equality is impossible. Compares segment
+//!   count, per-segment timing, and text similarity within an explicit
+//!   [`SegTol`].
 //!
 //! Fixtures resolve relative to `fixtures/`. Tests reference them by
 //! sub-path, e.g. `golden("config/defaults.resolved.json")`.

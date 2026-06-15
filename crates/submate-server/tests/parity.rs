@@ -1,19 +1,16 @@
 //! Core router parity falsifiers.
 //!
-//! The `root()` / `status()` handlers
-//! (`crates/submate-server/src/lib.rs`) reproduce the response shapes of
-//! the core router. These tests pin them to
-//! the captured golden `server/core_router.json` so the Rust handlers and the
-//! Python SPEC cannot silently drift.
+//! The `root()` / `status()` handlers (`crates/submate-server/src/lib.rs`)
+//! produce the response shapes of the core router. These tests pin them to the
+//! golden `server/core_router.json` so the handlers cannot silently drift.
 //!
 //! * `core_router::root` — `GET /` must equal the golden `root` object exactly:
 //!   `name`, `version`, `docs`, and all four `endpoints` keys/values
 //!   (`bazarr_asr`, `bazarr_detect_language`, `status`, `queue`).
 //! * `core_router::status` — `GET /status` must carry the static envelope from
 //!   the golden `status` object (`status`/`version` scalars) plus a `queue`
-//!   object key. The queue *contents* are deliberately not pinned: Python
-//!   returns live Huey state (`{pending, scheduled}`) while the Rust server uses
-//!   a node-topology shape on purpose (see `docs/architecture.md`).
+//!   object key. The queue *contents* are deliberately not pinned: the server
+//!   uses a node-topology shape on purpose (see `docs/architecture.md`).
 
 use axum::{
     Router,

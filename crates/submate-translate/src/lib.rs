@@ -1,19 +1,15 @@
 //! LLM translation backends.
 //!
-//! This crate ports the backend-agnostic *machinery* of the Python
-//! `TranslationService`:
+//! This crate provides the backend-agnostic *machinery* for translation:
 //!
-//! * [`Backend`] — the trait ported from `TranslationBackendBase`. Subclasses
-//!   in Python implement only `_complete` (client construction + response
-//!   extraction); prompt construction lives in the base `translate`. The Rust
-//!   trait mirrors that split: implementors provide [`Backend::complete`]
-//!   (HTTP, out of scope here), and the provided [`Backend::translate`] does the
-//!   shared prompt formatting.
+//! * [`Backend`] — the translation trait. Implementors provide only
+//!   [`Backend::complete`] (client construction + response extraction); prompt
+//!   construction lives in the provided [`Backend::translate`].
 //! * [`chunk_ranges`] / [`join_batch`] / [`split_batch`] — the chunked batch
-//!   logic from `translate_subtitles` / `_translate_batch`: split inputs into
-//!   `ceil(len / chunk_size)` batches, join each batch with a separator token,
-//!   then split the model reply back into stripped blocks, falling back to the
-//!   originals when the returned block count does not match the input count.
+//!   logic: split inputs into `ceil(len / chunk_size)` batches, join each batch
+//!   with a separator token, then split the model reply back into stripped
+//!   blocks, falling back to the originals when the returned block count does
+//!   not match the input count.
 //!
 //! Three of the four providers speak the OpenAI chat-completions wire format, so
 //! they share a single [`OpenAiCompatBackend`] built on the `async-openai`
@@ -34,26 +30,24 @@ use async_openai::types::chat::{
 };
 use serde::Serialize;
 
-/// Default chunked-translation prompt template (ports `TRANSLATION_PROMPT`).
+/// Default chunked-translation prompt template.
 ///
 /// `{source_lang}`, `{target_lang}` and `{text}` are substituted by
 /// [`format_prompt`]. The body ends with `Text to translate:\n{text}` so the
 /// joined batch (separator-token-delimited cues) lands as the payload.
 pub const TRANSLATION_PROMPT: &str = "Translate the following subtitle text from {source_lang} to {target_lang}.\n\nRules:\n- Only output the translated text, nothing else\n- Preserve line breaks where they appear\n- Maintain natural speech patterns suitable for subtitles\n- Keep the same number of subtitle blocks (separated by ---BREAK---)\n\nText to translate:\n{text}";
 
-/// Separator token joining SRT cue contents within a batch (ports the
-/// `separator_token="---BREAK---"` default used by `_translate_chunk`).
+/// Separator token joining SRT cue contents within a batch.
 pub const SRT_SEPARATOR_TOKEN: &str = "---BREAK---";
 
-/// Separator token used for WebVTT/ASS cue batches (ports
-/// `separator_token="|||SUBTITLE_BREAK|||"`).
+/// Separator token used for WebVTT/ASS cue batches.
 pub const VTT_SEPARATOR_TOKEN: &str = "|||SUBTITLE_BREAK|||";
 
 /// Substitute `{source_lang}`, `{target_lang}` and `{text}` into a prompt
-/// template, mirroring Python's `template.format(...)`.
+/// template.
 ///
 /// Only these three placeholders are replaced, in a single left-to-right pass,
-/// so literal braces elsewhere in the template are left untouched (the ported
+/// so literal braces elsewhere in the template are left untouched (the
 /// templates contain none beyond the three placeholders).
 pub fn format_prompt(template: &str, source_lang: &str, target_lang: &str, text: &str) -> String {
     template
@@ -62,12 +56,11 @@ pub fn format_prompt(template: &str, source_lang: &str, target_lang: &str, text:
         .replace("{text}", text)
 }
 
-/// A translation backend (ports `TranslationBackendBase`).
+/// A translation backend.
 ///
 /// Implementors provide only [`complete`](Backend::complete) — sending a
 /// fully-formed prompt to the model and returning the reply text. The provided
-/// [`translate`](Backend::translate) builds the prompt from the shared template,
-/// exactly as the Python base class does.
+/// [`translate`](Backend::translate) builds the prompt from the shared template.
 ///
 /// `complete`/`translate` are `async` via [`async_trait`](async_trait::async_trait),
 /// which boxes the returned futures so the trait stays object-safe for
@@ -82,15 +75,14 @@ pub trait Backend {
 
     /// Send a fully-formed prompt to the model and return the reply text.
     ///
-    /// Ports `TranslationBackendBase._complete`. Implementations strip the
-    /// reply (the Python backends call `.strip()` before returning); the
-    /// chunking layer does not re-strip the whole reply.
+    /// Implementations strip the reply before returning; the chunking layer
+    /// does not re-strip the whole reply.
     async fn complete(&self, prompt: &str) -> Result<String, BackendError>;
 
     /// Translate `text` from `source_lang` to `target_lang`.
     ///
-    /// Ports `TranslationBackendBase.translate`: format the prompt (defaulting
-    /// to [`TRANSLATION_PROMPT`]) then delegate to [`complete`](Backend::complete).
+    /// Format the prompt (defaulting to [`TRANSLATION_PROMPT`]) then delegate
+    /// to [`complete`](Backend::complete).
     async fn translate(
         &self,
         text: &str,
@@ -179,8 +171,7 @@ pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
 
 /// Error returned by a [`Backend`] when completion fails.
 ///
-/// The per-backend grind items extend this with transport-specific variants;
-/// here it is the minimal surface the chunking machinery needs.
+/// This is the minimal surface the chunking machinery needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
     /// The backend SDK / optional dependency was not available.
@@ -218,20 +209,19 @@ impl From<OpenAIError> for BackendError {
     }
 }
 
-/// Default Ollama model (ports `OllamaBackend.__init__`'s `model="llama3.2"`).
+/// Default Ollama model.
 pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 
-/// Default Ollama host (ports `base_url="http://localhost:11434"`).
+/// Default Ollama host.
 ///
 /// The [`make_backend`] routing appends `/v1` to reach Ollama's
 /// OpenAI-compatible chat endpoint.
 pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
-/// Default OpenAI model (ports `OpenAIBackend.__init__`'s `model="gpt-5-mini"`).
+/// Default OpenAI model.
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5-mini";
 
-/// Default Gemini model (ports `GeminiBackend.__init__`'s
-/// `model="gemini-2.5-flash"`).
+/// Default Gemini model.
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 
 /// Base URL for Gemini's OpenAI-compatible endpoint.
@@ -272,8 +262,7 @@ fn http_client() -> reqwest::Client {
 /// OpenAI-compatible translation backend, shared by OpenAI, Ollama and Gemini.
 ///
 /// Wraps an `async-openai` [`Client`] configured by `base_url` + API key, so the
-/// three providers differ only in those two values (and the model name). Ports
-/// the Python `OpenAIBackend`/`OllamaBackend`/`GeminiBackend` `_complete`:
+/// three providers differ only in those two values (and the model name).
 /// [`complete`](Backend::complete) sends the prompt as a single user message via
 /// `POST {base_url}/chat/completions` and returns the stripped
 /// `choices[0].message.content` (empty string when null).
@@ -341,20 +330,19 @@ impl Backend for OpenAiCompatBackend {
     }
 }
 
-/// Default Claude model (ports `ClaudeBackend.__init__`'s
-/// `model="claude-sonnet-4-6"`).
+/// Default Claude model.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
 /// Default Anthropic messages API base URL.
 ///
-/// The Python backend uses the `anthropic` SDK, whose default base is
-/// `https://api.anthropic.com`; the messages endpoint is `{base}/v1/messages`.
+/// The default base is `https://api.anthropic.com`; the messages endpoint is
+/// `{base}/v1/messages`.
 pub const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 
-/// `anthropic-version` header value sent by the `anthropic` SDK.
+/// `anthropic-version` header value sent on every request.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
-/// `max_tokens` value the Python `ClaudeBackend` hard-codes on every request.
+/// `max_tokens` value hard-coded on every Claude request.
 const CLAUDE_MAX_TOKENS: u32 = 4096;
 
 /// One chat message in a Claude / OpenAI request body (`{role, content}`).
@@ -365,9 +353,6 @@ struct ChatMessage<'a> {
 }
 
 /// Body of `POST /v1/messages`, matching the Anthropic messages API.
-///
-/// Mirrors the Python `client.messages.create(model=..., max_tokens=4096,
-/// messages=[{"role": "user", "content": prompt}])` call.
 #[derive(Serialize)]
 struct ClaudeRequest<'a> {
     model: &'a str,
@@ -377,10 +362,9 @@ struct ClaudeRequest<'a> {
 
 /// Subset of the messages API response we read back.
 ///
-/// The Python backend walks `message.content` and returns the first block that
-/// has a `text` attribute (the `TextBlock`), ignoring other block types
-/// (e.g. tool-use blocks). We deserialise each block's optional `text` and pick
-/// the first one present.
+/// We walk `content` and return the first block that has a `text` field (the
+/// text block), ignoring other block types (e.g. tool-use blocks). We
+/// deserialise each block's optional `text` and pick the first one present.
 #[derive(serde::Deserialize)]
 struct ClaudeResponse {
     content: Vec<ClaudeBlock>,
@@ -392,13 +376,12 @@ struct ClaudeBlock {
     text: Option<String>,
 }
 
-/// Claude/Anthropic translation backend (ports `ClaudeBackend`).
+/// Claude/Anthropic translation backend.
 ///
 /// [`complete`](Backend::complete) POSTs the prompt as a single user message to
 /// `{base_url}/v1/messages` with the `x-api-key` and `anthropic-version`
 /// headers, then returns the stripped text of the first content block that
-/// carries text — mirroring the Python loop over `message.content` that returns
-/// the first block with a `text` attribute.
+/// carries text.
 pub struct AnthropicBackend {
     api_key: String,
     model: String,
@@ -410,8 +393,7 @@ impl AnthropicBackend {
     /// Construct a Claude backend for `model` authenticating with `api_key`
     /// against the default Anthropic base URL.
     ///
-    /// Ports `ClaudeBackend(api_key, model)`. Pass [`DEFAULT_CLAUDE_MODEL`] to
-    /// reproduce the Python default.
+    /// Pass [`DEFAULT_CLAUDE_MODEL`] for the default model.
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::with_base_url(api_key, model, DEFAULT_ANTHROPIC_URL)
     }
@@ -470,13 +452,12 @@ impl Backend for AnthropicBackend {
 }
 
 /// The half-open index ranges for each batch when splitting `len` items into
-/// chunks of `chunk_size` (ports the `total_chunks` / `start_idx`..`end_idx`
-/// loop in `translate_subtitles`).
+/// chunks of `chunk_size`.
 ///
 /// Produces `ceil(len / chunk_size)` ranges; the final range is short when
 /// `len` is not a multiple of `chunk_size`. A `chunk_size` of zero is treated
-/// as a single all-encompassing batch rather than dividing by zero (the Python
-/// config validator keeps `chunk_size >= 1`, so this only guards misuse).
+/// as a single all-encompassing batch rather than dividing by zero (the config
+/// validator keeps `chunk_size >= 1`, so this only guards misuse).
 pub fn chunk_ranges(len: usize, chunk_size: usize) -> Vec<Range<usize>> {
     if len == 0 {
         return Vec::new();
@@ -496,8 +477,8 @@ pub fn chunk_ranges(len: usize, chunk_size: usize) -> Vec<Range<usize>> {
         .collect()
 }
 
-/// Join one batch's cue contents into the single string sent to the backend
-/// (ports `separator.join(texts)` where `separator = f"\n{separator_token}\n"`).
+/// Join one batch's cue contents into the single string sent to the backend,
+/// using `\n{separator_token}\n` between cues.
 pub fn join_batch<S: AsRef<str>>(texts: &[S], separator_token: &str) -> String {
     let separator = format!("\n{separator_token}\n");
     texts
@@ -507,15 +488,13 @@ pub fn join_batch<S: AsRef<str>>(texts: &[S], separator_token: &str) -> String {
         .join(&separator)
 }
 
-/// Split a translated batch back into per-cue blocks (ports the realignment in
-/// `_translate_batch`).
+/// Split a translated batch back into per-cue blocks.
 ///
 /// The reply is split on the bare `separator_token` and each part is stripped.
 /// If the resulting block count does not match `input_count`, alignment is
-/// unreliable, so the caller's `originals` are returned unchanged — matching the
-/// Python fallback that keeps originals for the whole batch rather than shifting
-/// translations onto the wrong cues. The returned vec always has length
-/// `originals.len()`.
+/// unreliable, so the caller's `originals` are returned unchanged — keeping
+/// originals for the whole batch rather than shifting translations onto the
+/// wrong cues. The returned vec always has length `originals.len()`.
 pub fn split_batch(translated: &str, separator_token: &str, originals: &[String]) -> Vec<String> {
     let parts: Vec<String> = translated
         .split(separator_token)
@@ -528,18 +507,16 @@ pub fn split_batch(translated: &str, separator_token: &str, originals: &[String]
     parts
 }
 
-/// ASS/SSA tag-preservation prompt (ports `ASS_TRANSLATION_PROMPT`).
+/// ASS/SSA tag-preservation prompt.
 ///
 /// Used by [`translate_ass_dialogue`] instead of [`TRANSLATION_PROMPT`]: it
 /// instructs the model to translate only the human-readable dialogue while
 /// leaving `{...}` override tags and `\N` / `\n` newline markers untouched.
-/// The literal `{{...}}` braces in the Python f-string-style template are
-/// single braces here (Rust does not escape them).
 pub const ASS_TRANSLATION_PROMPT: &str = "Translate the following ASS subtitle dialogue from {source_lang} to {target_lang}.\n\nCRITICAL RULES:\n1. ONLY translate the human-readable dialogue text\n2. PRESERVE ALL formatting tags exactly as-is: {\\i1}, {\\b1}, {\\pos(x,y)}, {\\an8}, {\\fad(x,y)}, etc.\n3. PRESERVE newline markers: \\N and \\n\n4. PRESERVE the exact line structure (one subtitle per line, separated by |||SUBTITLE_BREAK|||)\n5. DO NOT add, remove, or modify any tags inside curly braces {}\n6. DO NOT translate or modify anything inside curly braces {}\n7. Output ONLY the translated subtitles, no explanations\n\nExample input:\n{\\i1}Bonjour{\\i0} monde\n|||SUBTITLE_BREAK|||\n{\\an8}Comment ça va?\n\nExample output:\n{\\i1}Hello{\\i0} world\n|||SUBTITLE_BREAK|||\n{\\an8}How are you?\n\nSubtitles to translate:\n{text}";
 
 /// Extract every `{...}` override-tag substring from an ASS dialogue line, in
-/// order. Ports the `re.findall(r"\{[^}]*\}", text)` in `validate_ass_tags`:
-/// each match starts at a `{` and runs to the next `}` (empty bodies allowed).
+/// order. Each match starts at a `{` and runs to the next `}` (empty bodies
+/// allowed).
 fn ass_tags(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
     let mut tags = Vec::new();
@@ -561,13 +538,13 @@ fn ass_tags(text: &str) -> Vec<&str> {
 }
 
 /// Whether `translated` preserves the exact ASS override tags of `original`
-/// (same `{...}` substrings, in the same order). Ports `validate_ass_tags`.
+/// (same `{...}` substrings, in the same order).
 pub fn validate_ass_tags(original: &str, translated: &str) -> bool {
     ass_tags(original) == ass_tags(translated)
 }
 
 /// Translate a batch of cue texts in one model round-trip and realign the
-/// result (ports `TranslationService._translate_batch`).
+/// result.
 ///
 /// Joins `texts` with the newline-wrapped `separator_token` ([`join_batch`]),
 /// awaits `complete` on the formatted prompt, then splits the reply back into
@@ -595,8 +572,7 @@ where
 }
 
 /// Run the chunked batch-translation loop over `texts`, returning a
-/// translation aligned 1:1 with the input (ports the `chunk_size` loop shared by
-/// `translate_subtitles`, `translate_vtt_content` and `translate_ass_content`).
+/// translation aligned 1:1 with the input.
 ///
 /// Splits `texts` into batches of `chunk_size` ([`chunk_ranges`]), translating
 /// each via [`translate_batch`]. The returned vec has the same length as
@@ -631,8 +607,7 @@ where
     Ok(out)
 }
 
-/// Translate raw SRT content, preserving cue indices and timing (ports
-/// `TranslationService.translate_srt_content`).
+/// Translate raw SRT content, preserving cue indices and timing.
 ///
 /// Short-circuits and returns the input unchanged when `source_lang ==
 /// target_lang`. Otherwise parses with [`submate_subtitle::cue::parse_srt`],
@@ -673,13 +648,12 @@ where
     Ok(submate_subtitle::cue::compose_srt(&cues))
 }
 
-/// Translate raw WebVTT content, preserving cue timing and structure (ports
-/// `TranslationService.translate_vtt_content`).
+/// Translate raw WebVTT content, preserving cue timing and structure.
 ///
 /// Mirrors [`translate_srt_content`] but parses/serializes with
 /// [`submate_subtitle::cue::parse_vtt`] / [`compose_vtt`] and joins cues with
-/// [`VTT_SEPARATOR_TOKEN`]. Like the Python port, when the parse yields no
-/// translatable cues the input is returned unchanged.
+/// [`VTT_SEPARATOR_TOKEN`]. When the parse yields no translatable cues the input
+/// is returned unchanged.
 ///
 /// [`compose_vtt`]: submate_subtitle::cue::compose_vtt
 pub async fn translate_vtt_content<E, F, Fut>(
@@ -720,16 +694,14 @@ where
 }
 
 /// Translate already-extracted ASS dialogue lines, dropping any translation that
-/// would alter the line's override tags (ports the tag-preservation body of
-/// `TranslationService.translate_ass_content`).
+/// would alter the line's override tags.
 ///
-/// The workspace has no ASS (de)serializer, so this ports the portable core:
-/// given the dialogue `texts` pysubs2 would have extracted, it translates them
-/// in chunks (joined with [`VTT_SEPARATOR_TOKEN`] under
-/// [`ASS_TRANSLATION_PROMPT`]) and, per line, keeps the translation only when
-/// [`validate_ass_tags`] confirms the `{...}` tags are unchanged — otherwise it
-/// keeps the original, matching the Python "tag mismatch, keeping original"
-/// fallback. The returned vec aligns 1:1 with `texts`.
+/// The workspace has no ASS (de)serializer, so this handles the portable core:
+/// given the already-extracted dialogue `texts`, it translates them in chunks
+/// (joined with [`VTT_SEPARATOR_TOKEN`] under [`ASS_TRANSLATION_PROMPT`]) and,
+/// per line, keeps the translation only when [`validate_ass_tags`] confirms the
+/// `{...}` tags are unchanged — otherwise it keeps the original. The returned
+/// vec aligns 1:1 with `texts`.
 pub async fn translate_ass_dialogue<E, F, Fut>(
     texts: &[String],
     source_lang: &str,
@@ -769,15 +741,12 @@ where
         .collect())
 }
 
-/// Translate a plain-text blob in a single round-trip (ports
-/// `TranslationService.translate_text`).
+/// Translate a plain-text blob in a single round-trip.
 ///
 /// Short-circuits and returns `text` unchanged when `source_lang ==
-/// target_lang` (the same no-op guard the Python method applies before touching
-/// the backend). Otherwise it issues exactly one `complete` call with the
-/// default [`TRANSLATION_PROMPT`] (no separator-token batching — the plain-text
-/// path mirrors `backend.translate(..., prompt_template=None)`) and returns the
-/// reply.
+/// target_lang` (a no-op guard applied before touching the backend). Otherwise
+/// it issues exactly one `complete` call with the default [`TRANSLATION_PROMPT`]
+/// (no separator-token batching) and returns the reply.
 pub async fn translate_text<E, F, Fut>(
     text: &str,
     source_lang: &str,
@@ -795,8 +764,7 @@ where
     complete(prompt).await
 }
 
-/// Per-format translation dispatch for already-formatted Bazarr output (ports
-/// `BazarrService._translate_content`).
+/// Per-format translation dispatch for already-formatted Bazarr output.
 ///
 /// Decides *how* to translate already-rendered subtitle `content` for the
 /// requested [`OutputFormat`], and *when* to skip translation entirely. The
@@ -814,12 +782,11 @@ where
 ///    - [`OutputFormat::Txt`] → [`translate_text`] (plain [`TRANSLATION_PROMPT`],
 ///      no batching)
 ///    - [`OutputFormat::Json`] → **skip**: the JSON dump holds the full result,
-///      so it is returned unchanged without calling the closure (Python logs
-///      "Translation not supported for JSON format").
+///      so it is returned unchanged without calling the closure (translation is
+///      not supported for the JSON format).
 /// 3. **Exception fallback** — any `Err` raised by the dispatched translation
-///    is swallowed and the original `content` is returned, matching the Python
-///    `try/except` that degrades to the untranslated text rather than failing
-///    the Bazarr request.
+///    is swallowed and the original `content` is returned, degrading to the
+///    untranslated text rather than failing the Bazarr request.
 ///
 /// `chunk_size` is forwarded to the SRT/VTT batch loop; `complete` is the
 /// closure-driven LLM entrypoint shared with the sibling translate fns. The
@@ -1178,8 +1145,7 @@ mod tests {
     /// native messages-API shape.
     ///
     /// The goldens are written here rather than committed as fixtures because
-    /// they assert the wire contract owned by this crate, not captured from the
-    /// Python runtime.
+    /// they assert the wire contract owned by this crate.
     mod parity {
         use std::sync::mpsc;
 

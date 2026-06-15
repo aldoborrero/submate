@@ -2,23 +2,20 @@
 //!
 //! Pure string/path logic with no I/O: subtitle-path construction, the Docker
 //! host/container path-mapping translation, and video/audio extension checks.
-//! Output strings are kept byte-for-byte identical to the Python originals,
-//! which is why the filename assembly works on string parts rather than going
-//! through `Utf8Path` joins (Python's `Path(".")` parent must not leak a `./`).
+//! The filename assembly works on string parts rather than going through
+//! `Utf8Path` joins so a `.` parent does not leak a `./` prefix.
 
 use camino::Utf8Path;
 use submate_lang::LanguageCode;
 use submate_types::LanguageNamingType;
 
-/// Video container extensions (lowercased, dot-prefixed), mirroring
-/// `submate.paths.VIDEO_EXTENSIONS`.
+/// Video container extensions (lowercased, dot-prefixed).
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".3gp",
     ".ogv",
 ];
 
-/// Audio container extensions (lowercased, dot-prefixed), mirroring
-/// `submate.paths.AUDIO_EXTENSIONS`.
+/// Audio container extensions (lowercased, dot-prefixed).
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     ".mp3", ".flac", ".aac", ".m4a", ".wav", ".ogg", ".opus", ".wma", ".alac", ".ape",
 ];
@@ -28,7 +25,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// Useful for Docker containers where the host path differs from the container
 /// path. When `use_mapping` is false (or either prefix is empty) the path is
 /// returned unchanged; otherwise a leading `path_from` is replaced once with
-/// `path_to`. Ports `submate.paths.map_path`.
+/// `path_to`.
 pub fn map_path(path: &str, use_mapping: bool, path_from: &str, path_to: &str) -> String {
     if !use_mapping {
         return path.to_string();
@@ -46,7 +43,6 @@ pub fn map_path(path: &str, use_mapping: bool, path_from: &str, path_to: &str) -
 ///
 /// Returns an empty string when `language` is `None`/empty, and falls back to
 /// the original string when it cannot be parsed into a known [`LanguageCode`].
-/// Ports `submate.paths.format_language_for_filename`.
 pub fn format_language_for_filename(
     language: Option<&str>,
     naming_type: LanguageNamingType,
@@ -88,8 +84,7 @@ fn format_language_code(lang_code: LanguageCode, naming_type: LanguageNamingType
     formatted.unwrap_or("").to_string()
 }
 
-/// Options controlling [`build_subtitle_path`] naming, matching the keyword
-/// arguments of the Python `build_subtitle_path`.
+/// Options controlling [`build_subtitle_path`] naming.
 pub struct SubtitleNaming<'a> {
     /// How to format the language suffix.
     pub naming_type: LanguageNamingType,
@@ -118,8 +113,7 @@ impl Default for SubtitleNaming<'_> {
 /// Build a subtitle file path with configurable naming options.
 ///
 /// The filename is `<stem>[.subgen][.<model>][.<lang>]<ext>`, placed next to
-/// `video_path`. Ports `submate.paths.build_subtitle_path`; see the Python
-/// docstring for examples. `language` is a raw code string (e.g. `"eng"`).
+/// `video_path`. `language` is a raw code string (e.g. `"eng"`).
 pub fn build_subtitle_path(
     video_path: &str,
     language: Option<&str>,
@@ -144,8 +138,8 @@ fn assemble_subtitle_path(
     formatted_lang: &str,
     naming: &SubtitleNaming<'_>,
 ) -> String {
-    // `Path.stem`: the final component without its last suffix. Camino's
-    // `file_stem` matches Python here (e.g. `show.s01e01` for `show.s01e01.mkv`).
+    // The final component without its last suffix (e.g. `show.s01e01` for
+    // `show.s01e01.mkv`).
     let stem = Utf8Path::new(video_path).file_stem().unwrap_or("");
 
     let mut parts: Vec<&str> = vec![stem];
@@ -172,15 +166,14 @@ fn assemble_subtitle_path(
     join_parent(video_path, &subtitle_name)
 }
 
-/// Join a new filename onto the parent directory of `video_path`, matching
-/// `str(Path(video_path).parent / name)` exactly. When `video_path` has no
-/// directory component, Python's parent is `.` and `str(Path(".") / name)` is
+/// Join a new filename onto the parent directory of `video_path`. When
+/// `video_path` has no directory component the parent is `.`, and the result is
 /// just `name`, so no `./` prefix is added.
 fn join_parent(video_path: &str, name: &str) -> String {
-    // pathlib drops "." (current-dir) and empty (double-slash) components when a
-    // PurePosixPath is constructed; camino's `parent()` keeps them, so a leading
-    // "./" leaks into the output. Normalize the parent the way pathlib does —
-    // keep "..", keep the absolute root, drop "." and empties — before joining.
+    // camino's `parent()` keeps "." (current-dir) and empty (double-slash)
+    // components, so a leading "./" would leak into the output. Normalize the
+    // parent — keep "..", keep the absolute root, drop "." and empties — before
+    // joining.
     let parent = Utf8Path::new(video_path)
         .parent()
         .map_or("", Utf8Path::as_str);
@@ -197,8 +190,7 @@ fn join_parent(video_path: &str, name: &str) -> String {
     }
 }
 
-/// Generate the subtitle path for a video using default naming. Ports
-/// `submate.paths.get_subtitle_path`.
+/// Generate the subtitle path for a video using default naming.
 pub fn get_subtitle_path(video_path: &str, language: &str) -> String {
     let language = if language.is_empty() {
         None
@@ -209,20 +201,20 @@ pub fn get_subtitle_path(video_path: &str, language: &str) -> String {
 }
 
 /// Whether `path` has a known video extension (case-insensitive on the
-/// extension). Ports `submate.paths.is_video_file`.
+/// extension).
 pub fn is_video_file(path: &str) -> bool {
     has_extension(path, VIDEO_EXTENSIONS)
 }
 
 /// Whether `path` has a known audio extension (case-insensitive on the
-/// extension). Ports `submate.paths.is_audio_file`.
+/// extension).
 pub fn is_audio_file(path: &str) -> bool {
     has_extension(path, AUDIO_EXTENSIONS)
 }
 
 fn has_extension(path: &str, extensions: &[&str]) -> bool {
-    // Python uses `Path(path).suffix.lower()`, i.e. the final `.ext` of the
-    // last component, including its leading dot, lowercased.
+    // The final `.ext` of the last component, including its leading dot,
+    // lowercased.
     let suffix = match Utf8Path::new(path).extension() {
         Some(ext) => format!(".{}", ext.to_lowercase()),
         None => return false,

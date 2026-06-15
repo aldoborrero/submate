@@ -1,11 +1,10 @@
-//! Pure filename/language helpers ported from
-//! the translate command.
+//! Pure filename/language helpers for `submate translate`.
 //!
 //! These three functions decide *which* files to translate, *what* source
 //! language to assume, and *where* to write output. They are pure-data and
-//! depend only on the already-ported [`submate_lang`] table — no clap, no IO.
+//! depend only on the [`submate_lang`] table — no clap, no IO.
 //!
-//! Python semantics that matter here come from `pathlib.PurePath`:
+//! The path semantics that matter here:
 //!
 //! * `suffix` — the trailing `.`-segment of the final path component,
 //!   *including* the leading dot. A leading-dot name with no stem (e.g.
@@ -15,7 +14,7 @@
 //! * `parent` — the path minus its final component.
 //!
 //! We replicate these directly on the component string rather than leaning on
-//! `std::path` extension rules, so the byte-for-byte contract is explicit.
+//! `std::path` extension rules, so the contract is explicit.
 
 use std::path::{Path, PathBuf};
 
@@ -23,8 +22,7 @@ use submate_lang::LanguageCode;
 
 /// Subtitle file extensions recognized by `submate translate`.
 ///
-/// Mirrors the module constant `SUBTITLE_EXTENSIONS` in `translate.py`. Values
-/// are lowercase and include the leading dot, matching `Path.suffix`.
+/// Values are lowercase and include the leading dot, matching `Path.suffix`.
 const SUBTITLE_EXTENSIONS: [&str; 4] = [".srt", ".vtt", ".ass", ".ssa"];
 
 /// Final path component (`Path.name`), or `""` if there is none.
@@ -32,22 +30,21 @@ fn file_name(path: &Path) -> &str {
     path.file_name().and_then(|s| s.to_str()).unwrap_or("")
 }
 
-/// Python `PurePath.suffix` for the final component: the substring from the
-/// last `.` to the end, *including* the dot. Empty when the name has no
-/// interior dot — a leading dot (dotfile like `.srt`) does not count.
+/// The `suffix` of the final component: the substring from the last `.` to the
+/// end, *including* the dot. Empty when the name has no interior dot — a leading
+/// dot (dotfile like `.srt`) does not count.
 fn suffix(path: &Path) -> String {
     let name = file_name(path);
     match name.rfind('.') {
-        // A dot at index 0 (dotfile, no stem) yields no suffix, matching
-        // pathlib. Otherwise the suffix runs from the dot to the end.
+        // A dot at index 0 (dotfile, no stem) yields no suffix. Otherwise the
+        // suffix runs from the dot to the end.
         Some(idx) if idx > 0 => name[idx..].to_string(),
         _ => String::new(),
     }
 }
 
-/// Python `PurePath.stem` for the final component: the name with its
-/// [`suffix`] removed. For `.srt` (suffixless dotfile) the stem is the whole
-/// name, matching pathlib.
+/// The `stem` of the final component: the name with its [`suffix`] removed. For
+/// `.srt` (suffixless dotfile) the stem is the whole name.
 fn stem(path: &Path) -> String {
     let name = file_name(path);
     let suf = suffix(path);
@@ -89,9 +86,9 @@ pub fn detect_source_language(file: &Path, source_lang: &str) -> String {
 /// Derive the default output path for a translated subtitle.
 ///
 /// Strips any trailing dotted stem segment (an existing language suffix such
-/// as `.en`, but also non-language ones like `.v2` — matching Python exactly)
-/// and rebuilds `parent / "{base}.{target_lang}{suffix}"`, preserving the
-/// original extension and its case.
+/// as `.en`, but also non-language ones like `.v2`) and rebuilds
+/// `parent / "{base}.{target_lang}{suffix}"`, preserving the original extension
+/// and its case.
 ///
 /// `movie.srt` + `es` -> `movie.es.srt`; `movie.en.srt` + `es` ->
 /// `movie.es.srt`; `movie.v2.srt` + `es` -> `movie.es.srt`.
@@ -123,13 +120,11 @@ mod parity {
     ///
     /// `fixtures/cli/translate_filename_cases.json` is a list of
     /// `{file, source_lang, target_lang, is_subtitle, detected_source,
-    /// output_path}` rows captured by running the three Python helpers in
-    /// the translate command over the mandated case set. For each
-    /// row we drive [`is_subtitle_file`], [`detect_source_language`], and
-    /// [`output_path`] over the captured inputs, rebuild the full row from the
-    /// Rust outputs, and assert it equals the golden row exactly. A drift in
-    /// suffix case-folding, non-language-token rejection, or trailing-segment
-    /// replacement fails here.
+    /// output_path}` rows over the mandated case set. For each row we drive
+    /// [`is_subtitle_file`], [`detect_source_language`], and [`output_path`] over
+    /// the captured inputs, rebuild the full row from the outputs, and assert it
+    /// equals the golden row exactly. A drift in suffix case-folding,
+    /// non-language-token rejection, or trailing-segment replacement fails here.
     #[test]
     fn translate_filename_cases() {
         let cases = golden("cli/translate_filename_cases.json");

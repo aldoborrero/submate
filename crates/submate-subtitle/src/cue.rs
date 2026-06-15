@@ -1,18 +1,16 @@
 //! Hand-rolled SRT and VTT cue parsing + serialization with byte-parity to the
 //! round-trip the translation path relies on.
 //!
-//! Translation parses a subtitle file and re-emits it (`srt.parse` ->
-//! `srt.compose` for SRT, pysubs2 `from_string` -> `to_string` for VTT), so the
-//! Rust port must reproduce the *re-serialized* bytes, not merely a valid file.
-//! This module mirrors the exact serialization rules of those two libraries.
+//! Translation parses a subtitle file and re-emits it, so it must reproduce the
+//! *re-serialized* bytes, not merely a valid file.
 //!
 //! Times are kept in whole milliseconds, which is the resolution both formats
-//! use and matches the captured goldens in `fixtures/subtitle/`.
+//! use and matches the goldens in `fixtures/subtitle/`.
 
 /// A single subtitle cue: a time span plus its (possibly multi-line) text.
 ///
 /// `index` is the 1-based number from the source SRT block when present. VTT
-/// cues carry no index of their own (pysubs2 numbers them on output), so it is
+/// cues carry no index of their own (they are numbered on output), so it is
 /// left as `None` for VTT.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cue {
@@ -31,9 +29,6 @@ pub struct Cue {
 
 /// Split milliseconds into `(hours, minutes, seconds, millis)`, normalized so
 /// that `millis < 1000`, `seconds < 60`, and `minutes < 60`.
-///
-/// Mirrors `pysubs2.time.ms_to_times`. `srt.timedelta_to_srt_timestamp`
-/// computes the same fields from a `timedelta`.
 fn ms_to_parts(ms: i64) -> (i64, i64, i64, i64) {
     let ms = ms.max(0);
     let (h, rem) = (ms / 3_600_000, ms % 3_600_000);
@@ -43,17 +38,13 @@ fn ms_to_parts(ms: i64) -> (i64, i64, i64, i64) {
 }
 
 /// Format milliseconds as an SRT timestamp `HH:MM:SS,mmm`.
-///
-/// Mirrors `srt.timedelta_to_srt_timestamp`.
 fn format_srt_timestamp(ms: i64) -> String {
     let (h, m, s, ms) = ms_to_parts(ms);
     format!("{h:02}:{m:02}:{s:02},{ms:03}")
 }
 
-/// Format milliseconds as a WebVTT timestamp `HH:MM:SS.mmm`.
-///
-/// Mirrors `pysubs2.formats.webvtt.WebVTTFormat.ms_to_timestamp`, which reuses
-/// the SubRip formatter and swaps the comma for a dot.
+/// Format milliseconds as a WebVTT timestamp `HH:MM:SS.mmm`: the SRT formatter
+/// with the comma swapped for a dot.
 fn format_vtt_timestamp(ms: i64) -> String {
     format_srt_timestamp(ms).replace(',', ".")
 }
@@ -75,7 +66,7 @@ fn parse_timestamp(ts: &str) -> Option<i64> {
     let h: i64 = fields[0].trim().parse().ok()?;
     let m: i64 = fields[1].trim().parse().ok()?;
     let s: i64 = fields[2].trim().parse().ok()?;
-    // pysubs2 accepts 2- or 3-digit millis; treat a 2-digit field as hundredths.
+    // Accept 2- or 3-digit millis; treat a 2-digit field as hundredths.
     let ms_digits = ms_part.trim();
     let ms: i64 = ms_digits.parse().ok()?;
     let ms = if ms_digits.len() == 2 { ms * 10 } else { ms };
@@ -87,11 +78,10 @@ fn parse_timestamp(ts: &str) -> Option<i64> {
 // ---------------------------------------------------------------------------
 
 /// Collapse runs of blank lines and strip leading/trailing blank lines from a
-/// cue body. Mirrors `srt.make_legal_content`: `MULTI_WS_REGEX` (`\n\n+`) is
-/// replaced with a single `\n` after stripping leading/trailing `\n`.
+/// cue body: a `\n\n+` run is replaced with a single `\n` after stripping
+/// leading/trailing `\n`.
 fn make_legal_content(content: &str) -> String {
-    // Fast path mirrors the Python optimisation: already-legal content is
-    // returned unchanged.
+    // Fast path: already-legal content is returned unchanged.
     if !content.is_empty() && !content.starts_with('\n') && !content.contains("\n\n") {
         return content.to_string();
     }
@@ -123,23 +113,23 @@ fn collapse_blank_lines(s: &str) -> String {
     out
 }
 
-/// Decide whether `srt.sort_and_reindex` (with `skip=True`) would drop a cue:
-/// empty/whitespace content, negative start, or start at-or-after end.
+/// Whether a cue should be dropped on compose: empty/whitespace content,
+/// negative start, or start at-or-after end.
 fn srt_should_skip(cue: &Cue) -> bool {
     cue.text.trim().is_empty() || cue.start_ms < 0 || cue.start_ms >= cue.end_ms
 }
 
 /// Parse an SRT string into cues.
 ///
-/// Tolerant of the common deviations `srt.parse` handles: blank lines inside a
-/// cue body, a missing trailing blank line, and CRLF line endings.
+/// Tolerant of common deviations: blank lines inside a cue body, a missing
+/// trailing blank line, and CRLF line endings.
 pub fn parse_srt(input: &str) -> Vec<Cue> {
     let normalized = input.replace("\r\n", "\n");
     let mut cues = Vec::new();
 
     // Split into blocks on blank-line boundaries, but reconstruct cues by
     // scanning for the "--> " timestamp arrow so blank lines inside content do
-    // not break a cue apart (the look-ahead the Python regex performs).
+    // not break a cue apart.
     let lines: Vec<&str> = normalized.split('\n').collect();
     let mut i = 0usize;
     while i < lines.len() {
@@ -175,7 +165,7 @@ pub fn parse_srt(input: &str) -> Vec<Cue> {
 
         // Collect content lines until the next cue (an index line followed by a
         // timestamp, or a timestamp line directly) or end of input. Blank lines
-        // are retained here and legalised at compose time, matching `srt`.
+        // are retained here and legalised at compose time.
         let mut content_lines: Vec<&str> = Vec::new();
         while i < lines.len() {
             if next_starts_cue(&lines, i) {
@@ -224,11 +214,11 @@ fn parse_arrow_line(line: &str) -> Option<(i64, i64)> {
     Some((parse_timestamp(start)?, parse_timestamp(end)?))
 }
 
-/// Serialize cues to an SRT string, byte-identical to `srt.compose` with its
-/// defaults (`reindex=True`, `strict=True`, `eol="\n"`).
+/// Serialize cues to an SRT string with reindexing, strict skipping of
+/// non-useful cues, and `\n` line endings.
 pub fn compose_srt(cues: &[Cue]) -> String {
-    // sort_and_reindex: sort by start, then end, then content (Subtitle
-    // ordering), skip non-useful cues, renumber from 1.
+    // Sort by start, then end, then content; skip non-useful cues; renumber
+    // from 1.
     let mut ordered: Vec<&Cue> = cues.iter().collect();
     ordered.sort_by(|a, b| {
         a.start_ms
@@ -257,14 +247,14 @@ pub fn compose_srt(cues: &[Cue]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// VTT (pysubs2)
+// VTT
 // ---------------------------------------------------------------------------
 
 /// Parse a WebVTT string into cues.
 ///
-/// Mirrors `pysubs2` SubRip/WebVTT `from_file`: timestamp lines (two stamps on
-/// one line) open a cue; following lines accumulate until the next timestamp
-/// line. Text is `.strip()`-ed and a trailing next-cue index number is removed.
+/// Timestamp lines (two stamps on one line) open a cue; following lines
+/// accumulate until the next timestamp line. Text is stripped and a trailing
+/// next-cue index number is removed.
 pub fn parse_vtt(input: &str) -> Vec<Cue> {
     let normalized = input.replace("\r\n", "\n");
     let mut timestamps: Vec<(i64, i64)> = Vec::new();
@@ -275,8 +265,7 @@ pub fn parse_vtt(input: &str) -> Vec<Cue> {
             timestamps.push((start, end));
             following.push(Vec::new());
         } else if let Some(last) = following.last_mut() {
-            // pysubs2 iterates the file keeping the line's trailing newline; we
-            // join with "\n" below, so push the bare line here.
+            // We join with "\n" below, so push the bare line here.
             last.push(line.to_string());
         }
     }
@@ -293,10 +282,9 @@ pub fn parse_vtt(input: &str) -> Vec<Cue> {
         .collect()
 }
 
-/// Reduce a cue's following lines to its text, mirroring pysubs2
-/// `prepare_text`: join, `.strip()`, drop a trailing `\n+ *\d+ *$` (the index of
-/// the next cue), strip unsupported HTML tags, and keep newlines (stored as
-/// `\n` here rather than the SSA `\N`).
+/// Reduce a cue's following lines to its text: join, strip, drop a trailing
+/// `\n+ *\d+ *$` (the index of the next cue), strip unsupported HTML tags, and
+/// keep newlines (stored as `\n`).
 fn prepare_vtt_text(lines: &[String]) -> String {
     // "Happy empty subtitle" case: blank line(s) then a bare number line.
     if lines.len() >= 2
@@ -311,7 +299,7 @@ fn prepare_vtt_text(lines: &[String]) -> String {
     // Strip the index number of the following subtitle: `\n+ *\d+ *$`.
     s = strip_trailing_index(&s);
     // Strip any remaining HTML-ish tags (`< */? *[a-zA-Z][^>]*>`); the goldens
-    // contain none, but this keeps parity with pysubs2 for general input.
+    // contain none, but this handles general input.
     s = strip_html_tags(&s);
     s
 }
@@ -346,7 +334,7 @@ fn strip_trailing_index(s: &str) -> String {
     s[..end].to_string()
 }
 
-/// Strip HTML-style tags matching pysubs2's `< */? *[a-zA-Z][^>]*>`.
+/// Strip HTML-style tags matching `< */? *[a-zA-Z][^>]*>`.
 fn strip_html_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
@@ -401,15 +389,14 @@ fn utf8_len(first: u8) -> usize {
     }
 }
 
-/// Serialize cues to a WebVTT string, byte-identical to pysubs2
-/// `SSAFile.to_string("vtt")`.
+/// Serialize cues to a WebVTT string.
 ///
 /// Emits the `WEBVTT\n\n` header, then for each visible cue (sorted by start)
 /// a 1-based number, the dot-separated timestamp line, and the text with blank
 /// lines collapsed and surrounding whitespace stripped.
 pub fn compose_vtt(cues: &[Cue]) -> String {
     let mut ordered: Vec<&Cue> = cues.iter().collect();
-    // WebVTTFormat._get_visible_lines sorts by start (stable).
+    // Sort by start (stable).
     ordered.sort_by_key(|c| c.start_ms);
 
     let mut out = String::from("WEBVTT\n\n");
@@ -421,7 +408,7 @@ pub fn compose_vtt(cues: &[Cue]) -> String {
         out.push_str(" --> ");
         out.push_str(&format_vtt_timestamp(cue.end_ms));
         out.push('\n');
-        // prepare_text: collapse `\n+` -> `\n`, then strip.
+        // Collapse `\n+` -> `\n`, then strip.
         let text = collapse_blank_lines(cue.text.trim()).trim().to_string();
         out.push_str(&text);
         out.push_str("\n\n");
@@ -439,7 +426,7 @@ mod parity {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/subtitle")
     }
 
-    /// Each `*.srt` golden is the output of `srt.parse` -> `srt.compose`. Our
+    /// Each `*.srt` golden is a parse -> compose round-trip. Our
     /// `parse_srt` -> `compose_srt` must re-emit it byte-for-byte.
     #[test]
     fn srt_roundtrip() {
@@ -465,8 +452,8 @@ mod parity {
         assert!(checked > 0, "no .srt goldens found in {}", dir.display());
     }
 
-    /// Each `*.vtt` golden is the output of pysubs2 `from_string` ->
-    /// `to_string`. Our `parse_vtt` -> `compose_vtt` must re-emit it byte-for-byte.
+    /// Each `*.vtt` golden is a parse -> compose round-trip. Our
+    /// `parse_vtt` -> `compose_vtt` must re-emit it byte-for-byte.
     #[test]
     fn vtt_roundtrip() {
         let dir = fixtures_dir();
@@ -523,14 +510,14 @@ mod parity {
         let golden = fs::read_to_string(fixtures_dir().join("basic.vtt")).unwrap();
         let cues = parse_vtt(&golden);
         assert_eq!(cues.len(), 2);
-        // VTT cues carry no index of their own; pysubs2 numbers on output.
+        // VTT cues carry no index of their own; they are numbered on output.
         assert_eq!(cues[0].index, None);
         assert_eq!(cues[0].start_ms, 1_000);
         assert_eq!(cues[1].text, "Second line\nand a wrap.");
     }
 
     /// `compose_srt` reindexes from 1 by start time regardless of input order
-    /// or source indices, mirroring `srt.compose`'s default `reindex=True`.
+    /// or source indices.
     #[test]
     fn compose_srt_reindexes_by_start() {
         let cues = vec![
@@ -555,7 +542,7 @@ mod parity {
         );
     }
 
-    /// `srt.compose` (skip=True) drops empty cues and zero/negative-length cues.
+    /// Compose drops empty cues and zero/negative-length cues.
     #[test]
     fn compose_srt_skips_non_useful() {
         let cues = vec![

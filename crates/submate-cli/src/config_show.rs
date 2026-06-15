@@ -1,32 +1,30 @@
-//! Display formatting for `submate config show` (ports the pure-data layer of
-//! the config command).
+//! Display formatting for `submate config show`.
 //!
-//! The Python command renders a Rich table of *flattened, human-formatted,
-//! title-cased* rows. The Rich `Table` chrome (borders/colors) is out of scope;
-//! the ordered `(setting, value)` rows are the contract. Three composable steps,
-//! ported byte-for-byte:
+//! The command renders a table of *flattened, human-formatted, title-cased*
+//! rows; the ordered `(setting, value)` rows are the contract. Three composable
+//! steps:
 //!
-//! 1. [`format_value`] — leaf rendering (`_format_value`).
+//! 1. [`format_value`] — leaf rendering.
 //! 2. [`flatten_settings`] — depth-first flatten of the serde-JSON tree into
-//!    ordered `(dotted_name, display)` rows (`_flatten_settings`).
+//!    ordered `(dotted_name, display)` rows.
 //! 3. [`title_case_name`] — per-segment `replace('_', ' ').title()`, joined by
 //!    `'.'`.
 //!
-//! Enums are already serialized to their `.value` strings in the JSON (the
-//! Python side dumps with `mode="json"`), so the flatten walks the same tree.
+//! Enums are already serialized to their string values in the JSON, so the
+//! flatten walks the same tree.
 
 use serde_json::Value;
 
-/// Render a leaf config value for display (ports `_format_value`).
+/// Render a leaf config value for display.
 ///
-/// Branch order is load-bearing and matches Python exactly:
+/// Branch order is load-bearing:
 /// * list -> `", "`-joined items, or `"(none)"` when empty;
 /// * bool -> `"Yes"`/`"No"` (checked *before* the empty/None branch);
 /// * empty string or null -> `"(not set)"`;
 /// * else -> the scalar's string form.
 ///
-/// Python's `value == ""` does not match `0`/`0.0`, so numeric leaves render via
-/// `str(value)`; the explicit number arm below preserves that.
+/// An empty-string check must not match `0`/`0.0`, so numeric leaves render via
+/// their own arm; the explicit number arm below preserves that.
 fn format_value(value: &Value) -> String {
     match value {
         Value::Array(items) => {
@@ -58,14 +56,13 @@ fn format_value(value: &Value) -> String {
     }
 }
 
-/// String form of a scalar, mirroring Python `str(value)` for the leaf types
-/// that appear in a serialized `Config`: strings verbatim, bools as
-/// `"True"`/`"False"`, numbers without trailing-zero churn, null as `"None"`.
+/// String form of a scalar for the leaf types that appear in a serialized
+/// `Config`: strings verbatim, bools as `"True"`/`"False"`, numbers without
+/// trailing-zero churn, null as `"None"`.
 ///
-/// This is the list-item / `str(value)` rendering, distinct from
-/// [`format_value`]'s top-level branch logic (a bare `"True"` here would only be
-/// reached for a bool *inside a list*, which `_format_value` renders the same way
-/// because the list branch calls `str(item)`).
+/// This is the list-item rendering, distinct from [`format_value`]'s top-level
+/// branch logic (a bare `"True"` here would only be reached for a bool *inside a
+/// list*, which the list branch renders the same way).
 fn scalar_str(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -82,13 +79,11 @@ fn scalar_str(value: &Value) -> String {
     }
 }
 
-/// Flatten a nested settings tree into ordered `(dotted_name, display)` rows
-/// (ports `_flatten_settings`).
+/// Flatten a nested settings tree into ordered `(dotted_name, display)` rows.
 ///
 /// Objects recurse depth-first, preserving field-declaration order (serde_json
-/// preserves object insertion order when built from a `Serialize` struct, which
-/// matches Python dict order = Pydantic field order). Scalars and lists become a
-/// single row via [`format_value`].
+/// preserves object insertion order when built from a `Serialize` struct).
+/// Scalars and lists become a single row via [`format_value`].
 fn flatten_settings(value: &Value, prefix: &str, rows: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
@@ -105,13 +100,13 @@ fn flatten_settings(value: &Value, prefix: &str, rows: &mut Vec<(String, String)
     }
 }
 
-/// Title-case a dotted setting name (ports the display-name map).
+/// Title-case a dotted setting name.
 ///
-/// Each dotted segment is `replace('_', ' ')` then `str.title()`-cased, and the
-/// segments are rejoined with `'.'`. Python `str.title()` uppercases the first
-/// letter of every run of alphabetic characters and lowercases the rest, with
-/// any non-alphabetic character (including the inserted space) acting as a word
-/// boundary.
+/// Each dotted segment is `replace('_', ' ')` then title-cased (see
+/// [`python_title`]), and the segments are rejoined with `'.'`. Title-casing
+/// uppercases the first letter of every run of alphabetic characters and
+/// lowercases the rest, with any non-alphabetic character (including the
+/// inserted space) acting as a word boundary.
 fn title_case_name(dotted: &str) -> String {
     dotted
         .split('.')
@@ -120,8 +115,8 @@ fn title_case_name(dotted: &str) -> String {
         .join(".")
 }
 
-/// Mirror Python's `str.title()`: the first alphabetic char after any
-/// non-alphabetic char is uppercased; other alphabetic chars are lowercased.
+/// Title-case a string: the first alphabetic char after any non-alphabetic char
+/// is uppercased; other alphabetic chars are lowercased.
 fn python_title(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_alpha = false;
@@ -174,8 +169,8 @@ mod parity {
         )
     }
 
-    /// The override env from `capture_cli_config.py`, exercising every
-    /// `_format_value` branch (plain string, numeric, populated list, bool).
+    /// An override env exercising every [`format_value`] branch (plain string,
+    /// numeric, populated list, bool).
     const OVERRIDE_ENV: &[(&str, &str)] = &[
         ("SUBMATE__WHISPER__MODEL", "large-v3"),
         ("SUBMATE__SERVER__PORT", "9123"),
@@ -183,19 +178,18 @@ mod parity {
         ("SUBMATE__SUBTITLE__SKIP_UNKNOWN_LANGUAGE", "true"),
     ];
 
-    /// Expand `queue.db_path`'s `${XDG_DATA_HOME}` template the way the Python
-    /// `config show` command does at config-build time.
+    /// Expand `queue.db_path`'s `${XDG_DATA_HOME}` template to an absolute path
+    /// at config-build time.
     ///
-    /// The submate-config Rust port deliberately keeps `db_path` as the
-    /// *unexpanded* template `${XDG_DATA_HOME}/subgen/queue.db` (pinned by its own
-    /// `config/defaults.resolved.json` golden), whereas Pydantic resolved it to an
-    /// absolute path via `get_xdg_data_home()` (`$XDG_DATA_HOME` or
-    /// `~/.local/share`) before `model_dump`. That db_path resolution divergence
-    /// is out of scope here — `config_show_rows` is a pure renderer of whatever
-    /// the serialized `Config` holds — so the test expands the template the same
-    /// way Python does, keeping the *transform under test* exact while letting the
-    /// comparison reproduce the machine-derived golden value. `xdg` is the
-    /// `get_xdg_data_home()` base, captured from the ambient env *before* any
+    /// submate-config deliberately keeps `db_path` as the *unexpanded* template
+    /// `${XDG_DATA_HOME}/subgen/queue.db` (pinned by its own
+    /// `config/defaults.resolved.json` golden), whereas the golden here holds the
+    /// resolved absolute path (`$XDG_DATA_HOME` or `~/.local/share`). That db_path
+    /// resolution divergence is out of scope here — `config_show_rows` is a pure
+    /// renderer of whatever the serialized `Config` holds — so the test expands
+    /// the template itself, keeping the *transform under test* exact while letting
+    /// the comparison reproduce the machine-derived golden value. `xdg` is the
+    /// XDG data-home base, captured from the ambient env *before* any
     /// `Jail::clear_env`.
     fn expand_db_path(json: &mut Value, xdg: &str) {
         if let Some(db) = json
@@ -208,7 +202,7 @@ mod parity {
         }
     }
 
-    /// `get_xdg_data_home()`: `$XDG_DATA_HOME`, else `$HOME/.local/share`.
+    /// The XDG data home: `$XDG_DATA_HOME`, else `$HOME/.local/share`.
     fn xdg_data_home() -> String {
         std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
             let home = std::env::var("HOME").expect("HOME is set");

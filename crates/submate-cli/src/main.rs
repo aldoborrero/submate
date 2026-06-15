@@ -1,22 +1,20 @@
-//! `submate` binary — clap CLI (ports `submate/cli/`).
+//! `submate` binary — clap CLI.
 //!
 //! Wires the server + node binaries together behind the user-facing
-//! subcommands. The Python Click group exposed
-//! `transcribe / translate / worker / server / config`; the Rust port keeps the
-//! same surface but replaces the standalone `worker` with `node`:
+//! subcommands `transcribe / translate / node / server / probe / config`:
 //!
 //! * `submate server` runs the coordinator (axum) with an *embedded* processing
 //!   node by default, so a single-box deployment needs no separate worker.
 //! * `submate node --server <url>` runs a remote processing node that pulls work
-//!   from a coordinator over HTTP — the multi-box analogue of the old worker.
+//!   from a coordinator over HTTP — the multi-box analogue.
 //! * `submate transcribe --sync` spins up a one-shot local coordinator + node in
-//!   the same process and drains exactly the enqueued jobs before returning,
-//!   matching the Python "process immediately, no worker required" path.
+//!   the same process and drains exactly the enqueued jobs before returning —
+//!   the "process immediately, no worker required" path.
 //!
 //! Pure sub-helpers that decide *which* files to process and *how* the
-//! `config show` table is laid out live in their own byte-for-byte-ported
-//! modules ([`config_show`], [`translate_paths`], [`transcribe_collect`]); this
-//! file is the clap wiring and the IO around them.
+//! `config show` table is laid out live in their own modules ([`config_show`],
+//! [`translate_paths`], [`transcribe_collect`]); this file is the clap wiring
+//! and the IO around them.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -69,21 +67,18 @@ impl From<OutputFormat> for submate_proto::OutputFormat {
 
 mod config_show;
 mod translate_paths;
-// Pure-data classifier + extension formatter for `submate transcribe`, ported
-// ahead of the IO wiring. `cmd_transcribe`/`collect_media_files` still carry
-// their own glob-based collection; `port-cli-commands` swaps them onto these
-// byte-for-byte-ported helpers. Allowed dead until then so the parity tests
-// (the item's falsifier) build and run. `#[allow]`, not `#[expect]`: the module
-// is dead only in a non-test build (the parity test uses it), so the
-// expectation would be unfulfilled under `--all-targets`.
+// Pure-data classifier + extension formatter for `submate transcribe`.
+// `cmd_transcribe`/`collect_media_files` carry their own glob-based collection,
+// so this module is currently only exercised by its parity tests. `#[allow]`,
+// not `#[expect]`: the module is dead only in a non-test build (the parity test
+// uses it), so the expectation would be unfulfilled under `--all-targets`.
 #[allow(dead_code)]
 mod transcribe_collect;
 
 /// AI-powered subtitle generation using Whisper.
 ///
-/// The global `--config-file` mirrors the Python `-c/--config-file` group
-/// option: a `.env`/`.toml`/JSON file layered under the `SUBMATE__` environment
-/// when resolving [`Config`].
+/// The global `--config-file` is a `.env`/`.toml`/JSON file layered under the
+/// `SUBMATE__` environment when resolving [`Config`].
 #[derive(Debug, Parser)]
 #[command(name = "submate", version, about, long_about = None)]
 struct Cli {
@@ -95,8 +90,8 @@ struct Cli {
     command: Command,
 }
 
-/// Logging knobs shared by the long-running and batch subcommands (ports the
-/// Click `logging_options` decorator: `--log-level` + `--log-file`).
+/// Logging knobs shared by the long-running and batch subcommands
+/// (`--log-level` + `--log-file`).
 #[derive(Debug, Args)]
 struct LoggingOpts {
     /// Minimum log level to emit.
@@ -344,9 +339,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 ///
 /// `RUST_LOG` (an `EnvFilter` directive) wins when set, matching the
 /// conventional escape hatch; otherwise the level string seeds the filter. The
-/// `log_file` argument is accepted for surface parity with the Python
-/// `--log-file` flag; file sinks are out of scope for this wiring, so logs go to
-/// stderr regardless.
+/// `log_file` argument is accepted for surface parity with the `--log-file`
+/// flag; file sinks are not yet wired, so logs go to stderr regardless.
 fn init_logging(log_level: &str, _log_file: Option<&Path>) {
     use tracing_subscriber::filter::EnvFilter;
 
@@ -408,10 +402,9 @@ fn apply_vad_model(vad_model: Option<&Path>) {
 /// `submate config show` — print the resolved configuration as a table of
 /// flattened, title-cased rows.
 ///
-/// The row set and ordering come from [`config_show::config_show_rows`], the
-/// byte-for-byte port of the Python `_flatten_settings`/`_format_value` layer;
-/// the `serde_json` `preserve_order` feature keeps the serialized `Config`'s
-/// object keys in Pydantic field-declaration order so the rows match the golden.
+/// The row set and ordering come from [`config_show::config_show_rows`]; the
+/// `serde_json` `preserve_order` feature keeps the serialized `Config`'s object
+/// keys in field-declaration order so the rows match the golden.
 fn cmd_config_show(config_file: Option<&Path>) -> anyhow::Result<()> {
     let config = load_config(config_file)?;
     let json = serde_json::to_value(&config)?;
@@ -428,8 +421,8 @@ fn cmd_config_show(config_file: Option<&Path>) -> anyhow::Result<()> {
 /// `submate translate` — translate subtitle files to a target language.
 ///
 /// File selection, source-language detection, and default output naming reuse
-/// the ported pure helpers in [`translate_paths`]; the per-file IO and the
-/// backend dispatch live here.
+/// the pure helpers in [`translate_paths`]; the per-file IO and the backend
+/// dispatch live here.
 fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Result<()> {
     let mut config = load_config(config_file)?;
     if let Some(backend) = args.backend {
@@ -586,7 +579,7 @@ fn transcribe_output_path(file: &Path, format: OutputFormat, target_lang: Option
     }
 }
 
-/// Collect subtitle files under `path` (ports `find_subtitle_files`).
+/// Collect subtitle files under `path`.
 fn find_subtitle_files(path: &Path, recursive: bool) -> Vec<PathBuf> {
     if path.is_file() {
         return if translate_paths::is_subtitle_file(path) {
@@ -606,8 +599,8 @@ fn find_subtitle_files(path: &Path, recursive: bool) -> Vec<PathBuf> {
 }
 
 /// Walk `dir` (one level, or recursively), calling `visit` for each regular
-/// file. Errors reading a directory are swallowed, matching the glob-based
-/// Python scan that silently skips unreadable entries.
+/// file. Errors reading a directory are swallowed, silently skipping unreadable
+/// entries.
 fn collect_files(dir: &Path, recursive: bool, visit: &mut dyn FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -648,9 +641,8 @@ fn cmd_transcribe(config_file: Option<&Path>, args: TranscribeArgs) -> anyhow::R
     runtime.block_on(transcribe_files(&config, &args, &files))
 }
 
-/// Collect media (video/audio) files under `path` using the ported extension
-/// checks. A single non-media file path is an error, matching Python's
-/// "unsupported file type" abort.
+/// Collect media (video/audio) files under `path` using the shared extension
+/// checks. A single non-media file path is an "unsupported file type" error.
 fn collect_media_files(path: &Path, recursive: bool) -> anyhow::Result<Vec<PathBuf>> {
     let is_media = |p: &Path| {
         let s = p.to_string_lossy();
@@ -1198,8 +1190,8 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
             submate_types::TranscriptionTask::Translate => submate_whisper::Task::Translate,
             submate_types::TranscriptionTask::Transcribe => submate_whisper::Task::Transcribe,
         };
-        // Source language is always auto-detected (mirrors the Python handler);
-        // Bazarr's `language` param is the translation target, applied below.
+        // Source language is always auto-detected; Bazarr's `language` param is
+        // the translation target, applied below.
         // Decode knobs come from config (`self.decode`); task is per-request.
         let options = submate_whisper::TranscribeOptions {
             task,
@@ -1224,7 +1216,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
 
         // Translate when a target language is requested and differs from the
         // detected source; any error degrades to the untranslated content
-        // (`translate_content` absorbs it, matching the Python fallback).
+        // (`translate_content` absorbs it).
         if let Some(target) = opts.target_language.as_deref().filter(|t| !t.is_empty())
             && target != detected
         {
@@ -1656,8 +1648,8 @@ mod cli {
         Cli::command().debug_assert();
     }
 
-    /// The subcommand surface matches the port contract: the five user-facing
-    /// commands, with `node` present and the old `worker` gone.
+    /// The subcommand surface is the expected set of user-facing commands, with
+    /// `node` present and no `worker` command.
     #[test]
     fn cli_help_subcommands() {
         let cmd = Cli::command();

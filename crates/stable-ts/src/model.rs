@@ -1,9 +1,8 @@
-//! Port of the stable-ts data model: [`WordTiming`], [`Segment`], and
+//! The stable-ts data model: [`WordTiming`], [`Segment`], and
 //! [`WhisperResult`].
 //!
-//! Mirrors `stable_whisper.result` (the upstream `result.py`) closely enough
-//! that the B (regroup), C (suppress-silence), and D (output) stages can build
-//! on it. The pieces ported here are the *data* shape and the pure accessors:
+//! Carries the *data* shape and the pure accessors the regroup, suppress-silence,
+//! and output stages build on:
 //!
 //! * **Fields** — every constructor field stable-ts keeps on each struct.
 //! * **Derived accessors** — a [`Segment`]'s `start`/`end`/`text`/`tokens`
@@ -12,9 +11,8 @@
 //! * **Locking flags** — per-word `left_locked`/`right_locked` plus the
 //!   `lock_*`/`unlock_*` helpers regroup relies on.
 //! * **3-decimal timestamp rounding** — stable-ts rounds every timestamp to 3
-//!   decimals with Python's round-half-to-even ([`round_timestamp`]); the
-//!   serde `to_dict` representation reproduces that so the JSON matches the
-//!   Python golden.
+//!   decimals with round-half-to-even ([`round_timestamp`]); the serde
+//!   `to_dict` representation reproduces that so the JSON matches the golden.
 //!
 //! ## Serde shape (`to_dict` parity)
 //!
@@ -57,7 +55,7 @@ fn round_half_even(value: f64, ndigits: i32) -> f64 {
     rounded / factor
 }
 
-/// A single word with its timing, mirroring `stable_whisper.result.WordTiming`.
+/// A single word with its timing.
 ///
 /// `start`/`end` are stored already rounded (see [`round_timestamp`]); use the
 /// constructors / setters rather than touching the fields to keep that
@@ -108,17 +106,17 @@ impl WordTiming {
         self.end
     }
 
-    /// Set the start timestamp, rounding it (matches the Python `start` setter).
+    /// Set the start timestamp, rounding it (matches the `start` setter).
     pub fn set_start(&mut self, val: f64) {
         self.start = round_timestamp(val);
     }
 
-    /// Set the end timestamp, rounding it (matches the Python `end` setter).
+    /// Set the end timestamp, rounding it (matches the `end` setter).
     pub fn set_end(&mut self, val: f64) {
         self.end = round_timestamp(val);
     }
 
-    /// Rounded duration, mirroring the Python `duration` property.
+    /// Rounded duration, mirroring the `duration` property.
     #[must_use]
     pub fn duration(&self) -> f64 {
         round_timestamp(self.end - self.start)
@@ -193,12 +191,12 @@ impl From<RawWord> for WordTiming {
     }
 }
 
-/// A transcription segment, mirroring `stable_whisper.result.Segment`.
+/// A transcription segment.
 ///
 /// When `words` is `Some` and non-empty, `start`/`end`/`text`/`tokens` are
-/// derived from the words; otherwise the `default_*` fields supply them. This
-/// matches the Python properties exactly, including that an empty `words`
-/// vector falls back to the defaults (`has_words` is false for `[]`).
+/// derived from the words; otherwise the `default_*` fields supply them. An
+/// empty `words` vector falls back to the defaults (`has_words` is false for
+/// `[]`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
     default_start: f64,
@@ -263,8 +261,8 @@ impl Segment {
     }
 
     /// Derived `tokens`: concatenation of the words' tokens when the first word
-    /// carries tokens, else the default token list. Mirrors the Python guard
-    /// `if self.has_words and self.words[0].tokens`.
+    /// carries tokens, else the default token list (the upstream guard
+    /// `if self.has_words and self.words[0].tokens`).
     #[must_use]
     pub fn tokens(&self) -> Vec<i64> {
         if let Some(w) = self.words.as_ref()
@@ -324,8 +322,8 @@ impl Segment {
     }
 
     /// Overwrite the wordless-segment default `start`/`end`, rounding each like
-    /// the Python `start`/`end` setters. Only meaningful for a segment without
-    /// words: the suppress-silence `else` branch adjusts these defaults.
+    /// the `start`/`end` setters. Only meaningful for a segment without words:
+    /// the suppress-silence `else` branch adjusts these defaults.
     pub fn set_default_span(&mut self, start: f64, end: f64) {
         self.default_start = round_timestamp(start);
         self.default_end = round_timestamp(end);
@@ -338,8 +336,8 @@ impl Segment {
         self.words = Some(words);
     }
 
-    /// Overwrite the wordless-segment default text (the Python `_default_text`).
-    /// Only meaningful for a segment without words.
+    /// Overwrite the wordless-segment default text. Only meaningful for a
+    /// segment without words.
     pub fn set_default_text(&mut self, text: String) {
         self.default_text = text;
     }
@@ -435,8 +433,7 @@ impl From<RawSegment> for Segment {
     }
 }
 
-/// The full transcription result, mirroring
-/// `stable_whisper.result.WhisperResult`.
+/// The full transcription result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhisperResult {
     /// Parsed segments.
@@ -454,10 +451,9 @@ pub struct WhisperResult {
 impl WhisperResult {
     /// Parse a captured `to_dict()` JSON value into a [`WhisperResult`].
     ///
-    /// Mirrors `WhisperResult.__init__` for the dict form: `ori_dict` is the
-    /// nested `ori_dict` if present else the whole input; `language` comes from
-    /// `ori_dict`; segments come from the top-level `segments` else
-    /// `ori_dict.segments`.
+    /// `ori_dict` is the nested `ori_dict` if present else the whole input;
+    /// `language` comes from `ori_dict`; segments come from the top-level
+    /// `segments` else `ori_dict.segments`.
     #[must_use]
     pub fn from_value(input: &Value) -> Self {
         let obj = input.as_object().cloned().unwrap_or_default();
@@ -533,9 +529,9 @@ impl WhisperResult {
     }
 }
 
-/// Wrap a finite `f64` as a JSON number, matching how Python's `json` emits a
-/// float (always a JSON number, never null for `NaN`/`inf` here since timings
-/// are finite). Falls back to `Null` for non-finite values.
+/// Wrap a finite `f64` as a JSON number (always a JSON number, never null for
+/// `NaN`/`inf` here since timings are finite). Falls back to `Null` for
+/// non-finite values.
 fn number(v: f64) -> Value {
     serde_json::Number::from_f64(v).map_or(Value::Null, Value::Number)
 }

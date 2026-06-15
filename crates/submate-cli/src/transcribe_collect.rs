@@ -1,39 +1,35 @@
 //! File-collection classifier + extension display helper for `submate
-//! transcribe` (ports the pure-data layer of
-//! the transcribe command).
+//! transcribe`.
 //!
-//! Carved out from the broader `transcribe` command — the I/O, Rich console,
-//! queueing, recursion/confirm, and single-file branches are out of scope and
-//! belong to the clap wiring in `main.rs`. What lives here is the in-memory
-//! decision layer, deterministic given a directory listing:
+//! Carved out from the broader `transcribe` command — the I/O, console output,
+//! queueing, recursion/confirm, and single-file branches belong to the clap
+//! wiring in `main.rs`. What lives here is the in-memory decision layer,
+//! deterministic given a directory listing:
 //!
 //! 1. [`format_supported_extensions`] — the "Supported video/audio: ..." hint
-//!    renderer (`format_supported_extensions`): strip *all* leading dots, sort
-//!    lexicographically, join with `", "`.
-//! 2. [`classify_dir_entries`] — the body of the `path_obj.is_dir()` branch as
-//!    a pure function over a listing of relative names, returning the
+//!    renderer: strip *all* leading dots, sort lexicographically, join with
+//!    `", "`.
+//! 2. [`classify_dir_entries`] — the directory-listing classifier as a pure
+//!    function over a listing of relative names, returning the
 //!    `(files_to_process, skipped_files)` buckets in input/iteration order.
 //!
-//! Sibling of the other pure-data modules (`config_show`, `translate_paths`),
-//! wired into `main.rs` with the same `mod transcribe_collect;` convention and
-//! consumed by `port-cli-commands` once that lands.
+//! Sibling of the other pure-data modules (`config_show`, `translate_paths`).
 
 use std::path::Path;
 
 use submate_paths::{is_audio_file, is_video_file};
 
 /// Extensions the directory scan drops silently (counted in neither bucket),
-/// compared against the *lowercased* suffix. Mirrors the Python set
-/// `{".txt", ".jpg", ".png", ".nfo", ".srt", ".vtt"}`.
+/// compared against the *lowercased* suffix.
 const IGNORE_EXTENSIONS: &[&str] = &[".txt", ".jpg", ".png", ".nfo", ".srt", ".vtt"];
 
-/// Render a set of extensions for display (ports `format_supported_extensions`).
+/// Render a set of extensions for display.
 ///
-/// Each token has *all* leading dots stripped (Python `ext.lstrip(".")`, so
-/// `..srt` -> `srt`), the stripped tokens are sorted lexicographically (Python
-/// `sorted`, default string ordering), and the result is `", "`-joined. Used to
-/// render the "Supported video: ..." / "Supported audio: ..." hints over
-/// [`submate_paths::VIDEO_EXTENSIONS`] / [`submate_paths::AUDIO_EXTENSIONS`].
+/// Each token has *all* leading dots stripped (so `..srt` -> `srt`), the
+/// stripped tokens are sorted lexicographically (default string ordering), and
+/// the result is `", "`-joined. Used to render the "Supported video: ..." /
+/// "Supported audio: ..." hints over [`submate_paths::VIDEO_EXTENSIONS`] /
+/// [`submate_paths::AUDIO_EXTENSIONS`].
 pub fn format_supported_extensions(extensions: &[&str]) -> String {
     let mut tokens: Vec<&str> = extensions
         .iter()
@@ -43,8 +39,7 @@ pub fn format_supported_extensions(extensions: &[&str]) -> String {
     tokens.join(", ")
 }
 
-/// Classify a directory listing into `(files_to_process, skipped_files)` (ports
-/// the body of the `path_obj.is_dir()` branch).
+/// Classify a directory listing into `(files_to_process, skipped_files)`.
 ///
 /// For each name, in iteration order:
 /// * `is_video_file || is_audio_file` -> **process** (the media test wins
@@ -55,8 +50,7 @@ pub fn format_supported_extensions(extensions: &[&str]) -> String {
 /// * otherwise (dotfile, or one of the 6 ignore extensions) -> **ignored**
 ///   (dropped silently).
 ///
-/// Both buckets are returned in input order; neither is sorted, matching
-/// Python's append-while-iterating build of the two lists.
+/// Both buckets are returned in input order; neither is sorted.
 pub fn classify_dir_entries(names: &[&str]) -> (Vec<String>, Vec<String>) {
     let mut files_to_process = Vec::new();
     let mut skipped_files = Vec::new();
@@ -72,7 +66,7 @@ pub fn classify_dir_entries(names: &[&str]) -> (Vec<String>, Vec<String>) {
     (files_to_process, skipped_files)
 }
 
-/// Whether the raw basename starts with `"."` (Python `file.name.startswith(".")`).
+/// Whether the raw basename starts with `"."`.
 ///
 /// The guard is on the unmodified basename — case-sensitive, before any suffix
 /// lowercasing — so `.HIDDEN.TXT` is ignored via this rule regardless of its
@@ -84,13 +78,11 @@ fn is_dotfile(name: &str) -> bool {
         .is_some_and(|base| base.starts_with('.'))
 }
 
-/// Whether the lowercased suffix is in [`IGNORE_EXTENSIONS`] (Python
-/// `file.suffix.lower() in {...}`).
+/// Whether the lowercased suffix is in [`IGNORE_EXTENSIONS`].
 ///
-/// `Path::extension` mirrors `Path(name).suffix` (the final `.ext` of the last
-/// component, sans dot, or none for a name without one or a leading-dot-only
-/// name); the lowercase makes the match case-insensitive, so `subs.SRT` is
-/// ignored like `subs.srt`.
+/// `Path::extension` is the final `.ext` of the last component, sans dot, or
+/// none for a name without one or a leading-dot-only name; the lowercase makes
+/// the match case-insensitive, so `subs.SRT` is ignored like `subs.srt`.
 fn has_ignored_extension(name: &str) -> bool {
     match Path::new(name).extension().and_then(|e| e.to_str()) {
         Some(ext) => {
@@ -110,13 +102,12 @@ mod parity {
     /// Fixture-driven parity falsifier for the directory classifier.
     ///
     /// `fixtures/cli/transcribe_collect_cases.json` is a list of
-    /// `{names, files_to_process, skipped_files}` triples captured by replaying
-    /// the Python `is_dir()` classifier body over fixed listings covering every
-    /// branch (media files, a dotfile media file, each of the 6 ignore
-    /// extensions, a mixed-case ignore ext, unknown exts that become skipped, a
-    /// dotfile whose ext would otherwise skip, plus empty and interleaved
-    /// listings). For each case we drive [`classify_dir_entries`] and assert the
-    /// two buckets match the golden lists in order.
+    /// `{names, files_to_process, skipped_files}` triples over fixed listings
+    /// covering every branch (media files, a dotfile media file, each of the 6
+    /// ignore extensions, a mixed-case ignore ext, unknown exts that become
+    /// skipped, a dotfile whose ext would otherwise skip, plus empty and
+    /// interleaved listings). For each case we drive [`classify_dir_entries`] and
+    /// assert the two buckets match the golden lists in order.
     #[test]
     fn transcribe_collect_cases() {
         let cases = golden("cli/transcribe_collect_cases.json");
@@ -150,10 +141,9 @@ mod parity {
 
     /// Pin the dot-strip + sort + `", "`-join against the real extension sets.
     ///
-    /// `fixtures/cli/transcribe_supported_extensions.json` holds the Python
-    /// `format_supported_extensions(VIDEO_EXTENSIONS)` / `(AUDIO_EXTENSIONS)`
-    /// output; we render the same over the ported [`VIDEO_EXTENSIONS`] /
-    /// [`AUDIO_EXTENSIONS`] and assert equality.
+    /// `fixtures/cli/transcribe_supported_extensions.json` holds the expected
+    /// rendering for the video / audio extension sets; we render the same over
+    /// [`VIDEO_EXTENSIONS`] / [`AUDIO_EXTENSIONS`] and assert equality.
     #[test]
     fn supported_extensions_match_golden() {
         let golden = golden("cli/transcribe_supported_extensions.json");

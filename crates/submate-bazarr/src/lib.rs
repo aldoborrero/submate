@@ -1,17 +1,14 @@
-//! Bazarr provider glue (ports submate/bazarr/).
+//! Bazarr provider glue.
 //!
 //! Bazarr posts raw s16le (signed 16-bit little-endian), mono, 16 kHz PCM with
-//! no container. Every downstream decoder (PyAV in Python, the f32 decode in
-//! the Rust topology) assumes a parseable WAV, so this is the boundary
-//! normalization: [`wrap_pcm_as_wav`] prepends the canonical 44-byte WAV/RIFF
-//! header, byte-for-byte matching Python's `wave.open(...).writeframes(...)`
-//! byte-for-byte the canonical 44-byte WAV/RIFF header.
+//! no container. The downstream f32 decode assumes a parseable WAV, so this is
+//! the boundary normalization: [`wrap_pcm_as_wav`] prepends the canonical
+//! 44-byte WAV/RIFF header.
 //!
 //! It also hosts the Bazarr detect-language naming: [`detect_language`] turns a
 //! raw Whisper language code into the `{detected_language, language_code}` pair
 //! the detect-language endpoint returns, via the deliberately narrow
-//! [`LANGUAGE_NAMES`] table (a verbatim port of `BazarrService.LANGUAGE_NAMES`,
-//! NOT the broader `submate-lang` `name_en` table).
+//! [`LANGUAGE_NAMES`] table (NOT the broader `submate-lang` `name_en` table).
 
 /// Bazarr's wire format: mono.
 const CHANNELS: u16 = 1;
@@ -29,12 +26,7 @@ const WAV_HEADER_LEN: usize = 44;
 /// 1. **RIFF passthrough** — if `pcm` already begins with `b"RIFF"`, it is
 ///    already a WAV container and is returned unchanged.
 /// 2. **Raw-PCM wrap** — otherwise `pcm` is treated as s16le mono 16 kHz and a
-///    44-byte WAV/RIFF header is prepended exactly as Python's `wave` module
-///    emits for a single `writeframes` call.
-///
-/// This mirrors `_save_audio_with_wav_headers` minus the tempfile/cleanup
-/// machinery (Python only writes to disk because PyAV wants a path; the data
-/// contract is just these bytes).
+///    canonical 44-byte WAV/RIFF header is prepended.
 pub fn wrap_pcm_as_wav(pcm: &[u8]) -> Vec<u8> {
     if pcm.starts_with(b"RIFF") {
         return pcm.to_vec();
@@ -99,25 +91,23 @@ pub fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 /// The detected-language placeholder for a missing/empty detection.
 ///
-/// Mirrors Python's `result.language or "und"`: an empty or absent Whisper
-/// language collapses to `"und"`.
+/// An empty or absent Whisper language collapses to `"und"`.
 pub const UNDETERMINED_CODE: &str = "und";
 
 /// The display name for any code outside [`LANGUAGE_NAMES`].
 ///
-/// Mirrors `LANGUAGE_NAMES.get(code, "Unknown")`. Note `"und"` itself is NOT a
-/// key, so a no-detection result names to `"Unknown"`.
+/// Note `"und"` itself is NOT a key, so a no-detection result names to
+/// `"Unknown"`.
 pub const UNKNOWN_NAME: &str = "Unknown";
 
 /// The deliberately NARROW Bazarr language-code → display-name table (the
 /// `en..uk` set).
 ///
-/// This is the narrow Bazarr language-name set
-/// (`en`..`uk`) — NOT the broader `submate-lang`
-/// `name_en` table. Bazarr's detect-language response is keyed off this exact
-/// set: any code outside it (including valid ISO-639-1 codes the full table
-/// *would* name, e.g. `ca`/`be`/`fa`, and `"und"` itself) must name to
-/// [`UNKNOWN_NAME`]. Routing through `submate-lang` would name those and
+/// This is the narrow Bazarr language-name set (`en`..`uk`) — NOT the broader
+/// `submate-lang` `name_en` table. Bazarr's detect-language response is keyed
+/// off this exact set: any code outside it (including valid ISO-639-1 codes the
+/// full table *would* name, e.g. `ca`/`be`/`fa`, and `"und"` itself) must name
+/// to [`UNKNOWN_NAME`]. Routing through `submate-lang` would name those and
 /// silently diverge the wire contract, so the table is intentionally not
 /// derived from it.
 const LANGUAGE_NAMES: &[(&str, &str)] = &[
@@ -153,10 +143,9 @@ const LANGUAGE_NAMES: &[(&str, &str)] = &[
     ("uk", "Ukrainian"),
 ];
 
-/// Normalize a Whisper-detected language code, applying Python truthiness.
+/// Normalize a Whisper-detected language code.
 ///
-/// Mirrors `language_code = result.language or "und"`: `None` and `Some("")`
-/// (the falsy cases) both collapse to [`UNDETERMINED_CODE`]; any non-empty
+/// `None` and `Some("")` both collapse to [`UNDETERMINED_CODE`]; any non-empty
 /// code passes through unchanged.
 pub fn normalize_detected_code(whisper_lang: Option<&str>) -> String {
     match whisper_lang {
@@ -167,8 +156,8 @@ pub fn normalize_detected_code(whisper_lang: Option<&str>) -> String {
 
 /// Map a language code to its Bazarr display name.
 ///
-/// Mirrors `LANGUAGE_NAMES.get(code, "Unknown")`: an in-set code yields its
-/// mapped name, anything else (including `"und"`) yields [`UNKNOWN_NAME`].
+/// An in-set code yields its mapped name, anything else (including `"und"`)
+/// yields [`UNKNOWN_NAME`].
 pub fn detect_language_name(code: &str) -> &'static str {
     LANGUAGE_NAMES
         .iter()
@@ -184,9 +173,9 @@ pub fn detect_language_name(code: &str) -> &'static str {
 /// `{"Unknown", "und"}`) cannot drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedLanguage {
-    /// Display name (`LANGUAGE_NAMES.get(code, "Unknown")`).
+    /// Display name (in-set code → its name, otherwise `"Unknown"`).
     pub detected_language: &'static str,
-    /// The normalized language code (`result.language or "und"`).
+    /// The normalized language code (a falsy detection → `"und"`).
     pub language_code: String,
 }
 
@@ -248,7 +237,7 @@ mod parity {
         }
     }
 
-    /// Wrap branch: raw PCM golden in, Python `wave` WAV golden out, exact.
+    /// Wrap branch: raw PCM golden in, WAV golden out, exact.
     #[test]
     fn wav_wrap_matches_python_wave() {
         let (Some(pcm), Some(wav)) = (golden("sine440.pcm"), golden("sine440.wav")) else {
@@ -369,10 +358,9 @@ mod parity {
         assert_f32_close(&pcm_s16le_to_f32(&pcm), &expected);
     }
 
-    /// The in-set codes and their exact Python-sourced names, pinned inline.
+    /// The in-set codes and their exact names, pinned inline.
     ///
-    /// This is the verbatim `BazarrService.LANGUAGE_NAMES` table; a typo or a
-    /// dropped/added entry fails here even without the JSON golden.
+    /// A typo or a dropped/added entry fails here even without the JSON golden.
     const GOLDEN_PAIRS: &[(&str, &str)] = &[
         ("en", "English"),
         ("es", "Spanish"),
@@ -407,9 +395,7 @@ mod parity {
     ];
 
     /// Every in-set code names to its mapped value, and the table holds exactly
-    /// the verbatim Python entries (the `en..uk` list — 30 codes; the "29" in
-    /// the backlog prose is a miscount of that same list, the Python dict has
-    /// 30, which is the source of truth).
+    /// the `en..uk` list — 30 codes.
     #[test]
     fn language_name_lookup_in_set() {
         assert_eq!(
