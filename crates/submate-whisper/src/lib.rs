@@ -981,6 +981,20 @@ impl Transcription {
         stable_ts::output::to_srt_vtt(&self.result, word_level, vtt)
     }
 
+    /// Render the subtitle in the requested [`OutputFormat`](submate_types::OutputFormat).
+    /// `word_level` only affects the SRT/VTT formats.
+    #[must_use]
+    pub fn render(&self, format: submate_types::OutputFormat, word_level: bool) -> String {
+        use submate_types::OutputFormat;
+        match format {
+            OutputFormat::Srt => self.to_srt_vtt(word_level, false),
+            OutputFormat::Vtt => self.to_srt_vtt(word_level, true),
+            OutputFormat::Ass => self.to_ass(),
+            OutputFormat::Json => self.to_json(),
+            OutputFormat::Txt => self.to_txt(),
+        }
+    }
+
     /// Render segment-level ASS, matching
     /// `TranscriptionResult.to_ass(segment_level=True, word_level=False)`.
     #[must_use]

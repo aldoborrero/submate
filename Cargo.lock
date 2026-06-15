@@ -2112,6 +2112,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stable-ts",
+ "submate-types",
  "thiserror",
  "tokio",
  "tracing",

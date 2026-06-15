@@ -522,6 +522,42 @@ fn assemble_options(s: &submate_config::StableTsSettings) -> submate_whisper::As
     }
 }
 
+/// Render `assembled` in `format`, then LLM-translate to `target_language` when
+/// one is given and differs from the `detected` source. Shared by the CLI
+/// transcribe path and the Bazarr server path. A translation error degrades to
+/// the untranslated content (`translate_content` absorbs it).
+#[cfg(feature = "model")]
+async fn render_subtitle(
+    assembled: &submate_whisper::Transcription,
+    format: submate_types::OutputFormat,
+    word_level: bool,
+    detected: &str,
+    target_language: Option<&str>,
+    backend: Option<&std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>>,
+    chunk_size: usize,
+) -> String {
+    let mut content = assembled.render(format, word_level);
+    if let (Some(target), Some(backend)) = (target_language.filter(|t| !t.is_empty()), backend)
+        && target != detected
+    {
+        let backend = backend.clone();
+        let mut complete = move |prompt: String| {
+            let backend = backend.clone();
+            async move { backend.complete(&prompt).await }
+        };
+        content = submate_translate::translate_content(
+            &content,
+            detected,
+            target,
+            format,
+            chunk_size,
+            &mut complete,
+        )
+        .await;
+    }
+    content
+}
+
 /// Resolve where a `transcribe` result is written next to its input.
 ///
 /// A plain transcribe targets `<stem>.<ext>` (the format's extension replacing
@@ -868,38 +904,17 @@ async fn transcribe_one(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let assembled = submate_whisper::assemble_result(&raw, assemble, &pcm)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let detected = raw.language.clone();
 
-    let target_format: submate_types::OutputFormat = format.into();
-    let mut content = match target_format {
-        submate_types::OutputFormat::Srt => assembled.to_srt_vtt(word_level, false),
-        submate_types::OutputFormat::Vtt => assembled.to_srt_vtt(word_level, true),
-        submate_types::OutputFormat::Ass => assembled.to_ass(),
-        submate_types::OutputFormat::Json => assembled.to_json(),
-        submate_types::OutputFormat::Txt => assembled.to_txt(),
-    };
-
-    // LLM-translate when a different target language is requested; any error
-    // degrades to the untranslated content (`translate_content` absorbs it).
-    if let (Some(target), Some(backend)) = (translate_to, backend)
-        && target != detected
-    {
-        let mut complete = move |prompt: String| {
-            let backend = backend.clone();
-            async move { backend.complete(&prompt).await }
-        };
-        content = submate_translate::translate_content(
-            &content,
-            &detected,
-            target,
-            target_format,
-            chunk_size.max(1) as usize,
-            &mut complete,
-        )
-        .await;
-    }
-
-    Ok(content)
+    Ok(render_subtitle(
+        &assembled,
+        format.into(),
+        word_level,
+        &raw.language,
+        translate_to,
+        backend.as_ref(),
+        chunk_size.max(1) as usize,
+    )
+    .await)
 }
 
 /// Without the `model` feature there is no whisper.cpp to run.
@@ -1039,7 +1054,6 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         opts: submate_server::BazarrTranscribeOpts,
         pcm: Vec<u8>,
     ) -> Result<submate_server::BazarrOutput, String> {
-        use submate_types::OutputFormat;
         let samples = submate_bazarr::pcm_s16le_to_f32(&pcm);
         let task = match opts.task {
             submate_types::TranscriptionTask::Translate => submate_whisper::Task::Translate,
@@ -1057,43 +1071,22 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
             .transcribe_pcm(self.model_path.clone(), samples.clone(), options)
             .await
             .map_err(|e| e.to_string())?;
-        let detected = raw.language.clone();
         let assembled = submate_whisper::assemble_result(&raw, &self.assemble, &samples)
             .map_err(|e| e.to_string())?;
-        let word_level = opts.word_timestamps;
-        let mut content = match opts.output_format {
-            OutputFormat::Srt => assembled.to_srt_vtt(word_level, false),
-            OutputFormat::Vtt => assembled.to_srt_vtt(word_level, true),
-            OutputFormat::Ass => assembled.to_ass(),
-            OutputFormat::Json => assembled.to_json(),
-            OutputFormat::Txt => assembled.to_txt(),
-        };
-
-        // Translate when a target language is requested and differs from the
-        // detected source; any error degrades to the untranslated content
-        // (`translate_content` absorbs it).
-        if let Some(target) = opts.target_language.as_deref().filter(|t| !t.is_empty())
-            && target != detected
-        {
-            let backend = self.backend.clone();
-            let mut complete = move |prompt: String| {
-                let backend = backend.clone();
-                async move { backend.complete(&prompt).await }
-            };
-            content = submate_translate::translate_content(
-                &content,
-                &detected,
-                target,
-                opts.output_format,
-                self.chunk_size,
-                &mut complete,
-            )
-            .await;
-        }
+        let content = render_subtitle(
+            &assembled,
+            opts.output_format,
+            opts.word_timestamps,
+            &raw.language,
+            opts.target_language.as_deref(),
+            Some(&self.backend),
+            self.chunk_size,
+        )
+        .await;
 
         Ok(submate_server::BazarrOutput {
             content,
-            detected_language: detected,
+            detected_language: raw.language,
         })
     }
 
