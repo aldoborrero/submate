@@ -2,7 +2,8 @@
   "Device": {
     "AUTO": "auto",
     "CPU": "cpu",
-    "CUDA": "cuda"
+    "CUDA": "cuda",
+    "VULKAN": "vulkan"
   },
   "LanguageNamingType": {
     "ISO_639_1": "iso_639_1",

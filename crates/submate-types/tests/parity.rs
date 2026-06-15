@@ -119,6 +119,7 @@ fn enum_values() {
         &[
             ("CPU", Device::Cpu),
             ("CUDA", Device::Cuda),
+            ("VULKAN", Device::Vulkan),
             ("AUTO", Device::Auto),
         ],
     );

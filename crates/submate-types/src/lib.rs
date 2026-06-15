@@ -68,6 +68,9 @@ pub enum Device {
     #[strum(serialize = "cuda")]
     #[serde(rename = "cuda")]
     Cuda,
+    #[strum(serialize = "vulkan")]
+    #[serde(rename = "vulkan")]
+    Vulkan,
     #[strum(serialize = "auto")]
     #[serde(rename = "auto")]
     Auto,
