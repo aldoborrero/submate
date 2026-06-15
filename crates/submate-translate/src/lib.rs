@@ -382,11 +382,56 @@ struct ClaudeBlock {
 /// `{base_url}/v1/messages` with the `x-api-key` and `anthropic-version`
 /// headers, then returns the stripped text of the first content block that
 /// carries text.
+/// Retry policy for the hand-rolled Anthropic backend.
+///
+/// The OpenAI-compatible backends retry through `async-openai`'s own
+/// exponential backoff, but [`AnthropicBackend`] talks to the messages API with
+/// raw `reqwest`, so it carries its own policy. Retries cover transient failures
+/// — connection errors, HTTP 429, and 5xx — with exponential backoff plus jitter
+/// so concurrent workers don't resynchronize onto the same retry instant.
+#[derive(Clone, Copy)]
+struct RetryPolicy {
+    /// Total attempts including the first try (so `1` disables retrying).
+    max_attempts: u32,
+    /// Backoff base; attempt `n` (0-based) waits up to `base * 2^n`.
+    base_delay: Duration,
+    /// Ceiling on a single backoff wait.
+    max_delay: Duration,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 4,
+            base_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(8),
+        }
+    }
+}
+
+/// Whether a response status warrants a retry: rate-limiting (429) or any
+/// server-side (5xx) failure. Other 4xx (auth, bad request) are caller errors,
+/// so retrying them only burns quota.
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// The exponential-backoff ceiling for a 0-based `attempt`, capped at `max`.
+///
+/// Pure (no jitter, no sleeping) so the schedule is unit-testable; the caller
+/// applies jitter within `[ceiling/2, ceiling)` before sleeping.
+fn backoff_ceiling(attempt: u32, base: Duration, max: Duration) -> Duration {
+    // Saturating shift + mul keep a large `attempt` from overflowing.
+    let factor = 1u32.checked_shl(attempt).unwrap_or(u32::MAX);
+    base.saturating_mul(factor).min(max)
+}
+
 pub struct AnthropicBackend {
     api_key: String,
     model: String,
     base_url: String,
     client: reqwest::Client,
+    retry: RetryPolicy,
 }
 
 impl AnthropicBackend {
@@ -409,6 +454,27 @@ impl AnthropicBackend {
             model: model.into(),
             base_url: base_url.into(),
             client: http_client(),
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    /// Construct a Claude backend with an explicit base URL and retry policy.
+    ///
+    /// Used by the retry tests to drive a fast (sub-millisecond) backoff
+    /// schedule instead of the production half-second base.
+    #[cfg(test)]
+    fn with_retry(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+        retry: RetryPolicy,
+    ) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            base_url: base_url.into(),
+            client: http_client(),
+            retry,
         }
     }
 }
@@ -430,14 +496,48 @@ impl Backend for AnthropicBackend {
             }],
         };
 
-        let response = self
-            .client
-            .post(&url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await?
+        // Retry transient failures (connection errors, 429, 5xx) with
+        // exponential backoff + jitter; surface anything else on the spot. The
+        // request builder is consumed by `send`, so it is rebuilt each attempt.
+        let mut attempt = 0;
+        let response = loop {
+            let outcome = self
+                .client
+                .post(&url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+                .send()
+                .await;
+
+            let retryable = match &outcome {
+                Ok(resp) => is_retryable_status(resp.status()),
+                // Only connection-level failures are safe to retry; a request
+                // timeout means the server may have received it, so leave it.
+                Err(err) => err.is_connect(),
+            };
+
+            if retryable && attempt + 1 < self.retry.max_attempts {
+                let ceiling = backoff_ceiling(attempt, self.retry.base_delay, self.retry.max_delay);
+                // Equal jitter: a random point in the upper half of the ceiling
+                // keeps a floor while spreading retries across concurrent calls.
+                let half = ceiling / 2;
+                let delay = half + half.mul_f64(fastrand::f64());
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    max_attempts = self.retry.max_attempts,
+                    delay_ms = delay.as_millis(),
+                    "anthropic request failed transiently, retrying after backoff"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
+            }
+
+            break outcome?;
+        };
+
+        let response = response
             .error_for_status()?
             .json::<ClaudeResponse>()
             .await?;
@@ -1315,6 +1415,116 @@ mod tests {
                     ("anthropic-version".to_string(), "2023-06-01".to_string()),
                 ]
             );
+        }
+    }
+
+    /// Backoff-retry behavior of the hand-rolled Anthropic backend: transient
+    /// failures (5xx/429/connection) are retried with backoff, terminal client
+    /// errors (4xx) are not, and the backend gives up after `max_attempts`.
+    mod retry {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        use super::super::{
+            AnthropicBackend, Backend, DEFAULT_CLAUDE_MODEL, RetryPolicy, backoff_ceiling,
+        };
+
+        /// A sub-millisecond policy so retry tests don't actually wait.
+        fn fast_policy(max_attempts: u32) -> RetryPolicy {
+            RetryPolicy {
+                max_attempts,
+                base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(4),
+            }
+        }
+
+        fn claude_reply() -> serde_json::Value {
+            serde_json::json!({ "content": [{"type": "text", "text": "hola"}] })
+        }
+
+        #[test]
+        fn backoff_ceiling_doubles_and_caps() {
+            let base = Duration::from_millis(100);
+            let max = Duration::from_millis(500);
+            assert_eq!(backoff_ceiling(0, base, max), Duration::from_millis(100));
+            assert_eq!(backoff_ceiling(1, base, max), Duration::from_millis(200));
+            assert_eq!(backoff_ceiling(2, base, max), Duration::from_millis(400));
+            // 800ms would exceed the 500ms ceiling, so it clamps.
+            assert_eq!(backoff_ceiling(3, base, max), max);
+            // A huge attempt must not overflow the shift/multiply.
+            assert_eq!(backoff_ceiling(64, base, max), max);
+        }
+
+        #[tokio::test]
+        async fn retries_transient_5xx_then_succeeds() {
+            let server = MockServer::start().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_seen = Arc::clone(&calls);
+            let reply = claude_reply();
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(move |_: &Request| {
+                    // First two attempts fail with 503; the third succeeds.
+                    if calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                        ResponseTemplate::new(503)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(reply.clone())
+                    }
+                })
+                .mount(&server)
+                .await;
+
+            let backend = AnthropicBackend::with_retry(
+                "sk",
+                DEFAULT_CLAUDE_MODEL,
+                server.uri(),
+                fast_policy(4),
+            );
+
+            assert_eq!(backend.complete("Hello").await.unwrap(), "hola");
+            assert_eq!(calls_seen.load(Ordering::SeqCst), 3);
+        }
+
+        #[tokio::test]
+        async fn does_not_retry_client_error() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(ResponseTemplate::new(400))
+                .expect(1) // verified on server drop: a 400 must not be retried
+                .mount(&server)
+                .await;
+
+            let backend = AnthropicBackend::with_retry(
+                "sk",
+                DEFAULT_CLAUDE_MODEL,
+                server.uri(),
+                fast_policy(4),
+            );
+            assert!(backend.complete("Hello").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn gives_up_after_max_attempts() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(3) // max_attempts = 3 → exactly three tries, then give up
+                .mount(&server)
+                .await;
+
+            let backend = AnthropicBackend::with_retry(
+                "sk",
+                DEFAULT_CLAUDE_MODEL,
+                server.uri(),
+                fast_policy(3),
+            );
+            assert!(backend.complete("Hello").await.is_err());
         }
     }
 }

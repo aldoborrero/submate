@@ -9,15 +9,19 @@ repository.workspace = true
 [dependencies]
 async-openai = { workspace = true }
 async-trait = { workspace = true }
+fastrand = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 submate-subtitle = { path = "../submate-subtitle" }
 submate-types = { path = "../submate-types" }
+# The hand-rolled Anthropic backoff retry needs an async timer (tokio::time);
+# the OpenAI-compat backends get their retries from async-openai instead.
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 parity = { path = "../parity" }
-tokio = { workspace = true }
 wiremock = { workspace = true }
 
 [lints]
