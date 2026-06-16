@@ -981,7 +981,18 @@ impl Transcription {
     /// per word (karaoke-style) instead of per segment.
     #[must_use]
     pub fn to_srt_vtt(&self, word_level: bool, vtt: bool) -> String {
-        stable_ts::output::to_srt_vtt(&self.result, word_level, vtt)
+        let rendered = stable_ts::output::to_srt_vtt(&self.result, word_level, vtt);
+        if vtt {
+            return rendered;
+        }
+        // stable-ts emits one cue per segment in segment order, without sorting
+        // or dropping degenerate cues. A hallucinated whisper segment can carry a
+        // `start >= end` (or out-of-order) timestamp, which makes the whole SRT
+        // invalid — Bazarr then rejects it ("subtitles isn't valid for this
+        // file"). Re-parse and recompose so the SRT is always well-formed:
+        // `compose_srt` sorts by start and skips empty / non-positive-duration
+        // cues (`srt_should_skip`).
+        submate_subtitle::cue::compose_srt(&submate_subtitle::cue::parse_srt(&rendered))
     }
 
     /// Render the subtitle in the requested [`OutputFormat`](submate_types::OutputFormat).
