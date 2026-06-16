@@ -116,6 +116,7 @@ pub struct BackendSettings<'a> {
     pub openai_api_key: &'a str,
     /// OpenAI model name.
     pub openai_model: &'a str,
+    pub openai_base_url: &'a str,
     /// Gemini API key.
     pub gemini_api_key: &'a str,
     /// Gemini model name.
@@ -155,7 +156,11 @@ pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
             "openai",
             s.openai_api_key,
             s.openai_model,
-            OPENAI_API_BASE,
+            if s.openai_base_url.is_empty() {
+                OPENAI_API_BASE
+            } else {
+                s.openai_base_url
+            },
         )),
         TranslationBackend::Gemini => Box::new(OpenAiCompatBackend::new(
             "gemini",
@@ -956,6 +961,7 @@ mod tests {
                 claude_model: "m",
                 openai_api_key: "k",
                 openai_model: "m",
+                openai_base_url: "",
                 gemini_api_key: "k",
                 gemini_model: "m",
             };

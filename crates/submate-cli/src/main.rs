@@ -503,6 +503,7 @@ fn build_backend(config: &Config) -> Box<dyn submate_translate::Backend + Send +
         claude_model: &t.claude_model,
         openai_api_key: &t.openai_api_key,
         openai_model: &t.openai_model,
+        openai_base_url: &t.openai_base_url,
         gemini_api_key: &t.gemini_api_key,
         gemini_model: &t.gemini_model,
     })
