@@ -22,12 +22,7 @@ use std::future::Future;
 use std::ops::Range;
 use std::time::Duration;
 
-use async_openai::Client;
-use async_openai::config::{OPENAI_API_BASE, OpenAIConfig};
-use async_openai::error::OpenAIError;
-use async_openai::types::chat::{
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-};
+use async_openai::config::OPENAI_API_BASE;
 use serde::Serialize;
 
 /// Default chunked-translation prompt template.
@@ -205,15 +200,6 @@ impl From<reqwest::Error> for BackendError {
     }
 }
 
-/// An `async-openai` call/build failure becomes a [`BackendError::Request`]
-/// carrying the [`OpenAIError`]'s display string, so [`OpenAiCompatBackend`]
-/// can lean on `?`.
-impl From<OpenAIError> for BackendError {
-    fn from(err: OpenAIError) -> Self {
-        Self::Request(err.to_string())
-    }
-}
-
 /// Default Ollama model.
 pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 
@@ -266,16 +252,25 @@ fn http_client() -> reqwest::Client {
 
 /// OpenAI-compatible translation backend, shared by OpenAI, Ollama and Gemini.
 ///
-/// Wraps an `async-openai` [`Client`] configured by `base_url` + API key, so the
-/// three providers differ only in those two values (and the model name).
-/// [`complete`](Backend::complete) sends the prompt as a single user message via
-/// `POST {base_url}/chat/completions` and returns the stripped
-/// `choices[0].message.content` (empty string when null).
+/// An OpenAI-compatible chat-completions backend (`openai`/`ollama`/`gemini`,
+/// including OpenAI-compatible aggregators such as OpenRouter), differing only by
+/// `base_url`, API key, and model. [`complete`](Backend::complete) POSTs the
+/// prompt as a single user message to `POST {base_url}/chat/completions` with a
+/// `Bearer` token and returns the stripped `choices[0].message.content`.
+///
+/// Talks to the API with raw `reqwest` and a *lenient* response struct rather
+/// than `async-openai`'s strictly-typed client: aggregators and reasoning models
+/// return extra fields (`reasoning`, `refusal`, `provider`, `cost`, …) that the
+/// strict client rejects with "error decoding response body", which silently
+/// dropped the translation and left subtitles untranslated. Ignoring unknown
+/// fields keeps any OpenAI-compatible provider working.
 pub struct OpenAiCompatBackend {
     id: &'static str,
-    client: Client<OpenAIConfig>,
+    api_key: String,
+    client: reqwest::Client,
     model: String,
     base_url: String,
+    retry: RetryPolicy,
 }
 
 impl OpenAiCompatBackend {
@@ -287,23 +282,19 @@ impl OpenAiCompatBackend {
         model: impl Into<String>,
         base_url: impl Into<String>,
     ) -> Self {
-        let base_url = base_url.into();
-        let config = OpenAIConfig::new()
-            .with_api_key(api_key.into())
-            .with_api_base(base_url.clone());
         Self {
             id,
-            // Drive async-openai through our timeout-configured client so a hung
-            // provider can't block forever (its default client has no timeout).
-            client: Client::with_config(config).with_http_client(http_client()),
+            api_key: api_key.into(),
+            // Shared timeout-configured client so a hung provider can't block forever.
+            client: http_client(),
             model: model.into(),
-            base_url,
+            base_url: base_url.into(),
+            retry: RetryPolicy::default(),
         }
     }
 
-    /// The configured API base URL (the value `async-openai` prefixes onto
-    /// `/chat/completions`). Used by the factory-routing test to assert each
-    /// variant lands on the right provider.
+    /// The configured API base URL (`/chat/completions` is appended). Used by the
+    /// factory-routing test to assert each variant lands on the right provider.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -317,15 +308,55 @@ impl Backend for OpenAiCompatBackend {
 
     #[tracing::instrument(skip_all, fields(backend = self.id, model = %self.model))]
     async fn complete(&self, prompt: &str) -> Result<String, BackendError> {
-        let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
-            .messages([ChatCompletionRequestUserMessageArgs::default()
-                .content(prompt)
-                .build()?
-                .into()])
-            .build()?;
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let body = OpenAiRequest {
+            model: &self.model,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+        };
 
-        let response = self.client.chat().create(request).await?;
+        // Retry transient failures (connection errors, 429, 5xx) with exponential
+        // backoff + jitter, matching the Anthropic backend; the builder is consumed
+        // by `send`, so it is rebuilt each attempt.
+        let mut attempt = 0;
+        let response = loop {
+            let outcome = self
+                .client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await;
+
+            let retryable = match &outcome {
+                Ok(resp) => is_retryable_status(resp.status()),
+                Err(err) => err.is_connect(),
+            };
+
+            if retryable && attempt + 1 < self.retry.max_attempts {
+                let ceiling = backoff_ceiling(attempt, self.retry.base_delay, self.retry.max_delay);
+                let half = ceiling / 2;
+                let delay = half + half.mul_f64(fastrand::f64());
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    max_attempts = self.retry.max_attempts,
+                    delay_ms = delay.as_millis(),
+                    "openai-compat request failed transiently, retrying after backoff"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
+            }
+
+            break outcome?;
+        };
+
+        let response = response
+            .error_for_status()?
+            .json::<OpenAiResponse>()
+            .await?;
         let content = response
             .choices
             .into_iter()
@@ -356,6 +387,35 @@ const CLAUDE_MAX_TOKENS: u32 = 4096;
 struct ChatMessage<'a> {
     role: &'a str,
     content: &'a str,
+}
+
+/// Body of `POST {base}/chat/completions` (the OpenAI chat-completions API).
+#[derive(Serialize)]
+struct OpenAiRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+}
+
+/// Lenient subset of the chat-completions response — only the text we read back.
+///
+/// Unknown fields (`usage`, `provider`, per-message `reasoning`/`refusal`, …) are
+/// ignored, so replies from OpenAI-compatible aggregators (OpenRouter) and
+/// reasoning models deserialize cleanly instead of failing the whole response.
+#[derive(serde::Deserialize)]
+struct OpenAiResponse {
+    #[serde(default)]
+    choices: Vec<OpenAiChoice>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiChoice {
+    message: OpenAiResponseMessage,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
 }
 
 /// Body of `POST /v1/messages`, matching the Anthropic messages API.
