@@ -538,23 +538,35 @@ async fn render_subtitle(
     chunk_size: usize,
 ) -> String {
     let mut content = assembled.render(format, word_level);
-    if let (Some(target), Some(backend)) = (target_language.filter(|t| !t.is_empty()), backend)
-        && target != detected
-    {
-        let backend = backend.clone();
-        let mut complete = move |prompt: String| {
+    match (target_language.filter(|t| !t.is_empty()), backend) {
+        (Some(target), Some(backend)) if target != detected => {
+            tracing::info!(detected = %detected, target = %target, "translating subtitles");
             let backend = backend.clone();
-            async move { backend.complete(&prompt).await }
-        };
-        content = submate_translate::translate_content(
-            &content,
-            detected,
-            target,
-            format,
-            chunk_size,
-            &mut complete,
-        )
-        .await;
+            let mut complete = move |prompt: String| {
+                let backend = backend.clone();
+                async move { backend.complete(&prompt).await }
+            };
+            content = submate_translate::translate_content(
+                &content,
+                detected,
+                target,
+                format,
+                chunk_size,
+                &mut complete,
+            )
+            .await;
+        }
+        (Some(target), Some(_)) => {
+            tracing::info!(
+                detected = %detected,
+                target = %target,
+                "translation skipped: detected language already equals target",
+            );
+        }
+        (Some(target), None) => {
+            tracing::warn!(target = %target, "translation requested but no backend configured");
+        }
+        _ => {}
     }
     content
 }

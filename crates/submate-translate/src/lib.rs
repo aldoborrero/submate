@@ -910,12 +910,23 @@ pub async fn translate_content<E, F, Fut>(
 where
     F: FnMut(String) -> Fut,
     Fut: Future<Output = Result<String, E>>,
+    E: std::fmt::Debug,
 {
     use submate_types::OutputFormat;
 
-    if content.is_empty() || source_lang == target_lang {
+    if content.is_empty() {
         return content.to_string();
     }
+    if source_lang == target_lang {
+        tracing::info!(lang = %source_lang, "translation skipped: source language equals target");
+        return content.to_string();
+    }
+    tracing::info!(
+        source = %source_lang,
+        target = %target_lang,
+        bytes = content.len(),
+        "translating subtitle content",
+    );
 
     let result: Result<String, E> = match output_format {
         OutputFormat::Srt => {
@@ -932,8 +943,19 @@ where
     };
 
     // Translation failure must never reach the Bazarr caller: fall back to the
-    // original, untranslated content.
-    result.unwrap_or_else(|_| content.to_string())
+    // original, untranslated content — but log it so the fallback isn't silent.
+    match result {
+        Ok(translated) => translated,
+        Err(e) => {
+            tracing::error!(
+                error = ?e,
+                source = %source_lang,
+                target = %target_lang,
+                "translation failed; returning untranslated content",
+            );
+            content.to_string()
+        }
+    }
 }
 
 #[cfg(test)]
