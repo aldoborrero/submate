@@ -395,182 +395,11 @@ mod word_grouping_tests {
     }
 }
 
-/// A speech region from VAD, mapping the *filtered* (speech-only) timeline back
-/// to the *original* clip timeline. All values in seconds.
-#[cfg(any(feature = "model", test))]
-#[derive(Debug, Clone, Copy)]
-struct VadRegion {
-    /// Where this region begins in the concatenated speech-only audio.
-    filtered_start: f64,
-    /// Where it began in the original clip.
-    orig_start: f64,
-    /// Region duration.
-    dur: f64,
-}
-
-/// Map a timestamp on the filtered (speech-only) timeline back to the original
-/// clip timeline.
-///
-/// The filtered audio is the speech regions concatenated, so the map is
-/// piecewise: find the region the timestamp falls in and shift it by that
-/// region's original offset. A timestamp on a region boundary belongs to the
-/// later region; one past the last region clamps to its end.
-#[cfg(any(feature = "model", test))]
-fn remap_seconds(regions: &[VadRegion], filtered_s: f64) -> f64 {
-    for r in regions {
-        if filtered_s < r.filtered_start + r.dur {
-            return r.orig_start + (filtered_s - r.filtered_start).max(0.0);
-        }
-    }
-    regions.last().map_or(filtered_s, |r| r.orig_start + r.dur)
-}
-
-/// Assemble speech-only audio from VAD segment bounds (centiseconds), returning
-/// the concatenated PCM and the map back to the original timeline.
-///
-/// This reproduces what whisper.cpp's `whisper_vad()` does before transcription
-/// — the step whisper-rs's `state.full` bypasses: each **non-final** segment is
-/// extended by `overlap_samples` so a word straddling the boundary isn't
-/// clipped, and `silence_samples` of silence separate the kept regions so the
-/// model doesn't run adjacent speech together. Degenerate (empty) segments are
-/// dropped. Each region copies a contiguous original slice, so the timeline map
-/// is slope-1 within a region (see [`remap_seconds`]).
-#[cfg(any(feature = "model", test))]
-fn assemble_speech_only(
-    pcm: &[f32],
-    segments_cs: &[(f32, f32)],
-    overlap_samples: usize,
-    silence_samples: usize,
-) -> (Vec<f32>, Vec<VadRegion>) {
-    let per_cs = f64::from(SAMPLE_RATE / 100);
-    let sr = f64::from(SAMPLE_RATE);
-    let n = segments_cs.len();
-    let mut filtered: Vec<f32> = Vec::new();
-    let mut regions: Vec<VadRegion> = Vec::new();
-    for (i, &(start_cs, end_cs)) in segments_cs.iter().enumerate() {
-        let s0 = ((f64::from(start_cs) * per_cs) as usize).min(pcm.len());
-        let mut s1 = (f64::from(end_cs) * per_cs) as usize;
-        // Extend every non-final segment into the next one so the boundary word
-        // isn't cut off; clamp to the clip end.
-        if i + 1 < n {
-            s1 += overlap_samples;
-        }
-        let s1 = s1.min(pcm.len());
-        if s1 <= s0 {
-            continue;
-        }
-        // Separate kept regions with silence (never before the first kept one).
-        if !regions.is_empty() {
-            filtered.resize(filtered.len() + silence_samples, 0.0);
-        }
-        let filtered_start = filtered.len() as f64 / sr;
-        filtered.extend_from_slice(&pcm[s0..s1]);
-        regions.push(VadRegion {
-            filtered_start,
-            orig_start: f64::from(start_cs) / 100.0,
-            dur: (s1 - s0) as f64 / sr,
-        });
-    }
-    (filtered, regions)
-}
-
-#[cfg(test)]
-mod vad_remap_tests {
-    use super::{VadRegion, remap_seconds};
-
-    // Original speech at [10,15) and [40,45), concatenated to filtered [0,5) and
-    // [5,10) — the 25s silence between them is dropped.
-    fn regions() -> Vec<VadRegion> {
-        vec![
-            VadRegion {
-                filtered_start: 0.0,
-                orig_start: 10.0,
-                dur: 5.0,
-            },
-            VadRegion {
-                filtered_start: 5.0,
-                orig_start: 40.0,
-                dur: 5.0,
-            },
-        ]
-    }
-
-    #[test]
-    fn maps_filtered_time_back_to_original() {
-        let r = regions();
-        assert_eq!(remap_seconds(&r, 0.0), 10.0); // region 1 start
-        assert_eq!(remap_seconds(&r, 2.5), 12.5); // mid region 1
-        assert_eq!(remap_seconds(&r, 5.0), 40.0); // boundary -> region 2 start
-        assert_eq!(remap_seconds(&r, 7.5), 42.5); // mid region 2
-    }
-
-    #[test]
-    fn clamps_past_the_last_region() {
-        assert_eq!(remap_seconds(&regions(), 99.0), 45.0);
-    }
-
-    #[test]
-    fn empty_regions_pass_through() {
-        assert_eq!(remap_seconds(&[], 3.0), 3.0);
-    }
-}
-
-#[cfg(test)]
-mod vad_assemble_tests {
-    use super::{SAMPLE_RATE, assemble_speech_only, remap_seconds};
-
-    // 16 kHz: 160 samples per centisecond, 16000 per second.
-    #[test]
-    fn extends_overlap_pads_silence_and_remaps() {
-        let sr = SAMPLE_RATE as usize;
-        let pcm = vec![1.0f32; sr * 4]; // 4 s of (nonzero) audio
-        // Two speech segments, centiseconds: [0, 1 s) and [2 s, 3 s).
-        let segments = [(0.0f32, 100.0f32), (200.0f32, 300.0f32)];
-        let overlap = sr / 10; // 0.1 s
-        let silence = sr / 10; // 0.1 s
-
-        let (filtered, regions) = assemble_speech_only(&pcm, &segments, overlap, silence);
-
-        // seg0 (non-final) extended by overlap, then a silence gap, then seg0 as-is.
-        assert_eq!(filtered.len(), (sr + overlap) + silence + sr);
-        assert_eq!(regions.len(), 2);
-
-        // The inserted gap is the only silence in an otherwise-1.0 buffer.
-        let gap = sr + overlap;
-        assert!(filtered[..gap].iter().all(|&s| s == 1.0));
-        assert!(filtered[gap..gap + silence].iter().all(|&s| s == 0.0));
-        assert!(filtered[gap + silence..].iter().all(|&s| s == 1.0));
-
-        // Region 0 carries the 0.1 s overlap; region 1 starts after the gap.
-        assert_eq!(regions[0].orig_start, 0.0);
-        assert_eq!(regions[1].orig_start, 2.0);
-        assert!((regions[0].dur - 1.1).abs() < 1e-9);
-        assert!((regions[1].filtered_start - 1.2).abs() < 1e-9);
-
-        // Timestamps map back to the original timeline; a point inside the
-        // inserted gap snaps to the next region's original start.
-        assert!((remap_seconds(&regions, 0.5) - 0.5).abs() < 1e-9); // mid region 0
-        assert!((remap_seconds(&regions, 1.15) - 2.0).abs() < 1e-9); // in the gap
-        assert!((remap_seconds(&regions, 1.7) - 2.5).abs() < 1e-9); // mid region 1
-    }
-
-    #[test]
-    fn single_segment_gets_no_overlap_or_silence() {
-        let sr = SAMPLE_RATE as usize;
-        let pcm = vec![1.0f32; sr * 2];
-        let (filtered, regions) = assemble_speech_only(&pcm, &[(0.0, 100.0)], sr / 10, sr / 10);
-        assert_eq!(regions.len(), 1);
-        assert_eq!(filtered.len(), sr); // exactly [0, 1 s), no overlap, no trailing silence
-        assert!((regions[0].dur - 1.0).abs() < 1e-9);
-    }
-}
-
 #[cfg(feature = "model")]
 mod inference {
     use super::*;
     use whisper_rs::{
-        FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext,
-        WhisperVadContextParams, WhisperVadParams,
+        FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadParams,
     };
 
     use std::collections::HashMap;
@@ -637,52 +466,23 @@ mod inference {
             .filter(|s| !s.is_empty())
     }
 
-    /// Speech-segment overlap and inter-segment silence, both 0.1 s — matching
-    /// whisper.cpp's `whisper_vad()` defaults (`samples_overlap` and its fixed
-    /// 0.1 s gap). See [`assemble_speech_only`].
-    const VAD_OVERLAP_S: f64 = 0.1;
-    const VAD_SILENCE_S: f64 = 0.1;
+    /// Max speech-segment length (seconds) for VAD, from
+    /// `SUBMATE__WHISPER__VAD_MAX_SPEECH_S`. Defaults to 30 s. whisper.cpp's own
+    /// default is `f32::MAX` (uncapped), which lets a long music/SFX run collapse
+    /// into a single multi-minute cue, so we cap it.
+    fn whisper_vad_max_speech_s() -> f32 {
+        std::env::var("SUBMATE__WHISPER__VAD_MAX_SPEECH_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30.0)
+    }
 
-    /// Run Silero VAD over `pcm`, returning the speech-only PCM (the detected
-    /// speech regions concatenated) and the map back to the original timeline.
-    ///
-    /// whisper-rs's `state.full` calls `whisper_full_with_state`, which skips
-    /// whisper.cpp's built-in VAD (that lives only in the `whisper_full`
-    /// wrapper), so we drive the VAD engine ourselves and reproduce the same
-    /// assembly the wrapper does — see [`assemble_speech_only`].
-    fn run_vad(vad_model: &str, pcm: &[f32]) -> Result<(Vec<f32>, Vec<VadRegion>), WhisperError> {
-        let mut vctx = WhisperVadContext::new(vad_model, WhisperVadContextParams::default())
-            .map_err(|e| WhisperError::Load(e.to_string()))?;
-        let segments = vctx
-            .segments_from_samples(WhisperVadParams::default(), pcm)
-            .map_err(|e| WhisperError::Inference(e.to_string()))?;
-
-        // Collect the VAD segment bounds (centiseconds), then assemble the
-        // speech-only audio exactly as whisper.cpp's own VAD path would.
-        let mut bounds: Vec<(f32, f32)> = Vec::new();
-        for i in 0..segments.num_segments() {
-            if let (Some(start_cs), Some(end_cs)) = (
-                segments.get_segment_start_timestamp(i),
-                segments.get_segment_end_timestamp(i),
-            ) {
-                bounds.push((start_cs, end_cs));
-            }
-        }
-
-        let sr = f64::from(SAMPLE_RATE);
-        let (filtered, regions) = assemble_speech_only(
-            pcm,
-            &bounds,
-            (VAD_OVERLAP_S * sr) as usize,
-            (VAD_SILENCE_S * sr) as usize,
-        );
-        tracing::debug!(
-            speech_regions = regions.len(),
-            speech_secs = filtered.len() as f64 / sr,
-            clip_secs = pcm.len() as f64 / sr,
-            "VAD kept speech-only audio"
-        );
-        Ok((filtered, regions))
+    /// Optional VAD speech-probability threshold from
+    /// `SUBMATE__WHISPER__VAD_THRESHOLD` (whisper.cpp default 0.5; higher is stricter).
+    fn whisper_vad_threshold() -> Option<f32> {
+        std::env::var("SUBMATE__WHISPER__VAD_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
     }
 
     /// Clamp a core count into a valid `set_n_threads` argument (`>= 1`, fits
@@ -771,23 +571,25 @@ mod inference {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
 
-        // VAD: when SUBMATE__WHISPER__VAD_MODEL is set, transcribe only the detected
-        // speech and map timings back below; a VAD miss (no speech) falls back to
-        // the full clip so audio is never dropped.
-        let vad = match whisper_vad_model().as_deref() {
-            Some(model) => {
-                let (filtered, regions) = run_vad(model, pcm)?;
-                (!regions.is_empty()).then_some((filtered, regions))
+        // VAD: when SUBMATE__WHISPER__VAD_MODEL is set, let whisper.cpp run Silero
+        // VAD itself — whisper_full_with_state (which state.full calls) honours
+        // params.vad, transcribing only detected speech and mapping the timings
+        // back to the original clip internally, so cues stay bounded to real
+        // speech. Cap max speech length (whisper.cpp's default is uncapped) so a
+        // long music/SFX stretch can't collapse into one multi-minute cue.
+        if let Some(model) = whisper_vad_model() {
+            params.set_vad_model_path(Some(model.as_str()));
+            let mut vad_params = WhisperVadParams::default();
+            vad_params.set_max_speech_duration(whisper_vad_max_speech_s());
+            if let Some(threshold) = whisper_vad_threshold() {
+                vad_params.set_threshold(threshold);
             }
-            None => None,
-        };
-        let (samples, vad_regions) = match &vad {
-            Some((filtered, regions)) => (filtered.as_slice(), Some(regions.as_slice())),
-            None => (pcm, None),
-        };
+            params.set_vad_params(vad_params);
+            params.enable_vad(true); // must follow set_vad_model_path
+        }
 
         state
-            .full(params, samples)
+            .full(params, pcm)
             .map_err(|e| WhisperError::Inference(e.to_string()))?;
 
         let n_segments = state.full_n_segments();
@@ -819,18 +621,6 @@ mod inference {
                 end: centiseconds_to_seconds(seg_t1),
                 words,
             });
-        }
-
-        // Shift speech-only timings back onto the original clip timeline.
-        if let Some(regions) = vad_regions {
-            for seg in &mut segments {
-                seg.start = remap_seconds(regions, seg.start);
-                seg.end = remap_seconds(regions, seg.end);
-                for word in &mut seg.words {
-                    word.start = remap_seconds(regions, word.start);
-                    word.end = remap_seconds(regions, word.end);
-                }
-            }
         }
 
         Ok(WhisperResult {
