@@ -246,6 +246,33 @@ pub fn compose_srt(cues: &[Cue]) -> String {
     out
 }
 
+/// Cap each cue's on-screen duration to at most `max_ms` after its start, and
+/// never past the next cue's start, processing cues in start order.
+///
+/// VAD removes silence before transcription and maps timings back afterwards; a
+/// transcription segment that ends inside a removed gap gets its end remapped to
+/// the *next* speech region, which can be minutes away — producing a single cue
+/// that sits on screen for the whole gap. This collapses those runaway cues to a
+/// readable length without moving any cue's start. `max_ms <= 0` disables it.
+///
+/// Cues are sorted by start as a side effect (matching [`compose_srt`]'s order).
+pub fn clamp_durations(cues: &mut [Cue], max_ms: i64) {
+    if max_ms <= 0 || cues.is_empty() {
+        return;
+    }
+    cues.sort_by(|a, b| a.start_ms.cmp(&b.start_ms).then(a.end_ms.cmp(&b.end_ms)));
+    for i in 0..cues.len() {
+        let start = cues[i].start_ms;
+        let mut end = cues[i].end_ms.min(start + max_ms);
+        if let Some(next_start) = cues.get(i + 1).map(|c| c.start_ms) {
+            if next_start > start {
+                end = end.min(next_start);
+            }
+        }
+        cues[i].end_ms = end;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // VTT
 // ---------------------------------------------------------------------------
@@ -424,6 +451,47 @@ mod parity {
 
     fn fixtures_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/subtitle")
+    }
+
+    fn cue(start_ms: i64, end_ms: i64) -> Cue {
+        Cue {
+            index: None,
+            start_ms,
+            end_ms,
+            text: "x".to_string(),
+        }
+    }
+
+    #[test]
+    fn clamp_durations_caps_runaway_and_overlap() {
+        // A 380 s "runaway" cue (end stretched across a VAD gap) followed by the
+        // next real cue far away, plus an overlapping pair.
+        let mut cues = vec![
+            cue(496_000, 876_000), // 08:16 -> 14:36, 380 s
+            cue(876_000, 884_000), // next real speech at 14:36
+            cue(10_000, 12_000),   // unrelated short cue (out of order on input)
+        ];
+        clamp_durations(&mut cues, 7_000);
+        // sorted by start; the short cue comes first, untouched.
+        assert_eq!((cues[0].start_ms, cues[0].end_ms), (10_000, 12_000));
+        // runaway capped to start + 7 s (the far next-start doesn't bind).
+        assert_eq!((cues[1].start_ms, cues[1].end_ms), (496_000, 503_000));
+        // last cue unchanged (8 s, but it's the final one so only the cap applies).
+        assert_eq!((cues[2].start_ms, cues[2].end_ms), (876_000, 883_000));
+    }
+
+    #[test]
+    fn clamp_durations_disabled_is_noop() {
+        let mut cues = vec![cue(0, 999_999)];
+        clamp_durations(&mut cues, 0);
+        assert_eq!(cues[0].end_ms, 999_999);
+    }
+
+    #[test]
+    fn clamp_durations_never_past_next_start() {
+        let mut cues = vec![cue(0, 6_000), cue(2_000, 3_000)];
+        clamp_durations(&mut cues, 7_000); // 6 s < 7 s cap, but next starts at 2 s
+        assert_eq!(cues[0].end_ms, 2_000); // clamped to next start
     }
 
     /// Each `*.srt` golden is a parse -> compose round-trip. Our

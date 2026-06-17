@@ -715,6 +715,17 @@ pub const DEFAULT_MIN_WORD_DUR: f64 = 0.1;
 /// `nonspeech_error` `transcribe_stable` passes to `suppress_silence`.
 pub const DEFAULT_NONSPEECH_ERROR: f64 = 0.1;
 
+/// Max on-screen cue duration in milliseconds for rendered SRT, from
+/// `SUBMATE__WHISPER__MAX_CUE_S` (default 7 s; `0` disables). Caps runaway cues
+/// whose end was remapped across a VAD-removed silence gap — see
+/// [`submate_subtitle::cue::clamp_durations`].
+fn max_cue_ms() -> i64 {
+    std::env::var("SUBMATE__WHISPER__MAX_CUE_S")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(7_000, |s| (s * 1000.0) as i64)
+}
+
 /// Errors raised while assembling the post-inference pipeline (regroup →
 /// suppress → output).
 #[derive(Debug, thiserror::Error)]
@@ -782,7 +793,12 @@ impl Transcription {
         // file"). Re-parse and recompose so the SRT is always well-formed:
         // `compose_srt` sorts by start and skips empty / non-positive-duration
         // cues (`srt_should_skip`).
-        submate_subtitle::cue::compose_srt(&submate_subtitle::cue::parse_srt(&rendered))
+        let mut cues = submate_subtitle::cue::parse_srt(&rendered);
+        // A VAD-removed silence gap can leave a transcription segment whose end
+        // was remapped minutes past its real speech, producing a multi-minute
+        // cue; cap the on-screen duration so cues stay readable.
+        submate_subtitle::cue::clamp_durations(&mut cues, max_cue_ms());
+        submate_subtitle::cue::compose_srt(&cues)
     }
 
     /// Render the subtitle in the requested [`OutputFormat`](submate_types::OutputFormat).
