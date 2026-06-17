@@ -114,7 +114,15 @@ pub fn app(state: AppState) -> Router {
     #[cfg(feature = "bazarr")]
     let router = router.merge(bazarr_router());
 
-    router.with_state(state)
+    // Bazarr uploads a full episode's extracted audio (16 kHz mono PCM, tens to
+    // hundreds of MB) as a multipart `audio_file`, far past axum's 2 MB default
+    // body limit. The limit must be applied here, on the merged router: a
+    // `DefaultBodyLimit` layered onto a sub-router *before* `.merge()` does not
+    // take effect, so large uploads were silently truncated and the handler
+    // returned an empty subtitle ("Completed in 0:00:00" in Bazarr).
+    router
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
+        .with_state(state)
 }
 
 /// The ops routes.
@@ -150,15 +158,12 @@ async fn status() -> Json<serde_json::Value> {
 /// run a direct transcription via the [`BazarrTranscriber`] seam.
 #[cfg(feature = "bazarr")]
 fn bazarr_router() -> Router<AppState> {
+    // NOTE: the multipart body-size limit for these upload routes is applied in
+    // `app()`, on the merged router — a `DefaultBodyLimit` layered here (before
+    // the `.merge()` in `app()`) does not take effect in axum 0.7.
     Router::new()
         .route("/bazarr/asr", post(bazarr_asr))
         .route("/bazarr/detect-language", post(bazarr_detect_language))
-        // Bazarr uploads the whole extracted audio stream (16 kHz mono PCM) as a
-        // multipart `audio_file`. A full episode/movie is tens to hundreds of MB,
-        // far past axum's 2 MB default body limit — without this, large uploads
-        // are rejected and the handler sees no audio, returning an empty subtitle
-        // instantly (Bazarr logs "Completed in 0:00:00" + "subtitles isn't valid").
-        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
 }
 
 /// `Source` response header the `/bazarr/asr` handler sets.
