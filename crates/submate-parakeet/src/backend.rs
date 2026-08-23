@@ -1,0 +1,192 @@
+//! The transcribe.cpp backend implementation and its `Transcript` → `WhisperResult` map.
+
+use submate_whisper::{
+    Task, TranscribeOptions, Transcriber, WhisperError, WhisperResult, WhisperSegment, WhisperWord,
+};
+use transcribe_cpp::{Model, RunOptions, Task as CppTask, Token, Transcript};
+
+/// Transcription backend backed by transcribe.cpp — primarily for Parakeet.
+///
+/// A zero-sized handle: like [`submate_whisper::WhisperBackend`] it loads the
+/// model from `model_path` on each call and holds no state. transcribe.cpp
+/// sessions are `Send` but not `Sync` and mutate through `&mut self`, so a fresh
+/// model + session per call is the simple, correct shape — the `Dispatcher`
+/// already hands each transcription its own blocking thread under a permit.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ParakeetBackend;
+
+impl Transcriber for ParakeetBackend {
+    fn transcribe_blocking(
+        &self,
+        model_path: &str,
+        pcm: &[f32],
+        options: &TranscribeOptions,
+    ) -> Result<WhisperResult, WhisperError> {
+        let model =
+            Model::load(model_path).map_err(|error| WhisperError::Load(error.to_string()))?;
+        let capabilities = model.capabilities();
+        let mut session = model
+            .session()
+            .map_err(|error| WhisperError::Load(error.to_string()))?;
+
+        let run = RunOptions {
+            // Ask for the finest timestamps the model advertises (word/token for
+            // Parakeet). Requesting finer than the model supports is a hard error,
+            // so clamping to the advertised max is the safe request.
+            timestamps: capabilities.max_timestamp_kind,
+            task: match options.task {
+                Task::Transcribe => CppTask::Transcribe,
+                Task::Translate => CppTask::Translate,
+            },
+            language: options.language.clone(),
+            ..Default::default()
+        };
+
+        let transcript = session
+            .run(pcm, &run)
+            .map_err(|error| WhisperError::Inference(error.to_string()))?;
+        Ok(map_transcript(transcript, options))
+    }
+}
+
+/// Milliseconds → seconds (transcribe.cpp reports every time in i64 ms).
+fn secs(ms: i64) -> f64 {
+    ms as f64 / 1000.0
+}
+
+/// Fold a transcribe.cpp [`Transcript`] into submate's [`WhisperResult`].
+///
+/// transcribe.cpp returns flat `segments`/`words`/`tokens` arrays cross-linked by
+/// index ranges (`Segment::first_word`/`n_words`, `Word::first_token`/`n_tokens`).
+/// This rebuilds submate's nested `segment → words` shape, deriving each word's
+/// probability as the mean of its tokens' confidences. `words` is empty when the
+/// model only produced segment-level timestamps, which collapses cleanly to
+/// segments with no per-word timing.
+fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> WhisperResult {
+    let Transcript {
+        text,
+        language,
+        segments,
+        words,
+        tokens,
+        ..
+    } = transcript;
+
+    let segments = segments
+        .iter()
+        .map(|segment| {
+            let start = segment.first_word.max(0) as usize;
+            let count = segment.n_words.max(0) as usize;
+            let words = words
+                .get(start..start.saturating_add(count))
+                .unwrap_or(&[])
+                .iter()
+                .map(|word| WhisperWord {
+                    word: word.text.clone(),
+                    start: secs(word.t0_ms),
+                    end: secs(word.t1_ms),
+                    probability: mean_token_prob(&tokens, word.first_token, word.n_tokens),
+                })
+                .collect();
+            WhisperSegment {
+                text: segment.text.clone(),
+                start: secs(segment.t0_ms),
+                end: secs(segment.t1_ms),
+                words,
+            }
+        })
+        .collect();
+
+    WhisperResult {
+        // Prefer the model's detected language; fall back to the forced hint.
+        language: language.or_else(|| options.language.clone()).unwrap_or_default(),
+        text,
+        segments,
+    }
+}
+
+/// Mean of a word's tokens' confidence over `tokens[first .. first + n]`, skipping
+/// NaNs (transcribe.cpp uses NaN for "no confidence"); `0.0` when none apply.
+fn mean_token_prob(tokens: &[Token], first: i32, n: i32) -> f64 {
+    let start = first.max(0) as usize;
+    let count = n.max(0) as usize;
+    let (sum, seen) = tokens
+        .get(start..start.saturating_add(count))
+        .unwrap_or(&[])
+        .iter()
+        .map(|token| token.p as f64)
+        .filter(|probability| probability.is_finite())
+        .fold((0.0, 0usize), |(sum, seen), probability| {
+            (sum + probability, seen + 1)
+        });
+    if seen == 0 { 0.0 } else { sum / seen as f64 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use transcribe_cpp::{Segment, Word};
+
+    // Pure mapping test: builds a fake Transcript and checks the fold. Exercises
+    // the index cross-linking and mean-probability logic without loading a model.
+    #[test]
+    fn folds_segments_words_and_mean_probability() {
+        let transcript = Transcript {
+            text: "hello world".to_string(),
+            language: Some("en".to_string()),
+            segments: vec![Segment {
+                t0_ms: 0,
+                t1_ms: 2000,
+                first_word: 0,
+                n_words: 2,
+                first_token: 0,
+                n_tokens: 3,
+                text: "hello world".to_string(),
+                ..Default::default()
+            }],
+            words: vec![
+                Word {
+                    t0_ms: 0,
+                    t1_ms: 900,
+                    first_token: 0,
+                    n_tokens: 1,
+                    text: "hello".to_string(),
+                    ..Default::default()
+                },
+                Word {
+                    t0_ms: 1000,
+                    t1_ms: 2000,
+                    first_token: 1,
+                    n_tokens: 2,
+                    text: "world".to_string(),
+                    ..Default::default()
+                },
+            ],
+            tokens: vec![
+                Token { p: 0.8, ..Default::default() },
+                Token { p: 0.6, ..Default::default() },
+                Token { p: 0.4, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+
+        let result = map_transcript(transcript, &TranscribeOptions::default());
+
+        assert_eq!(result.language, "en");
+        assert_eq!(result.text, "hello world");
+        assert_eq!(result.segments.len(), 1);
+
+        let segment = &result.segments[0];
+        assert_eq!((segment.start, segment.end), (0.0, 2.0));
+        assert_eq!(segment.words.len(), 2);
+
+        assert_eq!(segment.words[0].word, "hello");
+        assert_eq!((segment.words[0].start, segment.words[0].end), (0.0, 0.9));
+        // Tolerance is f32-wide: token confidences are f32, so 0.8 round-trips as
+        // ~0.80000001 once widened to f64.
+        assert!((segment.words[0].probability - 0.8).abs() < 1e-6);
+
+        // "world" spans tokens 1..3 → mean(0.6, 0.4) = 0.5.
+        assert!((segment.words[1].probability - 0.5).abs() < 1e-6);
+    }
+}

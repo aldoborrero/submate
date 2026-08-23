@@ -2058,6 +2058,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "submate-parakeet"
+version = "0.1.0"
+dependencies = [
+ "submate-whisper",
+ "tracing",
+ "transcribe-cpp",
+]
+
+[[package]]
 name = "submate-paths"
 version = "0.1.0"
 dependencies = [
@@ -2388,6 +2397,25 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "transcribe-cpp"
+version = "0.2.1"
+source = "git+https://github.com/handy-computer/transcribe.cpp?rev=ea077b87590bcfb090d7c38c03ab36cd1c7005d3#ea077b87590bcfb090d7c38c03ab36cd1c7005d3"
+dependencies = [
+ "log",
+ "thiserror",
+ "transcribe-cpp-sys",
+]
+
+[[package]]
+name = "transcribe-cpp-sys"
+version = "0.2.1"
+source = "git+https://github.com/handy-computer/transcribe.cpp?rev=ea077b87590bcfb090d7c38c03ab36cd1c7005d3#ea077b87590bcfb090d7c38c03ab36cd1c7005d3"
+dependencies = [
+ "cmake",
+ "serde_json",
 ]
 
 [[package]]

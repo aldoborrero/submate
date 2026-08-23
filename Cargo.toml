@@ -9,6 +9,7 @@ members = [
   "crates/submate-paths",
   "crates/submate-media",
   "crates/submate-whisper",
+  "crates/submate-parakeet",
   "crates/submate-translate",
   "crates/submate-bazarr",
   "crates/submate-server",
