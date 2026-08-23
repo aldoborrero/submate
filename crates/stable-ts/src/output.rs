@@ -275,6 +275,9 @@ fn round3(value: f64) -> f64 {
 /// `result_to_any` returns when `filepath is None`.
 #[must_use]
 pub fn to_srt_vtt(result: &WhisperResult, word_level: bool, vtt: bool) -> String {
+    // Word-level needs every segment to carry words; fall back to segment-level
+    // otherwise (upstream's `_confirm_word_level`).
+    let word_level = word_level && confirm_word_level(&result.segments);
     if vtt {
         let cues = vtt_cues(&result.segments, word_level);
         let blocks: Vec<String> = cues
@@ -361,6 +364,9 @@ fn ass_cues(segments: &[Segment], word_level: bool, karaoke: bool) -> Vec<OutCue
 /// when `filepath is None`.
 #[must_use]
 pub fn to_ass(result: &WhisperResult, word_level: bool, karaoke: bool) -> String {
+    // Word-level needs every segment to carry words; fall back to segment-level
+    // otherwise (upstream's `_confirm_word_level`).
+    let word_level = word_level && confirm_word_level(&result.segments);
     let cues = ass_cues(&result.segments, word_level, karaoke);
     let blocks: Vec<String> = cues
         .iter()
@@ -436,6 +442,18 @@ fn segment_words(seg: &Segment) -> Vec<(String, f64, f64)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// `_confirm_word_level`: word-level output requires every segment to carry
+/// words. Returns `false` — so the caller drops back to segment-level — when any
+/// segment has none (upstream's guard against emitting empty/word-less cues).
+///
+/// Upstream also emits a `warnings.warn`; this crate has no logger, so the
+/// fallback is silent (the whisper layer can log at a higher level if it cares).
+fn confirm_word_level(segments: &[Segment]) -> bool {
+    segments
+        .iter()
+        .all(|s| s.words.as_ref().is_some_and(|words| !words.is_empty()))
 }
 
 #[cfg(test)]
@@ -523,6 +541,29 @@ mod tests {
         let jump = to_ass(&result, true, false);
         assert!(jump.contains(r"{\k50}Hello {\k100}world"));
         assert!(!jump.contains(r"\kf"));
+    }
+
+    #[test]
+    fn word_level_falls_back_to_segment_level_when_words_missing() {
+        use crate::model::WhisperResult;
+        // The second segment carries no `words`, so the whole result must drop to
+        // segment-level for every format (upstream `_confirm_word_level`).
+        let input = serde_json::json!({
+            "segments": [
+                { "start": 0.0, "end": 1.0, "text": "hello",
+                  "words": [ {"word": "hello", "start": 0.0, "end": 1.0} ] },
+                { "start": 1.0, "end": 2.0, "text": "world" }
+            ]
+        });
+        let result = WhisperResult::from_value(&input);
+        assert!(!confirm_word_level(&result.segments));
+
+        // ASS: word_level=true requested, but no karaoke tags → segment-level.
+        assert!(!to_ass(&result, true, true).contains(r"{\k"));
+        // SRT: no per-word <font> highlight; the first segment's text survives.
+        let srt = to_srt_vtt(&result, true, false);
+        assert!(!srt.contains("<font"));
+        assert!(srt.contains("hello"));
     }
 
     #[test]
