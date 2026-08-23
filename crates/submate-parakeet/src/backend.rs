@@ -1,17 +1,58 @@
 //! The transcribe.cpp backend implementation and its `Transcript` → `WhisperResult` map.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use submate_whisper::{
     Task, TranscribeOptions, Transcriber, WhisperError, WhisperResult, WhisperSegment, WhisperWord,
 };
 use transcribe_cpp::{Model, RunOptions, Task as CppTask, TimestampKind, Token, Transcript};
 
+/// Process-wide cache of loaded transcribe.cpp models, keyed by model file path.
+///
+/// Mirrors the whisper backend's context cache: `Model::load` parses and uploads
+/// the entire GGUF (hundreds of MB for Parakeet), so reloading it on every request
+/// dominates the cost. A cached `Arc<Model>` is shared across calls; each call
+/// makes its own short-lived [`transcribe_cpp::Session`].
+///
+/// Trade-off worth knowing: transcribe.cpp serializes the compute path *per model*
+/// (an internal per-model lock), so concurrent transcriptions on one cached model
+/// queue rather than run in parallel — unlike whisper, whose per-call states
+/// parallelize. For submate's background subtitle workload "no reloads, serial
+/// compute" is the right trade; a per-path model *pool* could restore parallelism
+/// if a future workload needs it.
+fn model_cache() -> &'static Mutex<HashMap<String, Arc<Model>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Model>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Return the cached model for `model_path`, loading and caching it on first use.
+///
+/// The load holds the cache lock, so a cold-start race serializes on the first
+/// load and the losers reuse the freshly cached model — both cheap and correct.
+fn cached_model(model_path: &str) -> Result<Arc<Model>, WhisperError> {
+    let mut cache = model_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(model) = cache.get(model_path) {
+        return Ok(Arc::clone(model));
+    }
+    tracing::debug!(model = model_path, "loading parakeet model (cache miss)");
+    let model = Arc::new(
+        Model::load(model_path).map_err(|error| WhisperError::Load(error.to_string()))?,
+    );
+    cache.insert(model_path.to_string(), Arc::clone(&model));
+    Ok(model)
+}
+
 /// Transcription backend backed by transcribe.cpp — primarily for Parakeet.
 ///
-/// A zero-sized handle: like [`submate_whisper::WhisperBackend`] it loads the
-/// model from `model_path` on each call and holds no state. transcribe.cpp
-/// sessions are `Send` but not `Sync` and mutate through `&mut self`, so a fresh
-/// model + session per call is the simple, correct shape — the `Dispatcher`
-/// already hands each transcription its own blocking thread under a permit.
+/// A zero-sized handle: like [`submate_whisper::WhisperBackend`] it holds no
+/// state, resolving the model through a process-wide cache (see [`cached_model`])
+/// so a hot model loads only once. transcribe.cpp sessions are `Send` but not
+/// `Sync` and mutate through `&mut self`, so each call takes the cached model and
+/// spins up its own short-lived session — the `Dispatcher` already hands each
+/// transcription its own blocking thread under a permit.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ParakeetBackend;
 
@@ -22,8 +63,7 @@ impl Transcriber for ParakeetBackend {
         pcm: &[f32],
         options: &TranscribeOptions,
     ) -> Result<WhisperResult, WhisperError> {
-        let model =
-            Model::load(model_path).map_err(|error| WhisperError::Load(error.to_string()))?;
+        let model = cached_model(model_path)?;
         let capabilities = model.capabilities();
         // A model that produces no timestamps yields a subtitle with every cue at
         // 0:00 — worse than no output. Reject it up front rather than emit garbage.
