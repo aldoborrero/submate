@@ -264,10 +264,10 @@ pub fn clamp_durations(cues: &mut [Cue], max_ms: i64) {
     for i in 0..cues.len() {
         let start = cues[i].start_ms;
         let mut end = cues[i].end_ms.min(start + max_ms);
-        if let Some(next_start) = cues.get(i + 1).map(|c| c.start_ms) {
-            if next_start > start {
-                end = end.min(next_start);
-            }
+        if let Some(next_start) = cues.get(i + 1).map(|c| c.start_ms)
+            && next_start > start
+        {
+            end = end.min(next_start);
         }
         cues[i].end_ms = end;
     }
