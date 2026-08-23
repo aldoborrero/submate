@@ -38,6 +38,11 @@ rustPlatform.buildRustPackage {
     ];
   };
   cargoLock.lockFile = ../../../Cargo.lock;
+  # transcribe-cpp (the parakeet backend dep) is a git dependency, so importCargoLock
+  # needs its vendored hash even though the `parakeet` feature is off in this build.
+  cargoLock.outputHashes = {
+    "transcribe-cpp-0.2.1" = "sha256-IHlLk8MzEHnzfk5dvslHXBzpyAeNQyQOuztQLLzousY=";
+  };
 
   nativeBuildInputs = [
     rustPlatform.bindgenHook # LIBCLANG_PATH + clang args for whisper-rs bindgen
