@@ -281,7 +281,10 @@ fn output_ass() {
     let ass_golden = std::fs::read_to_string(fixture_path("stablets/clipA/output.ass"))
         .expect("output.ass fixture present");
 
-    assert_str_eq(&stable_ts::output::to_ass(&result, false), &ass_golden);
+    assert_str_eq(
+        &stable_ts::output::to_ass(&result, false, false),
+        &ass_golden,
+    );
 }
 
 /// JSON output falsifier (value-parity): `to_json` of the result parsed from

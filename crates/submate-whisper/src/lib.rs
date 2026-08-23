@@ -851,24 +851,26 @@ impl Transcription {
     }
 
     /// Render the subtitle in the requested [`OutputFormat`](submate_types::OutputFormat).
-    /// `word_level` only affects the SRT/VTT formats.
+    /// `word_level` affects SRT/VTT and ASS: SRT/VTT highlight the current word,
+    /// ASS emits per-word `\kf` karaoke tags (segment-level otherwise).
     #[must_use]
     pub fn render(&self, format: submate_types::OutputFormat, word_level: bool) -> String {
         use submate_types::OutputFormat;
         match format {
             OutputFormat::Srt => self.to_srt_vtt(word_level, false),
             OutputFormat::Vtt => self.to_srt_vtt(word_level, true),
-            OutputFormat::Ass => self.to_ass(),
+            OutputFormat::Ass => self.to_ass(word_level),
             OutputFormat::Json => self.to_json(),
             OutputFormat::Txt => self.to_txt(),
         }
     }
 
-    /// Render segment-level ASS, matching
-    /// `TranscriptionResult.to_ass(segment_level=True, word_level=False)`.
+    /// Render ASS, matching `TranscriptionResult.to_ass`. `word_level = false` is
+    /// one `Dialogue` per segment; `word_level = true` tags each word with a `\kf`
+    /// karaoke override.
     #[must_use]
-    pub fn to_ass(&self) -> String {
-        stable_ts::output::to_ass(&self.result, false)
+    pub fn to_ass(&self, word_level: bool) -> String {
+        stable_ts::output::to_ass(&self.result, word_level, true)
     }
 
     /// Serialize the full result as a compact JSON string, matching

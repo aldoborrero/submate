@@ -292,28 +292,80 @@ pub fn to_srt_vtt(result: &WhisperResult, word_level: bool, vtt: bool) -> String
     }
 }
 
-/// `result_to_ass` / `WhisperResult.to_ass`, restricted to the segment-level
-/// path submate uses (`segment_level=True`, `word_level=False`, default style,
-/// `strip=True`).
+/// `sec2centiseconds`: seconds → integer centiseconds (`round(s * 100)`), the
+/// unit ASS `\k` karaoke tags take.
+fn sec2centiseconds(seconds: f64) -> i64 {
+    (seconds * 100.0).round_ties_even() as i64
+}
+
+/// `to_ass_word_level_segments`'s `to_segment_string`: one cue per segment whose
+/// text tags each word with an ASS karaoke override — `{\kf<cs>}` when `karaoke`
+/// (progressive fill), else `{\k<cs>}` (jump) — `<cs>` being the word's duration
+/// in centiseconds. A word's leading space is pulled outside the tag, matching
+/// upstream.
+fn ass_word_level_segment(
+    seg_start: f64,
+    seg_end: f64,
+    words: &[(String, f64, f64)],
+    karaoke: bool,
+) -> OutCue {
+    let kind = if karaoke { "kf" } else { "k" };
+    let mut text = String::new();
+    for (word, start, end) in words {
+        let (curr, space) = match word.strip_prefix(' ') {
+            Some(rest) => (rest, " "),
+            None => (word.as_str(), ""),
+        };
+        let cs = sec2centiseconds(end - start);
+        text.push_str(space);
+        text.push_str(&format!("{{\\{kind}{cs}}}{curr}"));
+    }
+    OutCue {
+        text,
+        start: seg_start,
+        end: seg_end,
+    }
+}
+
+/// ASS cues: one `Dialogue` per segment. `word_level` tags each word with a `\k`
+/// / `\kf` karaoke override (`karaoke` picks fill vs jump); otherwise the cue is
+/// the plain segment text.
+fn ass_cues(segments: &[Segment], word_level: bool, karaoke: bool) -> Vec<OutCue> {
+    segments
+        .iter()
+        .map(|s| {
+            if word_level {
+                ass_word_level_segment(s.start(), s.end(), &segment_words(s), karaoke)
+            } else {
+                OutCue {
+                    text: s.text(),
+                    start: s.start(),
+                    end: s.end(),
+                }
+            }
+        })
+        .collect()
+}
+
+/// `result_to_ass` / `WhisperResult.to_ass` (default style, `strip=True`).
 ///
-/// Emits the fixed `[Script Info]` / `[V4+ Styles]` / `[Events]` header
-/// followed by one `Dialogue` line per segment (the segment's index is the
-/// `Layer` field, exactly as upstream's `enumerate(segments)`), joined with
-/// `"\n"`. Returns the joined string (no trailing newline), matching
-/// `result_to_any` when `filepath is None`.
+/// Emits the fixed `[Script Info]` / `[V4+ Styles]` / `[Events]` header followed
+/// by one `Dialogue` line per segment (the segment index is the `Layer` field,
+/// exactly as upstream's `enumerate(segments)`), joined with `"\n"`.
 ///
-/// The word-level (karaoke) path is not ported: `word_level = true` falls back to
-/// the segment-level rendering rather than panicking. (submate's whisper layer
-/// only ever requests segment-level ASS, so that fallback is unreachable there
-/// today; the guard keeps the public function total for any other caller.)
+/// * `word_level = false`: the cue is the plain segment text (byte-parity path).
+/// * `word_level = true`: each word carries an ASS karaoke override
+///   (`to_ass_word_level_segments`); `karaoke` selects `\kf` fill vs `\k` jump.
+///
+/// Returns the joined string (no trailing newline), matching `result_to_any`
+/// when `filepath is None`.
 #[must_use]
-pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
-    let _ = word_level;
-    let blocks: Vec<String> = result
-        .segments
+pub fn to_ass(result: &WhisperResult, word_level: bool, karaoke: bool) -> String {
+    let cues = ass_cues(&result.segments, word_level, karaoke);
+    let blocks: Vec<String> = cues
         .iter()
         .enumerate()
-        .map(|(i, s)| dialogue_line(i, s.start(), s.end(), &s.text()))
+        .map(|(i, c)| dialogue_line(i, c.start, c.end, &c.text))
         .collect();
     format!("{ASS_HEADER}{}", blocks.join("\n"))
 }
@@ -448,6 +500,29 @@ mod tests {
         assert_eq!(cues[1].start, 0.5);
         assert_eq!(cues[1].end, 0.8);
         assert_eq!(cues[1].text, " Hi there");
+    }
+
+    #[test]
+    fn to_ass_word_level_tags_each_word_with_karaoke() {
+        use crate::model::WhisperResult;
+        let input = serde_json::json!({
+            "segments": [{ "words": [
+                {"word": " Hello", "start": 0.0, "end": 0.5},
+                {"word": " world", "start": 0.5, "end": 1.5},
+            ]}]
+        });
+        let result = WhisperResult::from_value(&input);
+
+        // \kf fill (karaoke): each word tagged with its duration in centiseconds
+        // (0.5s -> 50, 1.0s -> 100); the leading space sits outside the tag and
+        // the segment's own leading space is stripped by finalize_text.
+        let ass = to_ass(&result, true, true);
+        assert!(ass.contains(r"{\kf50}Hello {\kf100}world"), "got:\n{ass}");
+
+        // \k jump when karaoke = false.
+        let jump = to_ass(&result, true, false);
+        assert!(jump.contains(r"{\k50}Hello {\k100}world"));
+        assert!(!jump.contains(r"\kf"));
     }
 
     #[test]
