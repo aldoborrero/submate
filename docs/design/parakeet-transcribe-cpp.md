@@ -45,10 +45,12 @@ The Rust result type (`transcribe_cpp::Transcript`) already materializes owned
 `segments`, `words`, `tokens` (text copied at the FFI boundary), plus detected
 `language`, `timings`, and (bonus, unused for now) speaker diarization.
 
-> **The one remaining unknown:** whether a *Parakeet* GGUF reports
-> `max_timestamp_kind == Word` (or `Token`, which we can fold up to words). The
-> example only proved Whisper == `Segment`. This is what the spike (below) must
-> confirm before the refactor lands.
+> **Resolved by the spike:** `handy-computer/parakeet-tdt-0.6b-v3` (Q5_K_M)
+> reports `max_timestamp_kind == Token`, and requesting that max populates *both*
+> `words` and `tokens` — transcribing `samples/jfk.wav` yields 1 segment, 22 words
+> (first word `"And" [240 → 560 ms]`), 38 tokens. So `ParakeetBackend`, which folds
+> `Transcript.words`, gets real word-level timing. (The earlier note that the
+> example "only proved Whisper == Segment" was the pre-spike state.)
 
 ## API surface (Rust binding)
 
@@ -124,19 +126,20 @@ Whisper-only knobs as backend-specific (ignored by Parakeet). `capabilities()`
 advertises `supports_translate_task` and the language set so the server/CLI can
 reject unsupported requests up front rather than mid-run.
 
-## De-risking spike (do this first)
+## De-risking spike — **done, green**
 
-A throwaway binary/example that:
+Both prerequisites checked out:
 
-1. Adds `transcribe-cpp` as a dep and **builds `transcribe-cpp-sys` inside the nix
-   flake** (it has a `build.rs` that compiles C++/ggml — needs cmake + a C++
-   toolchain, same shape as the existing whisper.cpp build inputs).
-2. Loads a **Parakeet V3 GGUF** (`handy-computer` org on HF) and prints
-   `caps.max_timestamp_kind` + the first N word rows with `t0_ms/t1_ms`.
+1. **The C++ backend builds under our nix** — `transcribe-cpp-sys`'s cmake `build.rs`
+   compiles the vendored C++/ggml with the devshell's existing cmake + clang (added
+   for whisper.cpp), no flake changes needed.
+2. **Parakeet yields word timestamps** — the `transcribe-file` example on
+   `parakeet-tdt-0.6b-v3` (Q5_K_M, CPU) reports `max_timestamp_kind == Token` and
+   populates 22 words / 38 tokens for `samples/jfk.wav`, first word `"And"
+   [240 → 560 ms]`, transcript verbatim-correct.
 
-Green means: (a) Parakeet yields word/token timestamps, and (b) the C++ backend
-builds under our nix. Both are prerequisites; if either is red, the plan changes
-(e.g. fold token→word ourselves, or park Parakeet behind CPU-only until GPU builds).
+So the plan stands as written — no token→word fallback needed, and Parakeet is not
+stuck on a GPU build.
 
 ## Phased plan
 
