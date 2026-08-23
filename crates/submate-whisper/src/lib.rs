@@ -113,6 +113,11 @@ pub enum WhisperError {
     /// Running inference failed.
     #[error("transcription failed: {0}")]
     Inference(String),
+    /// The model cannot produce output the pipeline requires (e.g. a model that
+    /// emits no timestamps is useless for subtitles). Detected before inference
+    /// runs, so nothing is wasted.
+    #[error("unsupported model capability: {0}")]
+    Unsupported(String),
     /// The blocking inference task panicked or was cancelled.
     #[error("transcription task did not complete: {0}")]
     Join(String),

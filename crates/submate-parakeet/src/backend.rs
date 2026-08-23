@@ -3,7 +3,7 @@
 use submate_whisper::{
     Task, TranscribeOptions, Transcriber, WhisperError, WhisperResult, WhisperSegment, WhisperWord,
 };
-use transcribe_cpp::{Model, RunOptions, Task as CppTask, Token, Transcript};
+use transcribe_cpp::{Model, RunOptions, Task as CppTask, TimestampKind, Token, Transcript};
 
 /// Transcription backend backed by transcribe.cpp — primarily for Parakeet.
 ///
@@ -25,6 +25,13 @@ impl Transcriber for ParakeetBackend {
         let model =
             Model::load(model_path).map_err(|error| WhisperError::Load(error.to_string()))?;
         let capabilities = model.capabilities();
+        // A model that produces no timestamps yields a subtitle with every cue at
+        // 0:00 — worse than no output. Reject it up front rather than emit garbage.
+        if capabilities.max_timestamp_kind == TimestampKind::None {
+            return Err(WhisperError::Unsupported(format!(
+                "model at {model_path} produces no timestamps"
+            )));
+        }
         let mut session = model
             .session()
             .map_err(|error| WhisperError::Load(error.to_string()))?;
@@ -77,10 +84,14 @@ fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> Whispe
         .map(|segment| {
             let start = segment.first_word.max(0) as usize;
             let count = segment.n_words.max(0) as usize;
+            // Clamp rather than range-index: a segment whose declared word count
+            // overruns the flat `words` array should still yield the words that do
+            // exist, not silently drop the whole segment.
             let words = words
-                .get(start..start.saturating_add(count))
+                .get(start..)
                 .unwrap_or(&[])
                 .iter()
+                .take(count)
                 .map(|word| WhisperWord {
                     word: word.text.clone(),
                     start: secs(word.t0_ms),
@@ -111,9 +122,10 @@ fn mean_token_prob(tokens: &[Token], first: i32, n: i32) -> f64 {
     let start = first.max(0) as usize;
     let count = n.max(0) as usize;
     let (sum, seen) = tokens
-        .get(start..start.saturating_add(count))
+        .get(start..)
         .unwrap_or(&[])
         .iter()
+        .take(count)
         .map(|token| token.p as f64)
         .filter(|probability| probability.is_finite())
         .fold((0.0, 0usize), |(sum, seen), probability| {
@@ -188,5 +200,117 @@ mod tests {
 
         // "world" spans tokens 1..3 → mean(0.6, 0.4) = 0.5.
         assert!((segment.words[1].probability - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn segment_without_words_maps_to_a_timed_but_word_free_segment() {
+        let transcript = Transcript {
+            segments: vec![Segment {
+                t0_ms: 500,
+                t1_ms: 1500,
+                first_word: 0,
+                n_words: 0,
+                text: "[music]".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let result = map_transcript(transcript, &TranscribeOptions::default());
+
+        let segment = &result.segments[0];
+        assert_eq!((segment.start, segment.end), (0.5, 1.5));
+        assert!(segment.words.is_empty());
+    }
+
+    #[test]
+    fn overrunning_word_count_is_clamped_not_dropped() {
+        // Segment declares 5 words but only 1 exists; the real word must survive
+        // (the old range-index returned None here and dropped the whole segment).
+        let transcript = Transcript {
+            segments: vec![Segment {
+                first_word: 0,
+                n_words: 5,
+                text: "hi".to_string(),
+                ..Default::default()
+            }],
+            words: vec![Word {
+                text: "hi".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let result = map_transcript(transcript, &TranscribeOptions::default());
+
+        assert_eq!(result.segments[0].words.len(), 1);
+        assert_eq!(result.segments[0].words[0].word, "hi");
+    }
+
+    #[test]
+    fn nan_token_probabilities_are_skipped() {
+        let transcript = Transcript {
+            segments: vec![Segment {
+                first_word: 0,
+                n_words: 1,
+                text: "x".to_string(),
+                ..Default::default()
+            }],
+            words: vec![Word {
+                first_token: 0,
+                n_tokens: 2,
+                text: "x".to_string(),
+                ..Default::default()
+            }],
+            tokens: vec![
+                Token { p: f32::NAN, ..Default::default() },
+                Token { p: 0.5, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+
+        let result = map_transcript(transcript, &TranscribeOptions::default());
+
+        // Only the finite 0.5 contributes to the mean.
+        assert!((result.segments[0].words[0].probability - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn all_nan_probabilities_default_to_zero() {
+        let transcript = Transcript {
+            segments: vec![Segment {
+                first_word: 0,
+                n_words: 1,
+                ..Default::default()
+            }],
+            words: vec![Word {
+                first_token: 0,
+                n_tokens: 1,
+                ..Default::default()
+            }],
+            tokens: vec![Token { p: f32::NAN, ..Default::default() }],
+            ..Default::default()
+        };
+
+        let result = map_transcript(transcript, &TranscribeOptions::default());
+
+        assert_eq!(result.segments[0].words[0].probability, 0.0);
+    }
+
+    #[test]
+    fn empty_transcript_maps_to_an_empty_result() {
+        let result = map_transcript(Transcript::default(), &TranscribeOptions::default());
+        assert!(result.segments.is_empty());
+        assert!(result.text.is_empty());
+    }
+
+    #[test]
+    fn missing_language_falls_back_to_the_forced_hint() {
+        let options = TranscribeOptions {
+            language: Some("ja".to_string()),
+            ..Default::default()
+        };
+        let result = map_transcript(Transcript::default(), &options);
+        assert_eq!(result.language, "ja");
     }
 }
