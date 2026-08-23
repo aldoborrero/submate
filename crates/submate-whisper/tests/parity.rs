@@ -49,7 +49,7 @@ fn raw_from_golden(rel: &str) -> TranscribeResult {
                             word: w["word"].as_str().unwrap_or_default().to_string(),
                             start: w["start"].as_f64().unwrap_or(0.0),
                             end: w["end"].as_f64().unwrap_or(0.0),
-                            probability: w["probability"].as_f64().unwrap_or(0.0),
+                            probability: w["probability"].as_f64(),
                         })
                         .collect()
                 })

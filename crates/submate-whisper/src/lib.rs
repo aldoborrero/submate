@@ -28,8 +28,10 @@ pub struct TranscribeWord {
     pub start: f64,
     /// Word end time, in seconds from the clip origin.
     pub end: f64,
-    /// Mean token probability across the word's tokens, in `0.0..=1.0`.
-    pub probability: f64,
+    /// Mean token probability across the word's tokens (`0.0..=1.0`), or `None`
+    /// when the backend produced no confidence for the word (e.g. a Parakeet
+    /// family that emits no per-token probabilities).
+    pub probability: Option<f64>,
 }
 
 /// One transcription segment: a contiguous run of words with its own span.
@@ -363,7 +365,8 @@ fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<TranscribeWord> {
             word: text[word_start..word_end].to_string(),
             start,
             end,
-            probability,
+            // whisper.cpp always yields a per-token probability.
+            probability: Some(probability),
         });
         i = j;
     }
@@ -1023,13 +1026,13 @@ mod tests {
                         word: "hi".into(),
                         start: 0.0,
                         end: 0.4,
-                        probability: 0.9,
+                        probability: Some(0.9),
                     },
                     TranscribeWord {
                         word: " there".into(),
                         start: 0.4,
                         end: 1.0,
-                        probability: 0.8,
+                        probability: Some(0.8),
                     },
                 ],
             }],

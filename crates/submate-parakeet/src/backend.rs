@@ -160,8 +160,9 @@ fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> Transc
 }
 
 /// Mean of a word's tokens' confidence over `tokens[first .. first + n]`, skipping
-/// NaNs (transcribe.cpp uses NaN for "no confidence"); `0.0` when none apply.
-fn mean_token_prob(tokens: &[Token], first: i32, n: i32) -> f64 {
+/// NaNs (transcribe.cpp uses NaN for "no confidence"); `None` when none are finite,
+/// so "unknown" stays distinct from a real `0.0`.
+fn mean_token_prob(tokens: &[Token], first: i32, n: i32) -> Option<f64> {
     let start = first.max(0) as usize;
     let count = n.max(0) as usize;
     let (sum, seen) = tokens
@@ -174,7 +175,7 @@ fn mean_token_prob(tokens: &[Token], first: i32, n: i32) -> f64 {
         .fold((0.0, 0usize), |(sum, seen), probability| {
             (sum + probability, seen + 1)
         });
-    if seen == 0 { 0.0 } else { sum / seen as f64 }
+    (seen != 0).then(|| sum / seen as f64)
 }
 
 #[cfg(test)]
@@ -248,10 +249,10 @@ mod tests {
         assert_eq!((segment.words[0].start, segment.words[0].end), (0.0, 0.9));
         // Tolerance is f32-wide: token confidences are f32, so 0.8 round-trips as
         // ~0.80000001 once widened to f64.
-        assert!((segment.words[0].probability - 0.8).abs() < 1e-6);
+        assert!((segment.words[0].probability.unwrap() - 0.8).abs() < 1e-6);
 
         // "world" spans tokens 1..3 → mean(0.6, 0.4) = 0.5.
-        assert!((segment.words[1].probability - 0.5).abs() < 1e-6);
+        assert!((segment.words[1].probability.unwrap() - 0.5).abs() < 1e-6);
     }
 
     #[test]
@@ -330,11 +331,11 @@ mod tests {
         let result = map_transcript(transcript, &TranscribeOptions::default());
 
         // Only the finite 0.5 contributes to the mean.
-        assert!((result.segments[0].words[0].probability - 0.5).abs() < 1e-6);
+        assert!((result.segments[0].words[0].probability.unwrap() - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn all_nan_probabilities_default_to_zero() {
+    fn all_nan_probabilities_yield_none() {
         let transcript = Transcript {
             segments: vec![Segment {
                 first_word: 0,
@@ -355,7 +356,8 @@ mod tests {
 
         let result = map_transcript(transcript, &TranscribeOptions::default());
 
-        assert_eq!(result.segments[0].words[0].probability, 0.0);
+        // No finite token confidence → unknown, not a real 0.0.
+        assert!(result.segments[0].words[0].probability.is_none());
     }
 
     #[test]
