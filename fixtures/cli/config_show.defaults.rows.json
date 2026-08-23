@@ -64,6 +64,10 @@
     "gpt-5-mini"
   ],
   [
+    "Translation.Openai Base Url",
+    "(not set)"
+  ],
+  [
     "Translation.Gemini Api Key",
     "(not set)"
   ],
