@@ -1,7 +1,7 @@
 //! whisper-rs transcription pipeline.
 //!
 //! Wraps native whisper.cpp inference (via `whisper-rs`) and assembles a
-//! stable-ts-shaped [`WhisperResult`] carrying per-word timestamps, which the
+//! stable-ts-shaped [`TranscribeResult`] carrying per-word timestamps, which the
 //! stable-ts slice (regroup / suppress_silence / output) consumes.
 //!
 //! Real model execution is gated behind the `model` cargo feature. That keeps
@@ -21,7 +21,7 @@ use tokio::sync::Semaphore;
 /// Per-word timing attached to each segment: `word`, `start`, `end`, plus the
 /// model's average token probability for the word.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WhisperWord {
+pub struct TranscribeWord {
     /// Word text, including any leading space the tokenizer emitted.
     pub word: String,
     /// Word start time, in seconds from the clip origin.
@@ -34,7 +34,7 @@ pub struct WhisperWord {
 
 /// One transcription segment: a contiguous run of words with its own span.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WhisperSegment {
+pub struct TranscribeSegment {
     /// Segment text (concatenation of its words).
     pub text: String,
     /// Segment start time, in seconds.
@@ -42,25 +42,25 @@ pub struct WhisperSegment {
     /// Segment end time, in seconds.
     pub end: f64,
     /// Per-word timings within the segment.
-    pub words: Vec<WhisperWord>,
+    pub words: Vec<TranscribeWord>,
 }
 
-/// The full transcription result, shaped like stable-whisper's `WhisperResult`.
+/// The full transcription result, shaped like stable-whisper's `TranscribeResult`.
 ///
 /// `language` is the detected (or forced) language code, `text` is the joined
 /// segment text, and `segments` carries the per-word timings downstream slices
 /// rely on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WhisperResult {
+pub struct TranscribeResult {
     /// Detected or forced language code (e.g. `"en"`).
     pub language: String,
     /// Joined transcript text across all segments.
     pub text: String,
     /// Ordered transcription segments.
-    pub segments: Vec<WhisperSegment>,
+    pub segments: Vec<TranscribeSegment>,
 }
 
-impl WhisperResult {
+impl TranscribeResult {
     /// Total number of words across all segments.
     pub fn word_count(&self) -> usize {
         self.segments.iter().map(|s| s.words.len()).sum()
@@ -103,7 +103,7 @@ pub struct TranscribeOptions {
 
 /// Errors raised while loading a model or running inference.
 #[derive(Debug, thiserror::Error)]
-pub enum WhisperError {
+pub enum TranscribeError {
     /// The model file path does not point at a readable file.
     #[error("model not found: {0}")]
     ModelNotFound(String),
@@ -123,7 +123,7 @@ pub enum WhisperError {
     Join(String),
 }
 
-/// A transcription backend: turns a PCM clip into a [`WhisperResult`].
+/// A transcription backend: turns a PCM clip into a [`TranscribeResult`].
 ///
 /// One impl per engine — whisper.cpp (`WhisperBackend`) today, transcribe.cpp /
 /// Parakeet next. The method is the *blocking* inference
@@ -138,7 +138,7 @@ pub trait Transcriber: Send + Sync {
         model_path: &str,
         pcm: &[f32],
         options: &TranscribeOptions,
-    ) -> Result<WhisperResult, WhisperError>;
+    ) -> Result<TranscribeResult, TranscribeError>;
 }
 
 /// Caps concurrent transcriptions to a fixed runner count.
@@ -189,9 +189,9 @@ impl Dispatcher {
     /// inference; tests pass a closure that blocks on a barrier and bumps a
     /// counter to observe the cap.
     #[tracing::instrument(skip_all, fields(runners = self.runners))]
-    pub async fn transcribe_with<F>(&self, job: F) -> Result<WhisperResult, WhisperError>
+    pub async fn transcribe_with<F>(&self, job: F) -> Result<TranscribeResult, TranscribeError>
     where
-        F: FnOnce() -> Result<WhisperResult, WhisperError> + Send + 'static,
+        F: FnOnce() -> Result<TranscribeResult, TranscribeError> + Send + 'static,
     {
         // Holding the owned permit alive until the blocking task finishes keeps
         // the slot reserved for the whole transcription.
@@ -205,7 +205,7 @@ impl Dispatcher {
             job()
         })
         .await
-        .map_err(|e| WhisperError::Join(e.to_string()))?
+        .map_err(|e| TranscribeError::Join(e.to_string()))?
     }
 
     /// Transcribe a PCM clip through [`transcribe_pcm`] under a runner permit.
@@ -220,7 +220,7 @@ impl Dispatcher {
         model_path: impl Into<String>,
         pcm: Arc<[f32]>,
         options: TranscribeOptions,
-    ) -> Result<WhisperResult, WhisperError> {
+    ) -> Result<TranscribeResult, TranscribeError> {
         install_whisper_logging();
         let model_path = model_path.into();
         let _permit = self
@@ -335,7 +335,7 @@ fn word_timing(
 /// space-delimited scripts, and per character for CJK — and aggregates each
 /// word's timing from the tokens its bytes cover.
 #[cfg(any(feature = "model", test))]
-fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<WhisperWord> {
+fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<TranscribeWord> {
     let mut buf: Vec<u8> = Vec::new();
     let mut spans: Vec<(usize, usize, i64, i64, f64)> = Vec::with_capacity(tokens.len());
     for t in tokens {
@@ -349,7 +349,7 @@ fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<WhisperWord> {
     let text = String::from_utf8_lossy(&buf).into_owned();
     let chars: Vec<(usize, char)> = text.char_indices().collect();
 
-    let mut words: Vec<WhisperWord> = Vec::new();
+    let mut words: Vec<TranscribeWord> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let word_start = chars[i].0;
@@ -359,7 +359,7 @@ fn group_tokens_into_words(tokens: &[RawToken]) -> Vec<WhisperWord> {
         }
         let word_end = chars.get(j).map_or(buf.len(), |&(b, _)| b);
         let (start, end, probability) = word_timing(&spans, word_start, word_end);
-        words.push(WhisperWord {
+        words.push(TranscribeWord {
             word: text[word_start..word_end].to_string(),
             start,
             end,
@@ -382,7 +382,7 @@ mod word_grouping_tests {
             prob: 1.0,
         }
     }
-    fn texts(words: &[super::WhisperWord]) -> Vec<&str> {
+    fn texts(words: &[super::TranscribeWord]) -> Vec<&str> {
         words.iter().map(|w| w.word.as_str()).collect()
     }
 
@@ -449,7 +449,7 @@ mod inference {
     /// first use. The load holds the cache lock, so a cold-start race serializes
     /// on the first load and the loser reuses the freshly cached context — both
     /// correct and a one-time cost.
-    fn load_context(model_path: &str) -> Result<Arc<WhisperContext>, WhisperError> {
+    fn load_context(model_path: &str) -> Result<Arc<WhisperContext>, TranscribeError> {
         let mut cache = context_cache()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -459,7 +459,7 @@ mod inference {
         tracing::debug!(model = model_path, "loading whisper model (cache miss)");
         let ctx = Arc::new(
             WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
-                .map_err(|e| WhisperError::Load(e.to_string()))?,
+                .map_err(|e| TranscribeError::Load(e.to_string()))?,
         );
         cache.insert(model_path.to_string(), Arc::clone(&ctx));
         Ok(ctx)
@@ -525,10 +525,10 @@ mod inference {
         model_path: impl Into<String>,
         pcm: std::sync::Arc<[f32]>,
         options: TranscribeOptions,
-    ) -> Result<WhisperResult, WhisperError> {
+    ) -> Result<TranscribeResult, TranscribeError> {
         let model_path = model_path.into();
         if !std::path::Path::new(&model_path).is_file() {
-            return Err(WhisperError::ModelNotFound(model_path));
+            return Err(TranscribeError::ModelNotFound(model_path));
         }
 
         tokio::task::spawn_blocking(move || {
@@ -536,7 +536,7 @@ mod inference {
             WhisperBackend.transcribe_blocking(&model_path, &pcm, &options)
         })
         .await
-        .map_err(|e| WhisperError::Join(e.to_string()))?
+        .map_err(|e| TranscribeError::Join(e.to_string()))?
     }
 
     /// The whisper.cpp transcription backend (via `whisper-rs`).
@@ -554,7 +554,7 @@ mod inference {
             model_path: &str,
             pcm: &[f32],
             options: &TranscribeOptions,
-        ) -> Result<WhisperResult, WhisperError> {
+        ) -> Result<TranscribeResult, TranscribeError> {
             transcribe_blocking(model_path, pcm, options)
         }
     }
@@ -563,12 +563,12 @@ mod inference {
         model_path: &str,
         pcm: &[f32],
         options: &TranscribeOptions,
-    ) -> Result<WhisperResult, WhisperError> {
+    ) -> Result<TranscribeResult, TranscribeError> {
         let ctx = load_context(model_path)?;
 
         let mut state = ctx
             .create_state()
-            .map_err(|e| WhisperError::Load(e.to_string()))?;
+            .map_err(|e| TranscribeError::Load(e.to_string()))?;
 
         // Beam search when a width is given, else greedy (whisper.cpp's default).
         let strategy = match options.beam_size {
@@ -636,7 +636,7 @@ mod inference {
 
         state
             .full(params, pcm)
-            .map_err(|e| WhisperError::Inference(e.to_string()))?;
+            .map_err(|e| TranscribeError::Inference(e.to_string()))?;
 
         let n_segments = state.full_n_segments();
 
@@ -653,7 +653,7 @@ mod inference {
             // `U+FFFD` instead of failing the whole transcription.
             let seg_text = segment
                 .to_str_lossy()
-                .map_err(|e| WhisperError::Inference(e.to_string()))?
+                .map_err(|e| TranscribeError::Inference(e.to_string()))?
                 .into_owned();
             let seg_t0 = segment.start_timestamp();
             let seg_t1 = segment.end_timestamp();
@@ -661,7 +661,7 @@ mod inference {
             full_text.push_str(&seg_text);
 
             let words = collect_words(&segment)?;
-            segments.push(WhisperSegment {
+            segments.push(TranscribeSegment {
                 text: seg_text,
                 start: centiseconds_to_seconds(seg_t0),
                 end: centiseconds_to_seconds(seg_t1),
@@ -669,7 +669,7 @@ mod inference {
             });
         }
 
-        Ok(WhisperResult {
+        Ok(TranscribeResult {
             language: detect_language(&state),
             text: full_text.trim().to_string(),
             segments,
@@ -686,7 +686,7 @@ mod inference {
     /// gives CJK real word-level timing instead of collapsing to segment level.
     fn collect_words(
         segment: &whisper_rs::WhisperSegment<'_>,
-    ) -> Result<Vec<WhisperWord>, WhisperError> {
+    ) -> Result<Vec<TranscribeWord>, TranscribeError> {
         let n_tokens = segment.n_tokens();
         let mut raw: Vec<RawToken> = Vec::with_capacity(n_tokens.max(0) as usize);
 
@@ -699,13 +699,13 @@ mod inference {
             // never matches the `[_…]` shape, so real text tokens are kept.
             let lossy = token
                 .to_str_lossy()
-                .map_err(|e| WhisperError::Inference(e.to_string()))?;
+                .map_err(|e| TranscribeError::Inference(e.to_string()))?;
             if lossy.starts_with("[_") && lossy.ends_with(']') {
                 continue;
             }
             let bytes = token
                 .to_bytes()
-                .map_err(|e| WhisperError::Inference(e.to_string()))?
+                .map_err(|e| TranscribeError::Inference(e.to_string()))?
                 .to_vec();
             let data = token.token_data();
             raw.push(RawToken {
@@ -788,7 +788,7 @@ pub enum PipelineError {
 /// `.language`, `.segments`, and
 /// `.to_srt_vtt()`.
 ///
-/// Built by [`assemble_result`] from a raw [`WhisperResult`] (whisper.cpp
+/// Built by [`assemble_result`] from a raw [`TranscribeResult`] (whisper.cpp
 /// inference output) by running the same post-decode stages
 /// `WhisperModelWrapper.transcribe` runs: regroup, then suppress-silence, then
 /// SRT/VTT rendering. The stages live in the ported sibling crates
@@ -896,11 +896,11 @@ pub struct TranscriptionSegment {
 /// Convert raw whisper.cpp inference output into the `to_dict()`-shaped JSON
 /// the ported [`stable_ts::WhisperResult`] parses.
 ///
-/// `WhisperResult::from_value` reads top-level `language` (via `ori_dict`) and a
+/// `TranscribeResult::from_value` reads top-level `language` (via `ori_dict`) and a
 /// `segments` array of `{start, end, text, words: [{word, start, end,
 /// probability}]}`, exactly the fields whisper.cpp gives us. We emit that shape
 /// so the downstream stages operate on real word timings.
-fn raw_to_value(raw: &WhisperResult) -> serde_json::Value {
+fn raw_to_value(raw: &TranscribeResult) -> serde_json::Value {
     use serde_json::{Value, json};
 
     let segments: Vec<Value> = raw
@@ -971,7 +971,7 @@ impl Default for AssembleOptions {
 ///   derive the non-VAD silence ranges. Empty (or too-short) audio yields no
 ///   silence and leaves timings untouched.
 pub fn assemble_result(
-    raw: &WhisperResult,
+    raw: &TranscribeResult,
     opts: &AssembleOptions,
     pcm: &[f32],
 ) -> Result<Transcription, PipelineError> {
@@ -1011,21 +1011,21 @@ mod tests {
 
     #[test]
     fn word_count_sums_segments() {
-        let result = WhisperResult {
+        let result = TranscribeResult {
             language: "en".into(),
             text: "hi there".into(),
-            segments: vec![WhisperSegment {
+            segments: vec![TranscribeSegment {
                 text: "hi there".into(),
                 start: 0.0,
                 end: 1.0,
                 words: vec![
-                    WhisperWord {
+                    TranscribeWord {
                         word: "hi".into(),
                         start: 0.0,
                         end: 0.4,
                         probability: 0.9,
                     },
-                    WhisperWord {
+                    TranscribeWord {
                         word: " there".into(),
                         start: 0.4,
                         end: 1.0,
@@ -1094,8 +1094,8 @@ mod dispatcher_tests {
 
     use tokio::time::timeout;
 
-    fn lang_result(language: &str) -> WhisperResult {
-        WhisperResult {
+    fn lang_result(language: &str) -> TranscribeResult {
+        TranscribeResult {
             language: language.to_string(),
             text: String::new(),
             segments: Vec::new(),
@@ -1227,9 +1227,9 @@ mod dispatcher_tests {
     async fn errors_propagate_and_release_permit() {
         let dispatcher = Dispatcher::new(1);
         let result = dispatcher
-            .transcribe_with(|| Err(WhisperError::Inference("boom".into())))
+            .transcribe_with(|| Err(TranscribeError::Inference("boom".into())))
             .await;
-        assert!(matches!(result, Err(WhisperError::Inference(_))));
+        assert!(matches!(result, Err(TranscribeError::Inference(_))));
         // The permit is returned even when the job errors.
         assert_eq!(dispatcher.available_permits(), 1);
     }

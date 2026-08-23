@@ -1,10 +1,11 @@
-//! The transcribe.cpp backend implementation and its `Transcript` → `WhisperResult` map.
+//! The transcribe.cpp backend implementation and its `Transcript` → `TranscribeResult` map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use submate_whisper::{
-    Task, TranscribeOptions, Transcriber, WhisperError, WhisperResult, WhisperSegment, WhisperWord,
+    Task, TranscribeError, TranscribeOptions, TranscribeResult, TranscribeSegment, TranscribeWord,
+    Transcriber,
 };
 use transcribe_cpp::{Model, RunOptions, Task as CppTask, TimestampKind, Token, Transcript};
 
@@ -30,7 +31,7 @@ fn model_cache() -> &'static Mutex<HashMap<String, Arc<Model>>> {
 ///
 /// The load holds the cache lock, so a cold-start race serializes on the first
 /// load and the losers reuse the freshly cached model — both cheap and correct.
-fn cached_model(model_path: &str) -> Result<Arc<Model>, WhisperError> {
+fn cached_model(model_path: &str) -> Result<Arc<Model>, TranscribeError> {
     let mut cache = model_cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -39,7 +40,7 @@ fn cached_model(model_path: &str) -> Result<Arc<Model>, WhisperError> {
     }
     tracing::debug!(model = model_path, "loading parakeet model (cache miss)");
     let model = Arc::new(
-        Model::load(model_path).map_err(|error| WhisperError::Load(error.to_string()))?,
+        Model::load(model_path).map_err(|error| TranscribeError::Load(error.to_string()))?,
     );
     cache.insert(model_path.to_string(), Arc::clone(&model));
     Ok(model)
@@ -62,19 +63,19 @@ impl Transcriber for ParakeetBackend {
         model_path: &str,
         pcm: &[f32],
         options: &TranscribeOptions,
-    ) -> Result<WhisperResult, WhisperError> {
+    ) -> Result<TranscribeResult, TranscribeError> {
         let model = cached_model(model_path)?;
         let capabilities = model.capabilities();
         // A model that produces no timestamps yields a subtitle with every cue at
         // 0:00 — worse than no output. Reject it up front rather than emit garbage.
         if capabilities.max_timestamp_kind == TimestampKind::None {
-            return Err(WhisperError::Unsupported(format!(
+            return Err(TranscribeError::Unsupported(format!(
                 "model at {model_path} produces no timestamps"
             )));
         }
         let mut session = model
             .session()
-            .map_err(|error| WhisperError::Load(error.to_string()))?;
+            .map_err(|error| TranscribeError::Load(error.to_string()))?;
 
         let run = RunOptions {
             // Ask for the finest timestamps the model advertises (word/token for
@@ -91,7 +92,7 @@ impl Transcriber for ParakeetBackend {
 
         let transcript = session
             .run(pcm, &run)
-            .map_err(|error| WhisperError::Inference(error.to_string()))?;
+            .map_err(|error| TranscribeError::Inference(error.to_string()))?;
         Ok(map_transcript(transcript, options))
     }
 }
@@ -101,7 +102,7 @@ fn secs(ms: i64) -> f64 {
     ms as f64 / 1000.0
 }
 
-/// Fold a transcribe.cpp [`Transcript`] into submate's [`WhisperResult`].
+/// Fold a transcribe.cpp [`Transcript`] into submate's [`TranscribeResult`].
 ///
 /// transcribe.cpp returns flat `segments`/`words`/`tokens` arrays cross-linked by
 /// index ranges (`Segment::first_word`/`n_words`, `Word::first_token`/`n_tokens`).
@@ -109,7 +110,7 @@ fn secs(ms: i64) -> f64 {
 /// probability as the mean of its tokens' confidences. `words` is empty when the
 /// model only produced segment-level timestamps, which collapses cleanly to
 /// segments with no per-word timing.
-fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> WhisperResult {
+fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> TranscribeResult {
     let Transcript {
         text,
         language,
@@ -132,14 +133,14 @@ fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> Whispe
                 .unwrap_or(&[])
                 .iter()
                 .take(count)
-                .map(|word| WhisperWord {
+                .map(|word| TranscribeWord {
                     word: word.text.clone(),
                     start: secs(word.t0_ms),
                     end: secs(word.t1_ms),
                     probability: mean_token_prob(&tokens, word.first_token, word.n_tokens),
                 })
                 .collect();
-            WhisperSegment {
+            TranscribeSegment {
                 text: segment.text.clone(),
                 start: secs(segment.t0_ms),
                 end: secs(segment.t1_ms),
@@ -148,9 +149,11 @@ fn map_transcript(transcript: Transcript, options: &TranscribeOptions) -> Whispe
         })
         .collect();
 
-    WhisperResult {
+    TranscribeResult {
         // Prefer the model's detected language; fall back to the forced hint.
-        language: language.or_else(|| options.language.clone()).unwrap_or_default(),
+        language: language
+            .or_else(|| options.language.clone())
+            .unwrap_or_default(),
         text,
         segments,
     }
@@ -215,9 +218,18 @@ mod tests {
                 },
             ],
             tokens: vec![
-                Token { p: 0.8, ..Default::default() },
-                Token { p: 0.6, ..Default::default() },
-                Token { p: 0.4, ..Default::default() },
+                Token {
+                    p: 0.8,
+                    ..Default::default()
+                },
+                Token {
+                    p: 0.6,
+                    ..Default::default()
+                },
+                Token {
+                    p: 0.4,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -303,8 +315,14 @@ mod tests {
                 ..Default::default()
             }],
             tokens: vec![
-                Token { p: f32::NAN, ..Default::default() },
-                Token { p: 0.5, ..Default::default() },
+                Token {
+                    p: f32::NAN,
+                    ..Default::default()
+                },
+                Token {
+                    p: 0.5,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -328,7 +346,10 @@ mod tests {
                 n_tokens: 1,
                 ..Default::default()
             }],
-            tokens: vec![Token { p: f32::NAN, ..Default::default() }],
+            tokens: vec![Token {
+                p: f32::NAN,
+                ..Default::default()
+            }],
             ..Default::default()
         };
 

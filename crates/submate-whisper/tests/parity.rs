@@ -21,13 +21,13 @@
 
 use fixtures::{Seg, SegTol, assert_segments_close, golden, load_f32, segs_from_json};
 use submate_whisper::{
-    AssembleOptions, WhisperResult, WhisperSegment, WhisperWord, assemble_result,
+    AssembleOptions, TranscribeResult, TranscribeSegment, TranscribeWord, assemble_result,
 };
 
 /// Parse the captured raw transcription (`00_raw.json`, a stable-ts `to_dict()`
-/// dump) into the inference-shaped [`WhisperResult`] this crate produces, so
+/// dump) into the inference-shaped [`TranscribeResult`] this crate produces, so
 /// `assemble_result` consumes exactly what real whisper.cpp inference would.
-fn raw_from_golden(rel: &str) -> WhisperResult {
+fn raw_from_golden(rel: &str) -> TranscribeResult {
     let v = golden(rel);
     let language = v
         .get("language")
@@ -45,7 +45,7 @@ fn raw_from_golden(rel: &str) -> WhisperResult {
                 .and_then(|w| w.as_array())
                 .map(|ws| {
                     ws.iter()
-                        .map(|w| WhisperWord {
+                        .map(|w| TranscribeWord {
                             word: w["word"].as_str().unwrap_or_default().to_string(),
                             start: w["start"].as_f64().unwrap_or(0.0),
                             end: w["end"].as_f64().unwrap_or(0.0),
@@ -54,7 +54,7 @@ fn raw_from_golden(rel: &str) -> WhisperResult {
                         .collect()
                 })
                 .unwrap_or_default();
-            WhisperSegment {
+            TranscribeSegment {
                 text: seg["text"].as_str().unwrap_or_default().to_string(),
                 start: seg["start"].as_f64().unwrap_or(0.0),
                 end: seg["end"].as_f64().unwrap_or(0.0),
@@ -62,7 +62,7 @@ fn raw_from_golden(rel: &str) -> WhisperResult {
             }
         })
         .collect();
-    WhisperResult {
+    TranscribeResult {
         language,
         text: v["text"].as_str().unwrap_or_default().trim().to_string(),
         segments,
