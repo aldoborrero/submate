@@ -1,0 +1,29 @@
+[package]
+name = "submate-parakeet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# `parakeet` pulls in transcribe.cpp and compiles its C++/ggml via cmake. Off by
+# default so the crate keeps an empty-stub baseline that builds with no cmake and
+# no C++ toolchain — the same posture as submate-whisper's `model`. GPU backends
+# layer on top and imply `parakeet`.
+default = []
+parakeet = ["dep:transcribe-cpp"]
+vulkan = ["parakeet", "transcribe-cpp/vulkan"]
+cuda = ["parakeet", "transcribe-cpp/cuda"]
+
+[dependencies]
+submate-whisper = { path = "../submate-whisper" }
+tracing = { workspace = true }
+# Pinned to the 0.2.1 release commit — the binding is not on crates.io, and the
+# repo root is the -sys crate carrying the vendored C++/ggml so a git checkout
+# builds libtranscribe from source. `default-features = false` keeps macOS Metal
+# off by default (this crate's features are the only backend control surface).
+transcribe-cpp = { git = "https://github.com/handy-computer/transcribe.cpp", rev = "ea077b87590bcfb090d7c38c03ab36cd1c7005d3", default-features = false, optional = true }
+
+[lints]
+workspace = true

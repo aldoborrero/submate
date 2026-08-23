@@ -31,10 +31,6 @@ let
       # just
       just.enable = true;
 
-      # python
-      ruff-format.enable = true;
-      ruff-check.enable = true;
-
       # markdown
       mdformat.enable = true;
 
@@ -71,12 +67,6 @@ let
       # yaml
       formatter.yamlfmt.pipeline = "yaml";
       formatter.yamlfmt.priority = 1;
-
-      # python
-      formatter.ruff-check.pipeline = "python";
-      formatter.ruff-check.priority = 1;
-      formatter.ruff-format.pipeline = "python";
-      formatter.ruff-format.priority = 2;
 
       # markdown
       formatter.mdformat.pipeline = "markdown";

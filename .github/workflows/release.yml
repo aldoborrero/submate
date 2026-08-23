@@ -24,7 +24,7 @@ jobs:
 
     strategy:
       matrix:
-        variant: [cpu, gpu]
+        variant: [cpu, gpu, vulkan]
 
     steps:
       - name: Checkout

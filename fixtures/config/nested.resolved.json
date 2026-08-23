@@ -1,0 +1,30 @@
+{
+  "debug": false,
+  "server": {
+    "address": "0.0.0.0",
+    "concurrent_transcriptions": 2,
+    "port": 9999
+  },
+  "stable_ts": {
+    "custom_regroup": "cm_sl=84_sl=42++++++1",
+    "min_word_duration": 0.1,
+    "suppress_silence": true,
+    "word_level_highlight": false
+  },
+  "translation": {
+    "anthropic_api_key": "",
+    "backend": "openai",
+    "chunk_size": 50,
+    "claude_model": "claude-sonnet-4-6",
+    "gemini_api_key": "",
+    "gemini_model": "gemini-2.5-flash",
+    "ollama_model": "llama3.2",
+    "ollama_url": "http://localhost:11434",
+    "openai_api_key": "sk-test",
+    "openai_model": "gpt-5-mini"
+  },
+  "whisper": {
+    "device": "cuda",
+    "model": "large-v3"
+  }
+}

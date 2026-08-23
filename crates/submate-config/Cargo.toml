@@ -1,0 +1,22 @@
+[package]
+name = "submate-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+submate-types = { path = "../submate-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+figment = { workspace = true }
+
+[dev-dependencies]
+# `fixtures::EnvGuard` drives env-based resolution from a `.env` fixture in a
+# serialized, isolated scope (clears `SUBMATE__*`, restores on drop).
+fixtures = { path = "../fixtures" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

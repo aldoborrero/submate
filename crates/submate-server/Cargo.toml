@@ -1,0 +1,29 @@
+[package]
+name = "submate-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["bazarr"]
+# Feature-flagged integration routers. Ops routes are always present.
+bazarr = []
+
+[dependencies]
+axum = { workspace = true, features = ["multipart"] }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+submate-types = { path = "../submate-types" }
+
+[dev-dependencies]
+fixtures = { path = "../fixtures" }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

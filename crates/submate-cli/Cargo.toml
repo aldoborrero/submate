@@ -1,0 +1,58 @@
+[package]
+name = "submate-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "submate"
+path = "src/main.rs"
+
+[features]
+# `model` forwards to submate-whisper's real whisper.cpp inference. Off by
+# default so the CLI builds and tests without a model — `transcribe` then reports
+# "model support not built in".
+default = []
+model = ["submate-whisper/model"]
+# GPU backends — build the CLI with whisper.cpp GPU acceleration. Pick the one
+# matching the host GPU; needs the backend toolkit at build time.
+# `nix build .#docker-gpu` builds with `cuda`.
+cuda = ["model", "submate-whisper/cuda"]
+metal = ["model", "submate-whisper/metal"]
+hipblas = ["model", "submate-whisper/hipblas"]
+vulkan = ["model", "submate-whisper/vulkan"]
+intel-sycl = ["model", "submate-whisper/intel-sycl"]
+
+[dependencies]
+submate-lang = { path = "../submate-lang" }
+submate-config = { path = "../submate-config" }
+submate-types = { path = "../submate-types" }
+submate-media = { path = "../submate-media" }
+submate-server = { path = "../submate-server" }
+submate-paths = { path = "../submate-paths" }
+submate-subtitle = { path = "../submate-subtitle" }
+submate-translate = { path = "../submate-translate" }
+submate-whisper = { path = "../submate-whisper" }
+submate-bazarr = { path = "../submate-bazarr" }
+axum = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+# `preserve_order` keeps serde_json object keys in struct field-declaration
+# order; the `config show` table rows (and the `config_show_rows` parity test)
+# require the serialized `Config` to mirror Pydantic field order, not the
+# default BTreeMap key sorting.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[dev-dependencies]
+# `fixtures::EnvGuard` isolates the env (clears `SUBMATE__*`, sets overrides,
+# serialized + restored on drop) for the `config_show` parity test.
+fixtures = { path = "../fixtures" }
+
+[lints]
+workspace = true

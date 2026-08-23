@@ -1,0 +1,28 @@
+[package]
+name = "submate-translate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-openai = { workspace = true }
+async-trait = { workspace = true }
+fastrand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+submate-subtitle = { path = "../submate-subtitle" }
+submate-types = { path = "../submate-types" }
+# The hand-rolled Anthropic backoff retry needs an async timer (tokio::time);
+# the OpenAI-compat backends get their retries from async-openai instead.
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+fixtures = { path = "../fixtures" }
+wiremock = { workspace = true }
+
+[lints]
+workspace = true
