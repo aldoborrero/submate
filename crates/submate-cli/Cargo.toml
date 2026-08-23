@@ -24,6 +24,10 @@ metal = ["model", "submate-whisper/metal"]
 hipblas = ["model", "submate-whisper/hipblas"]
 vulkan = ["model", "submate-whisper/vulkan"]
 intel-sycl = ["model", "submate-whisper/intel-sycl"]
+# `parakeet` adds the transcribe.cpp/Parakeet engine, selectable via
+# `transcribe --engine parakeet`. Additive over `model` (whisper stays the
+# default engine); pulls in submate-parakeet and its git C++ dependency.
+parakeet = ["model", "dep:submate-parakeet", "submate-parakeet/parakeet"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }
@@ -35,6 +39,7 @@ submate-paths = { path = "../submate-paths" }
 submate-subtitle = { path = "../submate-subtitle" }
 submate-translate = { path = "../submate-translate" }
 submate-whisper = { path = "../submate-whisper" }
+submate-parakeet = { path = "../submate-parakeet", optional = true }
 submate-bazarr = { path = "../submate-bazarr" }
 axum = { workspace = true }
 async-trait = { workspace = true }

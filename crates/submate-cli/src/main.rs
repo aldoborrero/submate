@@ -63,6 +63,21 @@ impl From<OutputFormat> for submate_types::OutputFormat {
     }
 }
 
+/// Which speech-to-text engine transcribes the audio.
+///
+/// `whisper` (whisper.cpp) is the default and handles every language. `parakeet`
+/// (transcribe.cpp) yields word-level timestamps but only for European
+/// languages, and is available only in a build compiled `--features parakeet`;
+/// selecting it in a build without that feature is a clean error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum Engine {
+    /// whisper.cpp — all languages (default).
+    #[default]
+    Whisper,
+    /// transcribe.cpp / Parakeet — European languages only, word-level timing.
+    Parakeet,
+}
+
 mod config_show;
 mod translate_paths;
 // Pure-data classifier + extension formatter for `submate transcribe`.
@@ -161,6 +176,11 @@ struct TranscribeArgs {
     /// existing usage).
     #[arg(short = 'F', long, value_enum, default_value_t = OutputFormat::Srt)]
     format: OutputFormat,
+
+    /// Speech-to-text engine: `whisper` (default, all languages) or `parakeet`
+    /// (European languages only, word-level timing; needs `--features parakeet`).
+    #[arg(long, value_enum, default_value_t = Engine::Whisper)]
+    engine: Engine,
 
     // Whisper decoding knobs. Each overrides `SUBMATE__WHISPER__*` and leaves
     // whisper.cpp's own default in place when omitted.
@@ -844,6 +864,7 @@ async fn transcribe_files(
             config.translation.chunk_size,
             &assemble,
             config.stable_ts.word_level_highlight,
+            args.engine,
         )
         .await;
 
@@ -875,6 +896,21 @@ async fn transcribe_files(
 }
 
 /// Transcribe one media file in-process: extract the selected track's PCM,
+/// Construct the Parakeet (transcribe.cpp) engine as a boxed [`Transcriber`].
+///
+/// Two feature-gated definitions: with `parakeet` it builds the real backend;
+/// in a `model`-only build it fails cleanly so `--engine parakeet` reports that
+/// the engine was not compiled in rather than silently falling back to whisper.
+#[cfg(feature = "parakeet")]
+fn parakeet_transcriber() -> anyhow::Result<std::sync::Arc<dyn submate_whisper::Transcriber>> {
+    Ok(std::sync::Arc::new(submate_parakeet::ParakeetBackend))
+}
+
+#[cfg(all(feature = "model", not(feature = "parakeet")))]
+fn parakeet_transcriber() -> anyhow::Result<std::sync::Arc<dyn submate_whisper::Transcriber>> {
+    anyhow::bail!("the `parakeet` engine is not compiled in; rebuild with `--features parakeet`")
+}
+
 /// run whisper under the dispatcher's runner cap, assemble the subtitle, and
 /// LLM-translate it when `translate_to` differs from the detected language.
 #[cfg(feature = "model")]
@@ -891,6 +927,7 @@ async fn transcribe_one(
     chunk_size: u32,
     assemble: &submate_whisper::AssembleOptions,
     word_level: bool,
+    engine: Engine,
 ) -> anyhow::Result<String> {
     use submate_media::{
         PreparedAudio, extract_audio_track_to_memory, prepare_audio_for_transcription,
@@ -909,8 +946,18 @@ async fn transcribe_one(
     }
     .into();
 
+    let transcriber: std::sync::Arc<dyn submate_whisper::Transcriber> = match engine {
+        Engine::Whisper => {
+            // whisper.cpp installs a process-global stderr logger; route it
+            // through `tracing` once before the first model load.
+            submate_whisper::install_whisper_logging();
+            std::sync::Arc::new(submate_whisper::WhisperBackend)
+        }
+        Engine::Parakeet => parakeet_transcriber()?,
+    };
     let raw = dispatcher
-        .transcribe_pcm(
+        .transcribe_pcm_with(
+            transcriber,
             model_path.to_string_lossy().to_string(),
             pcm.clone(),
             options,
@@ -947,6 +994,7 @@ async fn transcribe_one(
     _chunk_size: u32,
     _assemble: &submate_whisper::AssembleOptions,
     _word_level: bool,
+    _engine: Engine,
 ) -> anyhow::Result<String> {
     anyhow::bail!("model support not built in (rebuild with --features model)")
 }

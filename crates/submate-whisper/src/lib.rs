@@ -210,6 +210,39 @@ impl Dispatcher {
         .map_err(|e| TranscribeError::Join(e.to_string()))?
     }
 
+    /// Transcribe a PCM clip through an explicit [`Transcriber`] engine under a
+    /// runner permit.
+    ///
+    /// Engine-agnostic — the caller supplies the backend (whisper.cpp or
+    /// transcribe.cpp/Parakeet) — so it is *not* gated on the `model` feature.
+    /// The permit is moved onto the blocking thread and dropped when inference
+    /// ends, so the runner cap covers the actual work even if the awaiting task
+    /// is cancelled mid-run.
+    #[tracing::instrument(skip_all, fields(runners = self.runners, samples = pcm.len()))]
+    pub async fn transcribe_pcm_with(
+        &self,
+        engine: Arc<dyn Transcriber>,
+        model_path: impl Into<String>,
+        pcm: Arc<[f32]>,
+        options: TranscribeOptions,
+    ) -> Result<TranscribeResult, TranscribeError> {
+        let model_path = model_path.into();
+        if !std::path::Path::new(&model_path).is_file() {
+            return Err(TranscribeError::ModelNotFound(model_path));
+        }
+        let permit = Arc::clone(&self.semaphore)
+            .acquire_owned()
+            .await
+            .map_err(|_| TranscribeError::Join("dispatcher semaphore closed".to_string()))?;
+
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            engine.transcribe_blocking(&model_path, &pcm, &options)
+        })
+        .await
+        .map_err(|e| TranscribeError::Join(e.to_string()))?
+    }
+
     /// Transcribe a PCM clip through [`transcribe_pcm`] under a runner permit.
     ///
     /// Available only with the `model` feature, which pulls in whisper.cpp. The
@@ -745,7 +778,7 @@ mod inference {
 }
 
 #[cfg(feature = "model")]
-pub use inference::transcribe_pcm;
+pub use inference::{WhisperBackend, transcribe_pcm};
 
 /// The submate config regroup string this pipeline drives by default.
 ///
