@@ -1,6 +1,7 @@
-______________________________________________________________________
-
-## name: rust-async-patterns description: Master Rust async programming with Tokio, async traits, error handling, and concurrent patterns. Use when building async Rust applications, implementing concurrent systems, or debugging async code.
+---
+name: rust-async-patterns
+description: Master Rust async programming with Tokio, async traits, error handling, and concurrent patterns. Use when building async Rust applications, implementing concurrent systems, or debugging async code.
+---
 
 # Rust Async Patterns
 
@@ -27,13 +28,13 @@ Future (lazy) → poll() → Ready(value) | Pending
 
 ### 2. Key Abstractions
 
-| Concept | Purpose |
+| Concept    | Purpose                                  |
 | ---------- | ---------------------------------------- |
-| `Future` | Lazy computation that may complete later |
-| `async fn` | Function returning impl Future |
-| `await` | Suspend until future completes |
-| `Task` | Spawned future running concurrently |
-| `Runtime` | Executor that polls futures |
+| `Future`   | Lazy computation that may complete later |
+| `async fn` | Function returning impl Future           |
+| `await`    | Suspend until future completes           |
+| `Task`     | Spawned future running concurrently      |
+| `Runtime`  | Executor that polls futures              |
 
 ## Quick Start
 

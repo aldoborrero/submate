@@ -1,11 +1,41 @@
 {
   "version": 1,
   "skills": {
+    "memory-safety-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/systems-programming/skills/memory-safety-patterns/SKILL.md",
+      "computedHash": "e23ee740f583c16e7633be4ee76ff028b8c9c486c6417fdfb69e0beb886327ca"
+    },
     "rust-async-patterns": {
       "source": "wshobson/agents",
       "sourceType": "github",
       "skillPath": "plugins/systems-programming/skills/rust-async-patterns/SKILL.md",
-      "computedHash": "20d32ef58158c94eb4dfc4aaf19bec7ae2a025ae5d42da7b49ccfbaeda389273"
+      "computedHash": "8e9a951c21bb1ee671dd2e7391b193e8e3d362b95ef29c470915837d73bf87df"
+    },
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-best-practices/SKILL.md",
+      "computedHash": "e2e93a95c899079e5c3391319f309a0961f4f7cdd882cf7221e2e56da9813a18"
+    },
+    "rust-engineer": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-engineer/SKILL.md",
+      "computedHash": "c8e11f71fa92c956b5750d1bdae1cbe27c89b12763b6f2d897ee6dce1fed6bda"
+    },
+    "rust-patterns": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": ".kiro/skills/rust-patterns/SKILL.md",
+      "computedHash": "6d50dc50f21e033be0096e185dc1ca8413ef7284bd558660bc2796643b92e228"
+    },
+    "rust-testing": {
+      "source": "affaan-m/ecc",
+      "sourceType": "github",
+      "skillPath": ".kiro/skills/rust-testing/SKILL.md",
+      "computedHash": "e55dc89ab64a49f9cec0d6d15b14a21f5c096f342e0046799f47b7fa2d22e770"
     }
   }
 }
