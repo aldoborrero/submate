@@ -118,6 +118,24 @@ pub enum WhisperError {
     Join(String),
 }
 
+/// A transcription backend: turns a PCM clip into a [`WhisperResult`].
+///
+/// One impl per engine — whisper.cpp (`WhisperBackend`) today, transcribe.cpp /
+/// Parakeet next. The method is the *blocking* inference
+/// step: the [`Dispatcher`] owns the concurrency permit and the `spawn_blocking`
+/// hop, so a backend stays a plain synchronous call. Loading the model from
+/// `model_path` is the backend's own concern.
+pub trait Transcriber: Send + Sync {
+    /// Transcribe a mono 16 kHz f32 PCM clip (see [`SAMPLE_RATE`]), loading the
+    /// model at `model_path`.
+    fn transcribe_blocking(
+        &self,
+        model_path: &str,
+        pcm: &[f32],
+        options: &TranscribeOptions,
+    ) -> Result<WhisperResult, WhisperError>;
+}
+
 /// Caps concurrent transcriptions to a fixed runner count.
 ///
 /// A `Semaphore` gates every transcription behind a permit, so at most
@@ -508,9 +526,32 @@ mod inference {
             return Err(WhisperError::ModelNotFound(model_path));
         }
 
-        tokio::task::spawn_blocking(move || transcribe_blocking(&model_path, &pcm, &options))
-            .await
-            .map_err(|e| WhisperError::Join(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            use crate::Transcriber;
+            WhisperBackend.transcribe_blocking(&model_path, &pcm, &options)
+        })
+        .await
+        .map_err(|e| WhisperError::Join(e.to_string()))?
+    }
+
+    /// The whisper.cpp transcription backend (via `whisper-rs`).
+    ///
+    /// A zero-sized handle: it loads the model from `model_path` on each call, so
+    /// it holds no state and every copy is free. Implements [`crate::Transcriber`]
+    /// so the [`Dispatcher`](crate::Dispatcher) drives it interchangeably with
+    /// other engines (transcribe.cpp / Parakeet next).
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct WhisperBackend;
+
+    impl crate::Transcriber for WhisperBackend {
+        fn transcribe_blocking(
+            &self,
+            model_path: &str,
+            pcm: &[f32],
+            options: &TranscribeOptions,
+        ) -> Result<WhisperResult, WhisperError> {
+            transcribe_blocking(model_path, pcm, options)
+        }
     }
 
     fn transcribe_blocking(
