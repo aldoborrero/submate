@@ -15,8 +15,7 @@ model = ["dep:whisper-rs"]
 # the matching whisper-rs backend, which compiles whisper.cpp with that backend
 # and flips `WhisperContextParameters::use_gpu` to default `true`. Pick the one
 # matching the host GPU; each needs its toolkit at build time (CUDA toolkit /
-# Apple Metal / AMD ROCm). whisper-rs 0.12 has no Vulkan/Intel backend — that
-# needs the whisper-rs upgrade.
+# Apple Metal / AMD ROCm / Vulkan SDK / Intel oneAPI).
 cuda = ["model", "whisper-rs/cuda"]
 metal = ["model", "whisper-rs/metal"]
 hipblas = ["model", "whisper-rs/hipblas"]

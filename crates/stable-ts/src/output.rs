@@ -302,12 +302,13 @@ pub fn to_srt_vtt(result: &WhisperResult, word_level: bool, vtt: bool) -> String
 /// `"\n"`. Returns the joined string (no trailing newline), matching
 /// `result_to_any` when `filepath is None`.
 ///
-/// The word-level (karaoke) path is not implemented.
+/// The word-level (karaoke) path is not ported: `word_level = true` falls back to
+/// the segment-level rendering rather than panicking. (submate's whisper layer
+/// only ever requests segment-level ASS, so that fallback is unreachable there
+/// today; the guard keeps the public function total for any other caller.)
 #[must_use]
 pub fn to_ass(result: &WhisperResult, word_level: bool) -> String {
-    if word_level {
-        unimplemented!("word-level (karaoke) ASS output is not ported");
-    }
+    let _ = word_level;
     let blocks: Vec<String> = result
         .segments
         .iter()
