@@ -363,17 +363,7 @@ impl Backend for OpenAiCompatBackend {
             .next()
             .and_then(|c| c.message.content)
             .unwrap_or_default();
-        let content = content.trim();
-        // An empty completion is never a valid translation (a reasoning model
-        // that spent its budget thinking, or a truncated response). Treat it as
-        // an error so the caller falls back to the original text instead of
-        // silently blanking the cue.
-        if content.is_empty() {
-            return Err(BackendError::Request(
-                "model returned an empty completion".to_string(),
-            ));
-        }
-        Ok(content.to_string())
+        Ok(content.trim().to_string())
     }
 }
 
@@ -623,15 +613,7 @@ impl Backend for AnthropicBackend {
             .into_iter()
             .find_map(|block| block.text)
             .unwrap_or_default();
-        let text = text.trim();
-        // See the OpenAI backend: an empty completion is a failure, not a valid
-        // (blank) translation.
-        if text.is_empty() {
-            return Err(BackendError::Request(
-                "model returned an empty completion".to_string(),
-            ));
-        }
-        Ok(text.to_string())
+        Ok(text.trim().to_string())
     }
 }
 
@@ -686,6 +668,17 @@ pub fn split_batch(translated: &str, separator_token: &str, originals: &[String]
         .collect();
 
     if parts.len() != originals.len() {
+        return originals.to_vec();
+    }
+    // A blank part where the source had text means the model dropped that line
+    // (an empty completion / truncation) — on a single-cue batch the count still
+    // matches, so guard it here too. Fall back to the originals for the whole
+    // batch rather than emitting blank cues; other batches are unaffected.
+    if parts
+        .iter()
+        .zip(originals)
+        .any(|(p, o)| p.is_empty() && !o.trim().is_empty())
+    {
         return originals.to_vec();
     }
     parts
@@ -945,7 +938,13 @@ where
         return Ok(text.to_string());
     }
     let prompt = format_prompt(TRANSLATION_PROMPT, source_lang, target_lang, text);
-    complete(prompt).await
+    let translated = complete(prompt).await?;
+    // An empty completion (reasoning model that spent its budget, truncation)
+    // would blank the whole text; keep the original instead.
+    if translated.trim().is_empty() && !text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
+    Ok(translated)
 }
 
 /// Per-format translation dispatch for already-formatted Bazarr output.
@@ -1094,6 +1093,27 @@ mod tests {
         assert_eq!(
             gemini.base_url(),
             "https://generativelanguage.googleapis.com/v1beta/openai"
+        );
+    }
+
+    #[test]
+    fn split_batch_falls_back_on_blank_parts() {
+        let one = vec!["Hola.".to_string()];
+        // Single-cue batch, empty reply: count still matches (1 == 1), so the
+        // blank must be caught by the empty-part guard, not emitted.
+        assert_eq!(split_batch("", SRT_SEPARATOR_TOKEN, &one), one);
+
+        let two = vec!["Hola.".to_string(), "Adiós.".to_string()];
+        // One line blanked while the source had text -> fall back for the batch.
+        let reply = format!("Hi.{SRT_SEPARATOR_TOKEN}");
+        assert_eq!(split_batch(&reply, SRT_SEPARATOR_TOKEN, &two), two);
+
+        // A genuinely-empty source line stays empty (nothing was dropped).
+        let src = vec!["Hi.".to_string(), String::new()];
+        let reply = format!("Hola.{SRT_SEPARATOR_TOKEN}");
+        assert_eq!(
+            split_batch(&reply, SRT_SEPARATOR_TOKEN, &src),
+            vec!["Hola.".to_string(), String::new()]
         );
     }
 
