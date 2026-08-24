@@ -871,22 +871,27 @@ impl Transcription {
     #[must_use]
     pub fn to_srt_vtt(&self, word_level: bool, vtt: bool) -> String {
         let rendered = stable_ts::output::to_srt_vtt(&self.result, word_level, vtt);
-        if vtt {
-            return rendered;
-        }
         // stable-ts emits one cue per segment in segment order, without sorting
         // or dropping degenerate cues. A hallucinated whisper segment can carry a
-        // `start >= end` (or out-of-order) timestamp, which makes the whole SRT
+        // `start >= end` (or out-of-order) timestamp, which makes the whole file
         // invalid — Bazarr then rejects it ("subtitles isn't valid for this
-        // file"). Re-parse and recompose so the SRT is always well-formed:
-        // `compose_srt` sorts by start and skips empty / non-positive-duration
-        // cues (`srt_should_skip`).
-        let mut cues = submate_subtitle::cue::parse_srt(&rendered);
+        // file"). Re-parse and recompose so both SRT and VTT are always
+        // well-formed: `compose_srt`/`compose_vtt` sort by start and skip empty /
+        // non-positive-duration cues (`srt_should_skip`).
+        let mut cues = if vtt {
+            submate_subtitle::cue::parse_vtt(&rendered)
+        } else {
+            submate_subtitle::cue::parse_srt(&rendered)
+        };
         // A VAD-removed silence gap can leave a transcription segment whose end
         // was remapped minutes past its real speech, producing a multi-minute
         // cue; cap the on-screen duration so cues stay readable.
         submate_subtitle::cue::clamp_durations(&mut cues, max_cue_ms());
-        submate_subtitle::cue::compose_srt(&cues)
+        if vtt {
+            submate_subtitle::cue::compose_vtt(&cues)
+        } else {
+            submate_subtitle::cue::compose_srt(&cues)
+        }
     }
 
     /// Render the subtitle in the requested [`OutputFormat`](submate_types::OutputFormat).

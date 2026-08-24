@@ -9,10 +9,7 @@
 //! the detect-language endpoint returns, via the deliberately narrow
 //! [`LANGUAGE_NAMES`] table (NOT the broader `submate-lang` `name_en` table).
 
-/// Canonical PCM WAV header length.
-const WAV_HEADER_LEN: usize = 44;
-
-/// Decode raw s16le PCM (or a canonical-WAV-wrapped clip) into mono f32 samples.
+/// Decode raw s16le PCM (or a WAV-wrapped clip) into mono f32 samples.
 ///
 /// Bazarr posts s16le / mono / 16 kHz PCM (`encode=false`); whisper-rs's
 /// `transcribe_pcm` takes `Vec<f32>` in `-1.0..=1.0`, so this is the decode that
@@ -23,17 +20,41 @@ const WAV_HEADER_LEN: usize = 44;
 /// Each little-endian `i16` is divided by `32768.0` — the standard s16→float
 /// scale (`i16::MIN / 32768 == -1.0`, `i16::MAX / 32768 == 32767/32768`). A
 /// trailing odd byte (an incomplete final sample) is dropped (`chunks_exact(2)`).
-/// If `bytes` begins with `b"RIFF"` — a clip wrapped in a canonical WAV/RIFF
-/// container — the 44-byte header is skipped first.
+/// If `bytes` is a RIFF/WAV container the `data` chunk is located by walking the
+/// chunk list (not by assuming a fixed 44-byte header, which is wrong for WAVs
+/// carrying an extended `fmt ` or `LIST`/`fact` chunk before `data`).
 pub fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
-    let pcm = if bytes.starts_with(b"RIFF") && bytes.len() >= WAV_HEADER_LEN {
-        &bytes[WAV_HEADER_LEN..]
-    } else {
-        bytes
+    let pcm = match wav_data_offset(bytes) {
+        Some(off) => &bytes[off..],
+        None => bytes,
     };
     pcm.chunks_exact(2)
         .map(|s| f32::from(i16::from_le_bytes([s[0], s[1]])) / 32768.0)
         .collect()
+}
+
+/// Byte offset of the `data` chunk's payload in a RIFF/WAV buffer, or `None` if
+/// `bytes` is not a WAV (i.e. raw PCM — the common `encode=false` case) or has
+/// no `data` chunk. Chunks are 8-byte-header + payload, word-aligned.
+fn wav_data_offset(bytes: &[u8]) -> Option<usize> {
+    if !bytes.starts_with(b"RIFF") || bytes.len() < 12 || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let mut pos = 12;
+    while pos + 8 <= bytes.len() {
+        let size = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
+        if &bytes[pos..pos + 4] == b"data" {
+            return Some(pos + 8);
+        }
+        // Advance past this chunk's header + payload, padded to even length.
+        pos += 8 + size + (size & 1);
+    }
+    None
 }
 
 /// The detected-language placeholder for a missing/empty detection.
@@ -198,15 +219,26 @@ mod parity {
         assert_f32_close(&pcm_s16le_to_f32(&bytes), &[0.5]);
     }
 
-    /// RIFF-prefixed input header-strips to the same samples as the raw PCM:
-    /// a canonical 44-byte WAV header in front of the payload is skipped.
+    /// A RIFF/WAV clip decodes to the same samples as the raw PCM, even when a
+    /// non-standard chunk (here `LIST`) sits before `data`, so the payload does
+    /// NOT start at the canonical byte 44 — the `data` chunk is found by walking.
     #[test]
     fn pcm_decode_riff_roundtrip() {
         let raw = [0x01, 0x00, 0xff, 0x7f, 0x00, 0x80, 0x34, 0x12];
-        let mut wrapped = vec![0u8; WAV_HEADER_LEN];
-        wrapped[..4].copy_from_slice(b"RIFF");
-        wrapped.extend_from_slice(&raw);
-        assert_f32_close(&pcm_s16le_to_f32(&wrapped), &pcm_s16le_to_f32(&raw));
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&0u32.to_le_bytes()); // riff size (decoder ignores it)
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt "); // 16-byte fmt chunk (contents irrelevant)
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[0u8; 16]);
+        wav.extend_from_slice(b"LIST"); // extra chunk pushing `data` past offset 44
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(b"INFO");
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&raw);
+        assert_f32_close(&pcm_s16le_to_f32(&wav), &pcm_s16le_to_f32(&raw));
     }
 
     /// Empty input → no samples.

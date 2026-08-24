@@ -433,6 +433,7 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
     // translate on a local runtime, mirroring `cmd_transcribe`.
     let runtime = tokio::runtime::Runtime::new()?;
 
+    let mut failures = 0usize;
     for file in &files {
         let output_path = match (&args.output, files.len()) {
             (Some(out), 1) => out.clone(),
@@ -447,68 +448,94 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
             continue;
         }
 
+        let source = translate_paths::detect_source_language(file, &args.source_lang);
+        // Nothing to do when the subtitle is already in the target language;
+        // skip rather than spend tokens "translating" it to itself.
+        if source == args.target_lang {
+            println!(
+                "Skipping {} - already {} (source == target)",
+                file.display(),
+                args.target_lang
+            );
+            continue;
+        }
+
         println!(
             "Translating {} -> {}",
             file.file_name().and_then(|n| n.to_str()).unwrap_or(""),
             args.target_lang
         );
 
-        let content = std::fs::read_to_string(file)?;
-        let source = translate_paths::detect_source_language(file, &args.source_lang);
-        let suffix = file
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{}", e.to_lowercase()))
-            .unwrap_or_default();
+        // Translate one file, isolating its failures so one bad file (unreadable,
+        // unwritable, or a backend error) doesn't abort the whole batch.
+        let outcome: anyhow::Result<()> = (|| {
+            let content = std::fs::read_to_string(file)?;
+            let suffix = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| format!(".{}", e.to_lowercase()))
+                .unwrap_or_default();
 
-        let mut complete =
-            async |prompt: String| backend.complete(&prompt).await.map_err(anyhow::Error::from);
-        let translated = runtime.block_on(async {
-            let result: anyhow::Result<String> = match suffix.as_str() {
-                ".ass" | ".ssa" => {
-                    // The portable ASS path translates extracted dialogue lines;
-                    // with no ASS (de)serializer wired here it operates on the
-                    // whole file as a single block, mirroring the SRT path's
-                    // content round-trip.
-                    let lines = vec![content.clone()];
-                    let out = submate_translate::translate_ass_dialogue(
-                        &lines,
+            let mut complete =
+                async |prompt: String| backend.complete(&prompt).await.map_err(anyhow::Error::from);
+            let translated = runtime.block_on(async {
+                let result: anyhow::Result<String> = match suffix.as_str() {
+                    ".ass" | ".ssa" => {
+                        // The portable ASS path translates extracted dialogue
+                        // lines; with no ASS (de)serializer wired here it operates
+                        // on the whole file as a single block, mirroring the SRT
+                        // path's content round-trip.
+                        let lines = vec![content.clone()];
+                        let out = submate_translate::translate_ass_dialogue(
+                            &lines,
+                            &source,
+                            &args.target_lang,
+                            chunk_size,
+                            &mut complete,
+                        )
+                        .await?;
+                        Ok(out.into_iter().next().unwrap_or(content))
+                    }
+                    ".vtt" => Ok(submate_translate::translate_vtt_content(
+                        &content,
                         &source,
                         &args.target_lang,
                         chunk_size,
                         &mut complete,
                     )
-                    .await?;
-                    Ok(out.into_iter().next().unwrap_or(content))
-                }
-                ".vtt" => Ok(submate_translate::translate_vtt_content(
-                    &content,
-                    &source,
-                    &args.target_lang,
-                    chunk_size,
-                    &mut complete,
-                )
-                .await?),
-                _ => Ok(submate_translate::translate_srt_content(
-                    &content,
-                    &source,
-                    &args.target_lang,
-                    chunk_size,
-                    &mut complete,
-                )
-                .await?),
-            };
-            result
-        })?;
+                    .await?),
+                    _ => Ok(submate_translate::translate_srt_content(
+                        &content,
+                        &source,
+                        &args.target_lang,
+                        chunk_size,
+                        &mut complete,
+                    )
+                    .await?),
+                };
+                result
+            })?;
+            std::fs::write(&output_path, translated)?;
+            Ok(())
+        })();
 
-        std::fs::write(&output_path, translated)?;
-        println!(
-            "Saved {}",
-            output_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-        );
+        match outcome {
+            Ok(()) => println!(
+                "Saved {}",
+                output_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+            ),
+            Err(e) => {
+                eprintln!("Failed {}: {e:#}", file.display());
+                failures += 1;
+            }
+        }
+    }
+
+    if failures > 0 {
+        anyhow::bail!("{failures} of {} file(s) failed to translate", files.len());
     }
 
     Ok(())

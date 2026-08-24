@@ -66,10 +66,19 @@ fn parse_timestamp(ts: &str) -> Option<i64> {
     let h: i64 = fields[0].trim().parse().ok()?;
     let m: i64 = fields[1].trim().parse().ok()?;
     let s: i64 = fields[2].trim().parse().ok()?;
-    // Accept 2- or 3-digit millis; treat a 2-digit field as hundredths.
+    // Scale the fractional field to milliseconds by its digit count: 1 digit is
+    // tenths (×100), 2 is hundredths (×10), 3 is already ms; 4+ digits (finer
+    // than ms) are truncated to ms. Anything but 3 digits is malformed SRT/VTT,
+    // but be lenient rather than silently wrong.
     let ms_digits = ms_part.trim();
-    let ms: i64 = ms_digits.parse().ok()?;
-    let ms = if ms_digits.len() == 2 { ms * 10 } else { ms };
+    let raw: i64 = ms_digits.parse().ok()?;
+    let ms = match ms_digits.len() {
+        0 => return None,
+        1 => raw * 100,
+        2 => raw * 10,
+        3 => raw,
+        n => raw / 10_i64.pow((n - 3).min(18) as u32),
+    };
     Some(((h * 60 + m) * 60 + s) * 1000 + ms)
 }
 
@@ -427,8 +436,13 @@ pub fn compose_vtt(cues: &[Cue]) -> String {
     ordered.sort_by_key(|c| c.start_ms);
 
     let mut out = String::from("WEBVTT\n\n");
-    for (n, cue) in ordered.iter().enumerate() {
-        let lineno = n + 1;
+    let mut lineno = 1u64;
+    for cue in ordered {
+        // Skip empty / non-positive-duration cues, matching `compose_srt` so the
+        // two formats stay consistent and never emit a degenerate cue.
+        if srt_should_skip(cue) {
+            continue;
+        }
         out.push_str(&lineno.to_string());
         out.push('\n');
         out.push_str(&format_vtt_timestamp(cue.start_ms));
@@ -439,6 +453,7 @@ pub fn compose_vtt(cues: &[Cue]) -> String {
         let text = collapse_blank_lines(cue.text.trim()).trim().to_string();
         out.push_str(&text);
         out.push_str("\n\n");
+        lineno += 1;
     }
     out
 }
