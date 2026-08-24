@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Query, State},
-    http::{HeaderName, header},
+    http::{HeaderName, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -222,16 +222,43 @@ struct DetectParams {
     video_file: Option<String>,
 }
 
-/// Read the `audio_file` multipart field (Bazarr's raw s16le PCM), or `None` if
-/// the part is absent or unreadable.
+/// Read the `audio_file` multipart field (Bazarr's raw s16le PCM).
+///
+/// Distinguishes three outcomes so a broken transfer is never mistaken for a
+/// valid empty request: `Ok(Some(bytes))` on success, `Ok(None)` when the field
+/// is cleanly absent, and `Err(())` when the multipart stream or the field body
+/// errored (e.g. a truncated upload or a tripped body limit). A read error must
+/// not be transcribed as if it were complete audio — the caller signals failure
+/// so Bazarr retries instead of saving a wrong/empty subtitle.
 #[cfg(feature = "bazarr")]
-async fn read_audio_file(mut multipart: Multipart) -> Option<Vec<u8>> {
-    while let Ok(Some(field)) = multipart.next_field().await {
-        if field.name() == Some("audio_file") {
-            return field.bytes().await.ok().map(|b| b.to_vec());
+async fn read_audio_file(mut multipart: Multipart) -> Result<Option<Vec<u8>>, ()> {
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                if field.name() == Some("audio_file") {
+                    return field
+                        .bytes()
+                        .await
+                        .map(|b| Some(b.to_vec()))
+                        .map_err(|_| ());
+                }
+            }
+            Ok(None) => return Ok(None),
+            Err(_) => return Err(()),
         }
     }
-    None
+}
+
+/// A 500 for a broken/truncated upload, so Bazarr treats it as a transient
+/// failure and retries rather than saving the empty body as a subtitle.
+#[cfg(feature = "bazarr")]
+fn asr_error_response() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "text/plain")],
+        Body::empty(),
+    )
+        .into_response()
 }
 
 /// Map Bazarr's `output` value to an [`OutputFormat`] (Bazarr always sends
@@ -274,8 +301,12 @@ async fn bazarr_asr(
     let Some(bazarr) = state.bazarr.clone() else {
         return empty_asr_response();
     };
-    let Some(pcm) = read_audio_file(multipart).await else {
-        return empty_asr_response();
+    let pcm = match read_audio_file(multipart).await {
+        Ok(Some(pcm)) => pcm,
+        // No audio_file field: a malformed request with nothing to transcribe.
+        Ok(None) => return empty_asr_response(),
+        // Truncated/broken upload: fail loudly so Bazarr retries.
+        Err(()) => return asr_error_response(),
     };
     tracing::debug!(pcm_bytes = pcm.len(), "received asr request");
     let Some(output_format) = parse_output_format(&params.output) else {
@@ -321,7 +352,9 @@ async fn bazarr_detect_language(
     let Some(bazarr) = state.bazarr.clone() else {
         return Json(unknown());
     };
-    let Some(pcm) = read_audio_file(multipart).await else {
+    // Detection failing (absent or broken upload) degrades to "unknown" rather
+    // than erroring — a wrong language guess isn't saved as a subtitle.
+    let Ok(Some(pcm)) = read_audio_file(multipart).await else {
         return Json(unknown());
     };
     match bazarr.detect(pcm).await {

@@ -363,7 +363,17 @@ impl Backend for OpenAiCompatBackend {
             .next()
             .and_then(|c| c.message.content)
             .unwrap_or_default();
-        Ok(content.trim().to_string())
+        let content = content.trim();
+        // An empty completion is never a valid translation (a reasoning model
+        // that spent its budget thinking, or a truncated response). Treat it as
+        // an error so the caller falls back to the original text instead of
+        // silently blanking the cue.
+        if content.is_empty() {
+            return Err(BackendError::Request(
+                "model returned an empty completion".to_string(),
+            ));
+        }
+        Ok(content.to_string())
     }
 }
 
@@ -614,7 +624,15 @@ impl Backend for AnthropicBackend {
             .into_iter()
             .find_map(|block| block.text)
             .unwrap_or_default();
-        Ok(text.trim().to_string())
+        let text = text.trim();
+        // See the OpenAI backend: an empty completion is a failure, not a valid
+        // (blank) translation.
+        if text.is_empty() {
+            return Err(BackendError::Request(
+                "model returned an empty completion".to_string(),
+            ));
+        }
+        Ok(text.to_string())
     }
 }
 
