@@ -136,8 +136,10 @@ struct TranscribeArgs {
     /// File or directory to transcribe.
     path: PathBuf,
 
-    /// Path to the Whisper model file (e.g. `ggml-base.en.bin`). Overrides the
-    /// configured `whisper.model` and the `SUBMATE__WHISPER__MODEL` env var.
+    /// Path to the model file for the selected `--engine`: a whisper.cpp
+    /// `ggml-*.bin` for whisper, or a transcribe.cpp model for parakeet.
+    /// Overrides the engine's configured model (`whisper.model` /
+    /// `parakeet.model`) and its `SUBMATE__{WHISPER,PARAKEET}__MODEL` env var.
     #[arg(short = 'm', long, value_name = "PATH")]
     model: Option<PathBuf>,
 
@@ -792,7 +794,11 @@ async fn transcribe_files(
             "SUBMATE__WHISPER__MODEL",
             "Whisper",
         ),
-        Engine::Parakeet => ("", "SUBMATE__PARAKEET__MODEL", "Parakeet"),
+        Engine::Parakeet => (
+            config.parakeet.model.as_str(),
+            "SUBMATE__PARAKEET__MODEL",
+            "Parakeet",
+        ),
     };
     let model_path = resolve_model(args.model.as_deref(), config_model, model_env, engine_noun)?;
 

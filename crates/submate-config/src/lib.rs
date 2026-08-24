@@ -106,6 +106,17 @@ impl Default for WhisperSettings {
     }
 }
 
+/// Parakeet (transcribe.cpp) engine settings, used when `transcribe --engine
+/// parakeet` is selected. Whisper ignores these.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ParakeetSettings {
+    /// Path to a Parakeet (transcribe.cpp) model file. Unlike `whisper.model`
+    /// there is no size-name shorthand — point it at an existing model file (or
+    /// pass `--model` / export `SUBMATE__PARAKEET__MODEL`).
+    pub model: String,
+}
+
 /// Stable-ts subtitle generation settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -187,6 +198,7 @@ impl Default for TranslationSettings {
 #[serde(default)]
 pub struct Config {
     pub whisper: WhisperSettings,
+    pub parakeet: ParakeetSettings,
     pub stable_ts: StableTsSettings,
     pub server: ServerSettings,
     pub translation: TranslationSettings,
