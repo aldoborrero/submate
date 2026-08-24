@@ -27,7 +27,11 @@ intel-sycl = ["model", "submate-whisper/intel-sycl"]
 # `parakeet` adds the transcribe.cpp/Parakeet engine, selectable via
 # `transcribe --engine parakeet`. Additive over `model` (whisper stays the
 # default engine); pulls in submate-parakeet and its git C++ dependency.
+# The CPU form leaves whisper on CPU too; the GPU forms accelerate BOTH engines
+# on the same backend so `--engine whisper|parakeet` are both GPU-backed.
 parakeet = ["model", "dep:submate-parakeet", "submate-parakeet/parakeet"]
+parakeet-vulkan = ["vulkan", "parakeet", "submate-parakeet/vulkan"]
+parakeet-cuda = ["cuda", "parakeet", "submate-parakeet/cuda"]
 
 [dependencies]
 submate-lang = { path = "../submate-lang" }

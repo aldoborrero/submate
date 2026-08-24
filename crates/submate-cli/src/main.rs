@@ -705,39 +705,60 @@ fn collect_media_files(path: &Path, recursive: bool) -> anyhow::Result<Vec<PathB
     Ok(out)
 }
 
-/// Resolve the Whisper model file path used to transcribe.
+/// Resolve the transcription model file path for the selected engine.
 ///
 /// Resolution order, highest priority first:
 /// 1. the `--model <PATH>` flag,
-/// 2. the configured `whisper.model`, *only when it names an existing path*
-///    (the config value is otherwise a free-form size string like `medium`),
-/// 3. the `SUBMATE__WHISPER__MODEL` environment variable.
+/// 2. `config_model`, *only when it names an existing path* (the whisper config
+///    value is otherwise a free-form size string like `medium`; Parakeet passes
+///    an empty string, so it relies on the flag or env var),
+/// 3. the `env_var` environment variable (`SUBMATE__WHISPER__MODEL` for whisper,
+///    `SUBMATE__PARAKEET__MODEL` for Parakeet).
 ///
-/// When nothing resolves to a usable path, this returns a non-panicking
-/// `Result::Err` naming the flag, the env var, and a download hint, so the CLI
-/// fails with an actionable message instead of an obscure model-load panic.
-fn resolve_model(flag: Option<&Path>, config_model: &str) -> anyhow::Result<PathBuf> {
+/// `noun` names the engine in the error. When nothing resolves to a usable path
+/// this returns a non-panicking `Result::Err` naming the flag and env var, so
+/// the CLI fails with an actionable message instead of an obscure model-load
+/// error deep in the backend.
+fn resolve_model(
+    flag: Option<&Path>,
+    config_model: &str,
+    env_var: &str,
+    noun: &str,
+) -> anyhow::Result<PathBuf> {
     if let Some(path) = flag {
         return Ok(path.to_path_buf());
     }
 
     let config_path = Path::new(config_model);
-    if config_path.exists() {
+    if !config_model.is_empty() && config_path.exists() {
         return Ok(config_path.to_path_buf());
     }
 
-    if let Some(env_model) = std::env::var_os("SUBMATE__WHISPER__MODEL")
+    if let Some(env_model) = std::env::var_os(env_var)
         && !env_model.is_empty()
     {
         return Ok(PathBuf::from(env_model));
     }
 
     anyhow::bail!(
-        "no Whisper model configured: pass --model <PATH>, set the whisper.model \
-         config to a model file path, or export SUBMATE__WHISPER__MODEL. Download \
-         one with e.g. ggml-base.en.bin from \
-         https://huggingface.co/ggerganov/whisper.cpp"
+        "no {noun} model configured: pass --model <PATH> or export {env_var} \
+         (or point the configured model at an existing model file path)"
     )
+}
+
+/// Fail fast when `--engine` selects an engine this binary was not compiled
+/// with, before any file I/O or audio extraction happens. whisper is always
+/// available under the `model` feature; Parakeet needs `--features parakeet`.
+fn ensure_engine_available(engine: Engine) -> anyhow::Result<()> {
+    match engine {
+        Engine::Whisper => Ok(()),
+        #[cfg(feature = "parakeet")]
+        Engine::Parakeet => Ok(()),
+        #[cfg(not(feature = "parakeet"))]
+        Engine::Parakeet => anyhow::bail!(
+            "the `parakeet` engine is not compiled in; rebuild with `--features parakeet`"
+        ),
+    }
 }
 
 /// Serialize an [`AudioSelector`] back to its canonical wire string so it can
@@ -759,9 +780,21 @@ async fn transcribe_files(
     args: &TranscribeArgs,
     files: &[PathBuf],
 ) -> anyhow::Result<()> {
+    // Fail before any audio work if the selected engine was not compiled in.
+    ensure_engine_available(args.engine)?;
+
     // Resolve the model path up front (an actionable error rather than a
-    // model-load panic when nothing is configured).
-    let model_path = resolve_model(args.model.as_deref(), &config.whisper.model)?;
+    // load failure when nothing is configured). Parakeet needs a transcribe.cpp
+    // model, not the whisper.model, so the source depends on the engine.
+    let (config_model, model_env, engine_noun) = match args.engine {
+        Engine::Whisper => (
+            config.whisper.model.as_str(),
+            "SUBMATE__WHISPER__MODEL",
+            "Whisper",
+        ),
+        Engine::Parakeet => ("", "SUBMATE__PARAKEET__MODEL", "Parakeet"),
+    };
+    let model_path = resolve_model(args.model.as_deref(), config_model, model_env, engine_noun)?;
 
     // The Dispatcher caps how many files transcribe at once (a batch/recursive
     // run shares the runner count); a single file uses one runner.
@@ -895,7 +928,6 @@ async fn transcribe_files(
     Ok(())
 }
 
-/// Transcribe one media file in-process: extract the selected track's PCM,
 /// Construct the Parakeet (transcribe.cpp) engine as a boxed [`Transcriber`].
 ///
 /// Two feature-gated definitions: with `parakeet` it builds the real backend;
@@ -911,6 +943,7 @@ fn parakeet_transcriber() -> anyhow::Result<std::sync::Arc<dyn submate_whisper::
     anyhow::bail!("the `parakeet` engine is not compiled in; rebuild with `--features parakeet`")
 }
 
+/// Transcribe one media file in-process: extract the selected track's PCM,
 /// run whisper under the dispatcher's runner cap, assemble the subtitle, and
 /// LLM-translate it when `translate_to` differs from the detected language.
 #[cfg(feature = "model")]
@@ -1560,17 +1593,22 @@ mod cli {
 
         // The flag is the highest-priority source and is returned verbatim,
         // without touching the filesystem or the environment.
-        let resolved =
-            resolve_model(args.model.as_deref(), "medium").expect("--model should resolve");
+        let resolved = resolve_model(
+            args.model.as_deref(),
+            "medium",
+            "SUBMATE__WHISPER__MODEL",
+            "Whisper",
+        )
+        .expect("--model should resolve");
         assert_eq!(resolved, PathBuf::from("/models/ggml-base.en.bin"));
 
         // With no flag, a non-path config value, and no env var, the resolver
-        // returns an actionable error (not a panic) naming both knobs and the
-        // download hint. Clear `SUBMATE__*` (incl. `SUBMATE__WHISPER__MODEL`)
-        // under the shared env lock so this never races other env-driven tests
-        // (e.g. `config_show`'s resolution); the guard restores on drop.
+        // returns an actionable error (not a panic) naming both knobs. Clear
+        // `SUBMATE__*` (incl. `SUBMATE__WHISPER__MODEL`) under the shared env
+        // lock so this never races other env-driven tests (e.g. `config_show`'s
+        // resolution); the guard restores on drop.
         let _env = ::fixtures::EnvGuard::set(&[]);
-        let err = resolve_model(None, "medium")
+        let err = resolve_model(None, "medium", "SUBMATE__WHISPER__MODEL", "Whisper")
             .expect_err("missing model must be an Err, not a panic")
             .to_string();
 
@@ -1579,10 +1617,38 @@ mod cli {
             err.contains("SUBMATE__WHISPER__MODEL"),
             "error must name the env var: {err}"
         );
+    }
+
+    /// `--engine` defaults to whisper and parses `parakeet`.
+    #[test]
+    fn engine_flag_parses() {
+        let default = Cli::try_parse_from(["submate", "transcribe", "movie.mkv"])
+            .expect("transcribe should parse");
+        let Command::Transcribe(args) = default.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        assert_eq!(args.engine, Engine::Whisper);
+
+        let picked =
+            Cli::try_parse_from(["submate", "transcribe", "--engine", "parakeet", "m.mkv"])
+                .expect("--engine parakeet should parse");
+        let Command::Transcribe(args) = picked.command else {
+            panic!("expected the transcribe subcommand");
+        };
+        assert_eq!(args.engine, Engine::Parakeet);
+    }
+
+    /// `ensure_engine_available` gates Parakeet on the `parakeet` feature and
+    /// always admits whisper.
+    #[test]
+    fn ensure_engine_available_gates_parakeet() {
+        assert!(ensure_engine_available(Engine::Whisper).is_ok());
+        #[cfg(feature = "parakeet")]
+        assert!(ensure_engine_available(Engine::Parakeet).is_ok());
+        #[cfg(not(feature = "parakeet"))]
         assert!(
-            err.contains("ggml-base.en.bin")
-                && err.contains("huggingface.co/ggerganov/whisper.cpp"),
-            "error must include the download hint: {err}"
+            ensure_engine_available(Engine::Parakeet).is_err(),
+            "parakeet must be rejected in a build without the feature"
         );
     }
 

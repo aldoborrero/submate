@@ -10,21 +10,35 @@
   shaderc,
   vulkan-headers,
   vulkan-loader,
+  spirv-headers,
   # GPU backend: null (CPU), "cuda", or "vulkan". The variant packages set it;
   # it selects the matching cargo feature + adds that backend's build inputs.
   gpuBackend ? null,
+  # Also build the transcribe.cpp/Parakeet engine (`--engine parakeet`). When set
+  # with a GPU backend, both whisper and Parakeet get that backend.
+  parakeet ? false,
 }:
 
 let
   isCuda = gpuBackend == "cuda";
   isVulkan = gpuBackend == "vulkan";
-  feature = if gpuBackend == null then "model" else gpuBackend;
+  # Cargo feature: the GPU backend (or bare `model`), optionally the Parakeet
+  # variant that also forwards the backend to submate-parakeet.
+  baseFeature = if gpuBackend == null then "model" else gpuBackend;
+  feature =
+    if parakeet then
+      (if gpuBackend == null then "parakeet" else "parakeet-${gpuBackend}")
+    else
+      baseFeature;
 in
 # Builds the `submate` CLI; the `model` feature compiles whisper.cpp via
 # whisper-rs (needs cmake + a C/C++ toolchain + libclang for bindgen). A GPU
 # backend adds its toolkit + the matching cargo feature.
 rustPlatform.buildRustPackage {
-  pname = "submate" + lib.optionalString (gpuBackend != null) "-${gpuBackend}";
+  pname =
+    "submate"
+    + lib.optionalString (gpuBackend != null) "-${gpuBackend}"
+    + lib.optionalString parakeet "-parakeet";
   version = "0.1.0";
 
   # The Rust workspace lives at the repo root; select just its files so a build
@@ -39,7 +53,8 @@ rustPlatform.buildRustPackage {
   };
   cargoLock.lockFile = ../../../Cargo.lock;
   # transcribe-cpp (the parakeet backend dep) is a git dependency, so importCargoLock
-  # needs its vendored hash even though the `parakeet` feature is off in this build.
+  # needs its vendored hash — required whether or not the `parakeet` feature is on
+  # in this build (the lock entry exists regardless).
   cargoLock.outputHashes = {
     "transcribe-cpp-0.2.1" = "sha256-IHlLk8MzEHnzfk5dvslHXBzpyAeNQyQOuztQLLzousY=";
   };
@@ -68,7 +83,11 @@ rustPlatform.buildRustPackage {
     ++ lib.optionals isVulkan [
       vulkan-headers
       vulkan-loader
-    ];
+    ]
+    # transcribe.cpp's ggml-vulkan additionally does `find_package(SPIRV-Headers
+    # CONFIG REQUIRED)`, which whisper.cpp's does not — needed only for a Vulkan
+    # Parakeet build, but harmless to include for every Vulkan build.
+    ++ lib.optionals isVulkan [ spirv-headers ];
 
   # whisper.cpp's CUDA build links the driver lib `-lcuda`, which exists only at
   # runtime. The toolkit ships a build-time stub at `cuda_cudart/lib/stubs`;
