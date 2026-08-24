@@ -12,8 +12,8 @@
 //!   not match the input count.
 //!
 //! Three of the four providers speak the OpenAI chat-completions wire format, so
-//! they share a single [`OpenAiCompatBackend`] built on the `async-openai`
-//! crate and distinguished only by base URL: OpenAI (the default base), Ollama
+//! they share a single [`OpenAiCompatBackend`] (raw `reqwest` + a lenient
+//! response struct) distinguished only by base URL: OpenAI (the default base), Ollama
 //! (`{ollama_url}/v1`) and Gemini (the Generative Language OpenAI-compat
 //! endpoint). Anthropic has no trustworthy Rust SDK, so [`AnthropicBackend`] stays
 //! a hand-rolled async-[`reqwest`] backend against the messages API.
@@ -458,12 +458,11 @@ struct ClaudeBlock {
 /// `{base_url}/v1/messages` with the `x-api-key` and `anthropic-version`
 /// headers, then returns the stripped text of the first content block that
 /// carries text.
-/// Retry policy for the hand-rolled Anthropic backend.
+/// Retry policy shared by the backends.
 ///
-/// The OpenAI-compatible backends retry through `async-openai`'s own
-/// exponential backoff, but [`AnthropicBackend`] talks to the messages API with
-/// raw `reqwest`, so it carries its own policy. Retries cover transient failures
-/// — connection errors, HTTP 429, and 5xx — with exponential backoff plus jitter
+/// Both the OpenAI-compatible and the Anthropic backends talk to their APIs with
+/// raw `reqwest` and carry this same hand-rolled policy. Retries cover transient
+/// failures — connection errors, HTTP 429, and 5xx — with exponential backoff plus jitter
 /// so concurrent workers don't resynchronize onto the same retry instant.
 #[derive(Clone, Copy)]
 struct RetryPolicy {
@@ -1347,7 +1346,7 @@ mod tests {
     /// `wiremock`, and the reply is extracted from the provider's response shape.
     ///
     /// The three OpenAI-compatible providers (OpenAI/Ollama/Gemini) share the
-    /// [`OpenAiCompatBackend`] driven by `async-openai`, so one chat-completions
+    /// [`OpenAiCompatBackend`] (raw `reqwest`), so one chat-completions
     /// case covers the request shape they all emit; a second case pins Gemini's
     /// `/openai`-suffixed base to `…/openai/chat/completions`. Claude keeps its
     /// native messages-API shape.

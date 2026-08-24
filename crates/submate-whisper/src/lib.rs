@@ -493,8 +493,10 @@ mod inference {
             return Ok(Arc::clone(ctx));
         }
         tracing::debug!(model = model_path, "loading whisper model (cache miss)");
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu(whisper_use_gpu());
         let ctx = Arc::new(
-            WhisperContext::new_with_params(model_path, WhisperContextParameters::default())
+            WhisperContext::new_with_params(model_path, params)
                 .map_err(|e| TranscribeError::Load(e.to_string()))?,
         );
         cache.insert(model_path.to_string(), Arc::clone(&ctx));
@@ -536,6 +538,18 @@ mod inference {
             // A non-finite or non-positive cap is meaningless; use the 30 s default.
             .filter(|v| v.is_finite() && *v > 0.0)
             .unwrap_or(30.0)
+    }
+
+    /// Whether to run inference on the GPU, from `SUBMATE__WHISPER__DEVICE`.
+    ///
+    /// `cpu` forces CPU; anything else (`cuda`/`vulkan`/`auto`) or unset keeps
+    /// whisper.cpp's default (GPU when the build has a GPU backend). Only has an
+    /// effect in a GPU-enabled build; a CPU-only build ignores `use_gpu`.
+    fn whisper_use_gpu() -> bool {
+        !matches!(
+            std::env::var("SUBMATE__WHISPER__DEVICE").ok().as_deref(),
+            Some("cpu")
+        )
     }
 
     /// Optional VAD speech-probability threshold from

@@ -1,15 +1,15 @@
 //! `submate` binary — clap CLI.
 //!
-//! Wires the server + node binaries together behind the user-facing
-//! subcommands `transcribe / translate / node / server / probe / config`:
+//! Wires the user-facing subcommands `transcribe / translate / server / probe /
+//! config`:
 //!
-//! * `submate server` runs the coordinator (axum) with an *embedded* processing
-//!   node by default, so a single-box deployment needs no separate worker.
-//! * `submate node --server <url>` runs a remote processing node that pulls work
-//!   from a coordinator over HTTP — the multi-box analogue.
-//! * `submate transcribe --sync` spins up a one-shot local coordinator + node in
-//!   the same process and drains exactly the enqueued jobs before returning —
-//!   the "process immediately, no worker required" path.
+//! * `submate transcribe <path>` generates subtitles from media in-process —
+//!   whisper.cpp, or transcribe.cpp/Parakeet with `--engine parakeet` —
+//!   optionally LLM-translating with `--translate-to`.
+//! * `submate translate <path>` LLM-translates existing subtitle files.
+//! * `submate server` runs the Bazarr ASR provider HTTP server.
+//! * `submate probe <file>` lists a file's audio tracks; `submate config show`
+//!   prints the resolved configuration.
 //!
 //! Pure sub-helpers that decide *which* files to process and *how* the
 //! `config show` table is laid out live in their own modules ([`config_show`],
@@ -329,8 +329,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 /// conventional escape hatch; otherwise the level string seeds the filter. The
 /// `log_file` argument is accepted for surface parity with the `--log-file`
 /// flag; file sinks are not yet wired, so logs go to stderr regardless.
-fn init_logging(log_level: &str, _log_file: Option<&Path>) {
+fn init_logging(log_level: &str, log_file: Option<&Path>) {
     use tracing_subscriber::filter::EnvFilter;
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
     let level = log_level.to_lowercase();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -346,11 +347,36 @@ fn init_logging(log_level: &str, _log_file: Option<&Path>) {
         }
     });
 
+    // `--log-file` appends to the given file (no ANSI); a failed open falls back
+    // to stderr rather than aborting. The file handle is duplicated per event so
+    // the writer needs no shared lock.
+    let (writer, to_file) = match log_file {
+        Some(path) => match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => (
+                BoxMakeWriter::new(move || file.try_clone().expect("duplicate log-file handle")),
+                true,
+            ),
+            Err(e) => {
+                eprintln!(
+                    "could not open log file {}: {e}; logging to stderr",
+                    path.display()
+                );
+                (BoxMakeWriter::new(std::io::stderr), false)
+            }
+        },
+        None => (BoxMakeWriter::new(std::io::stderr), false),
+    };
+
     // `try_init` so a double-initialization (e.g. in tests) is a no-op rather
     // than a panic.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+        .with_writer(writer)
+        .with_ansi(!to_file)
         .try_init();
 }
 
