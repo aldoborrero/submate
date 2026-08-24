@@ -542,9 +542,9 @@ mod inference {
 
     /// Whether to run inference on the GPU, from `SUBMATE__WHISPER__DEVICE`.
     ///
-    /// `cpu` forces CPU; anything else (`cuda`/`vulkan`/`auto`) or unset keeps
-    /// whisper.cpp's default (GPU when the build has a GPU backend). Only has an
-    /// effect in a GPU-enabled build; a CPU-only build ignores `use_gpu`.
+    /// `cpu` forces CPU (`use_gpu = false`); anything else (`cuda`/`vulkan`/
+    /// `auto`) or unset requests the GPU (`use_gpu = true`). Only effective in a
+    /// GPU-enabled build; a CPU-only build ignores `use_gpu`.
     fn whisper_use_gpu() -> bool {
         !matches!(
             std::env::var("SUBMATE__WHISPER__DEVICE").ok().as_deref(),

@@ -11,7 +11,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Query, State},
-    http::{HeaderName, StatusCode, header},
+    http::{HeaderName, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -272,18 +272,6 @@ async fn read_audio_file(mut multipart: Multipart) -> Result<Option<Vec<u8>>, ()
     }
 }
 
-/// A 500 for a broken/truncated upload, so Bazarr treats it as a transient
-/// failure and retries rather than saving the empty body as a subtitle.
-#[cfg(feature = "bazarr")]
-fn asr_error_response() -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        [(header::CONTENT_TYPE, "text/plain")],
-        Body::empty(),
-    )
-        .into_response()
-}
-
 /// Map Bazarr's `output` value to an [`OutputFormat`] (Bazarr always sends
 /// `srt`; the rest are accepted for non-Bazarr clients).
 #[cfg(feature = "bazarr")]
@@ -328,8 +316,14 @@ async fn bazarr_asr(
         Ok(Some(pcm)) => pcm,
         // No audio_file field: a malformed request with nothing to transcribe.
         Ok(None) => return empty_asr_response(),
-        // Truncated/broken upload: fail loudly so Bazarr retries.
-        Err(()) => return asr_error_response(),
+        // Truncated/broken upload: return the empty body (Bazarr discards it and
+        // retries on its next scan) but log it, rather than silently transcribing
+        // a partial clip. The route contract is "empty body, never an error
+        // envelope", so no 5xx even here.
+        Err(()) => {
+            tracing::warn!("bazarr asr: audio_file upload failed mid-read; returning empty");
+            return empty_asr_response();
+        }
     };
     tracing::debug!(pcm_bytes = pcm.len(), "received asr request");
     let Some(output_format) = parse_output_format(&params.output) else {

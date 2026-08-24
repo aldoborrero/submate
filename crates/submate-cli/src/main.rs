@@ -326,9 +326,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 /// Configure `tracing-subscriber` from a `--log-level` string.
 ///
 /// `RUST_LOG` (an `EnvFilter` directive) wins when set, matching the
-/// conventional escape hatch; otherwise the level string seeds the filter. The
-/// `log_file` argument is accepted for surface parity with the `--log-file`
-/// flag; file sinks are not yet wired, so logs go to stderr regardless.
+/// conventional escape hatch; otherwise the level string seeds the filter. When
+/// `log_file` is set the events are appended to that file (no ANSI); a failed
+/// open falls back to stderr.
 fn init_logging(log_level: &str, log_file: Option<&Path>) {
     use tracing_subscriber::filter::EnvFilter;
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
@@ -476,8 +476,13 @@ fn cmd_translate(config_file: Option<&Path>, args: TranslateArgs) -> anyhow::Res
 
         let source = translate_paths::detect_source_language(file, &args.source_lang);
         // Nothing to do when the subtitle is already in the target language;
-        // skip rather than spend tokens "translating" it to itself.
-        if source == args.target_lang {
+        // skip rather than spend tokens "translating" it to itself. Compare
+        // canonicalized languages so `EN`/`en`/`eng` all match `en` (both sides
+        // are raw user/filename strings).
+        let src_lang = submate_lang::LanguageCode::from_string(Some(&source));
+        if src_lang != submate_lang::LanguageCode::None
+            && src_lang == submate_lang::LanguageCode::from_string(Some(&args.target_lang))
+        {
             println!(
                 "Skipping {} - already {} (source == target)",
                 file.display(),

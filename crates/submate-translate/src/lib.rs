@@ -132,7 +132,7 @@ pub struct BackendSettings<'a> {
 /// only in base URL: Ollama serves the OpenAI-compat API under `{ollama_url}/v1`
 /// (no key needed, so a placeholder is sent); OpenAI uses the crate's default
 /// base; Gemini uses the Generative Language OpenAI-compat base ending in
-/// `/openai`, so `async-openai` appends `/chat/completions`. `Claude` keeps the
+/// `/openai`, so the backend appends `/chat/completions`. `Claude` keeps the
 /// native [`AnthropicBackend`].
 pub fn make_backend(s: &BackendSettings<'_>) -> Box<dyn Backend + Send + Sync> {
     use submate_types::TranslationBackend;
@@ -218,9 +218,8 @@ pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
 /// Base URL for Gemini's OpenAI-compatible endpoint.
 ///
 /// The Generative Language API exposes a chat-completions surface under
-/// `.../v1beta/openai`; because it ends in `/openai` (no trailing slash),
-/// `async-openai`'s `url(path)` appends `/chat/completions` to form the final
-/// request URL.
+/// `.../v1beta/openai`; because it ends in `/openai` (no trailing slash), the
+/// backend appends `/chat/completions` to form the final request URL.
 pub const GEMINI_OPENAI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 /// Placeholder API key sent to Ollama, whose OpenAI-compat surface ignores the
