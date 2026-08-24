@@ -1121,7 +1121,10 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
         let dispatcher = submate_whisper::Dispatcher::new(
             config.server.concurrent_transcriptions.max(1) as usize,
         );
-        let mut state = AppState::default();
+        // Cap concurrent uploads to the runner count so at most that many
+        // audio uploads buffer in memory while the rest wait for a runner.
+        let mut state = AppState::default()
+            .with_bazarr_concurrency(config.server.concurrent_transcriptions.max(1) as usize);
         if let Some(bazarr) = build_bazarr_transcriber(dispatcher, &config)? {
             state = state.with_bazarr(bazarr);
         }

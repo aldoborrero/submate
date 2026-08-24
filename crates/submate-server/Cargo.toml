@@ -15,7 +15,7 @@ bazarr = []
 axum = { workspace = true, features = ["multipart"] }
 async-trait = { workspace = true }
 tokio = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

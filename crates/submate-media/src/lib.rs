@@ -428,7 +428,9 @@ pub async fn extract_audio_track_to_memory(
         .args(["-f", PCM_FORMAT])
         .args(["-ac", PCM_CHANNELS])
         .args(["-ar", PCM_SAMPLE_RATE])
-        .args(["-loglevel", "quiet"])
+        // `error` (not `quiet`) so a failed extraction leaves a diagnostic on
+        // stderr for `ExtractError::Exit`; audio still goes to `pipe:` (stdout).
+        .args(["-loglevel", "error"])
         .arg("pipe:")
         .output()
         .await

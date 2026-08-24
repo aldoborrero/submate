@@ -90,6 +90,9 @@ pub trait BazarrTranscriber: Send + Sync {
 #[derive(Clone, Default)]
 pub struct AppState {
     bazarr: Option<Arc<dyn BazarrTranscriber>>,
+    /// Cap on Bazarr requests processed at once (`None` = unlimited). Bounds how
+    /// many multi-hundred-MB uploads buffer in memory simultaneously.
+    bazarr_concurrency: Option<usize>,
 }
 
 impl AppState {
@@ -104,6 +107,14 @@ impl AppState {
         self.bazarr = Some(bazarr);
         self
     }
+
+    /// Bound how many Bazarr requests are processed concurrently, capping the
+    /// number of in-flight audio uploads buffered in memory. Typically the
+    /// transcription runner count.
+    pub fn with_bazarr_concurrency(mut self, max: usize) -> Self {
+        self.bazarr_concurrency = Some(max);
+        self
+    }
 }
 
 /// Build the server [`Router`]: always the ops routes, plus the bazarr router
@@ -111,8 +122,20 @@ impl AppState {
 pub fn app(state: AppState) -> Router {
     let router = ops_router();
 
+    // Bound concurrent Bazarr requests (only these buffer large uploads) with a
+    // *global* limit shared across connections, so peak upload memory is capped
+    // at `bazarr_concurrency × body-limit` instead of unbounded. Excess requests
+    // wait — fine for Bazarr's synchronous long-poll. Ops routes stay unlimited.
     #[cfg(feature = "bazarr")]
-    let router = router.merge(bazarr_router());
+    let router = {
+        let bazarr = match state.bazarr_concurrency {
+            Some(n) if n > 0 => {
+                bazarr_router().layer(tower::limit::GlobalConcurrencyLimitLayer::new(n))
+            }
+            _ => bazarr_router(),
+        };
+        router.merge(bazarr)
+    };
 
     // Bazarr uploads a full episode's extracted audio (16 kHz mono PCM, tens to
     // hundreds of MB) as a multipart `audio_file`, far past axum's 2 MB default

@@ -532,7 +532,9 @@ mod inference {
     fn whisper_vad_max_speech_s() -> f32 {
         std::env::var("SUBMATE__WHISPER__VAD_MAX_SPEECH_S")
             .ok()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<f32>().ok())
+            // A non-finite or non-positive cap is meaningless; use the 30 s default.
+            .filter(|v| v.is_finite() && *v > 0.0)
             .unwrap_or(30.0)
     }
 
@@ -805,6 +807,10 @@ fn max_cue_ms() -> i64 {
     std::env::var("SUBMATE__WHISPER__MAX_CUE_S")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
+        // Reject a non-finite or negative value (a typo like `-1` or `nan` would
+        // otherwise saturate to a bogus cap and blank every cue's duration);
+        // fall back to the 7 s default.
+        .filter(|s| s.is_finite() && *s >= 0.0)
         .map_or(7_000, |s| (s * 1000.0) as i64)
 }
 
