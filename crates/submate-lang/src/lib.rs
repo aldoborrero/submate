@@ -173,7 +173,10 @@ const TABLE: &[LangEntry] = &[
     LangEntry { variant: LanguageCode::GALICIAN, iso_639_1: Some("gl"), iso_639_2_t: Some("glg"), iso_639_2_b: Some("glg"), name_en: Some("Galician"), name_native: Some("Galego") },
     LangEntry { variant: LanguageCode::GUJARATI, iso_639_1: Some("gu"), iso_639_2_t: Some("guj"), iso_639_2_b: Some("guj"), name_en: Some("Gujarati"), name_native: Some("ગુજરાતી") },
     LangEntry { variant: LanguageCode::HAUSA, iso_639_1: Some("ha"), iso_639_2_t: Some("hau"), iso_639_2_b: Some("hau"), name_en: Some("Hausa"), name_native: Some("Hausa") },
-    LangEntry { variant: LanguageCode::HAWAIIAN, iso_639_1: Some("haw"), iso_639_2_t: Some("haw"), iso_639_2_b: Some("haw"), name_en: Some("Hawaiian"), name_native: Some("ʻŌlelo Hawaiʻi") },
+    // `haw`/`yue` are ISO 639-3 codes, not 639-1 (639-1 has no Hawaiian/Cantonese
+    // code). The Python reference put them in the 639-1 slot; we intentionally
+    // diverge and leave 639-1 `None`. The parity golden is hand-adjusted to match.
+    LangEntry { variant: LanguageCode::HAWAIIAN, iso_639_1: None, iso_639_2_t: Some("haw"), iso_639_2_b: Some("haw"), name_en: Some("Hawaiian"), name_native: Some("ʻŌlelo Hawaiʻi") },
     LangEntry { variant: LanguageCode::HEBREW, iso_639_1: Some("he"), iso_639_2_t: Some("heb"), iso_639_2_b: Some("heb"), name_en: Some("Hebrew"), name_native: Some("עברית") },
     LangEntry { variant: LanguageCode::HINDI, iso_639_1: Some("hi"), iso_639_2_t: Some("hin"), iso_639_2_b: Some("hin"), name_en: Some("Hindi"), name_native: Some("हिन्दी") },
     LangEntry { variant: LanguageCode::CROATIAN, iso_639_1: Some("hr"), iso_639_2_t: Some("hrv"), iso_639_2_b: Some("hrv"), name_en: Some("Croatian"), name_native: Some("Hrvatski") },
@@ -243,7 +246,7 @@ const TABLE: &[LangEntry] = &[
     LangEntry { variant: LanguageCode::YIDDISH, iso_639_1: Some("yi"), iso_639_2_t: Some("yid"), iso_639_2_b: Some("yid"), name_en: Some("Yiddish"), name_native: Some("ייִדיש") },
     LangEntry { variant: LanguageCode::YORUBA, iso_639_1: Some("yo"), iso_639_2_t: Some("yor"), iso_639_2_b: Some("yor"), name_en: Some("Yoruba"), name_native: Some("Yorùbá") },
     LangEntry { variant: LanguageCode::CHINESE, iso_639_1: Some("zh"), iso_639_2_t: Some("zho"), iso_639_2_b: Some("chi"), name_en: Some("Chinese"), name_native: Some("中文") },
-    LangEntry { variant: LanguageCode::CANTONESE, iso_639_1: Some("yue"), iso_639_2_t: Some("yue"), iso_639_2_b: Some("yue"), name_en: Some("Cantonese"), name_native: Some("粵語") },
+    LangEntry { variant: LanguageCode::CANTONESE, iso_639_1: None, iso_639_2_t: Some("yue"), iso_639_2_b: Some("yue"), name_en: Some("Cantonese"), name_native: Some("粵語") },
 ];
 
 impl LanguageCode {
@@ -359,8 +362,11 @@ impl LanguageCode {
     }
 
     /// True unless this is [`LanguageCode::None`].
+    ///
+    /// Checks the variant directly, not the ISO 639-1 code: Hawaiian and
+    /// Cantonese are real languages with no 639-1 code.
     pub fn is_some(self) -> bool {
-        self.to_iso_639_1().is_some()
+        !matches!(self, Self::None)
     }
 
     /// The English name, or `"Unknown"`.
@@ -396,6 +402,26 @@ mod tests {
     #[test]
     fn table_has_101_entries() {
         assert_eq!(TABLE.len(), 101);
+    }
+
+    #[test]
+    fn languages_without_iso_639_1_are_still_valid() {
+        // Hawaiian and Cantonese have no two-letter code, but are real
+        // languages: no bogus 639-1, `is_some()` true, 639-2 still present, and
+        // a 639-1 lookup of their (3-letter) code must not resolve to them.
+        for lang in [LanguageCode::HAWAIIAN, LanguageCode::CANTONESE] {
+            assert_eq!(lang.to_iso_639_1(), None);
+            assert!(lang.is_some());
+            assert!(lang.to_iso_639_2_t().is_some());
+        }
+        assert_eq!(
+            LanguageCode::from_iso_639_1(Some("haw")),
+            LanguageCode::None
+        );
+        assert_eq!(
+            LanguageCode::from_iso_639_1(Some("yue")),
+            LanguageCode::None
+        );
     }
 
     #[test]

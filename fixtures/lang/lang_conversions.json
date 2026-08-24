@@ -300,9 +300,9 @@
     "name_native": "Hausa"
   },
   {
-    "from_iso_639_1": "HAWAIIAN",
+    "from_iso_639_1": null,
     "from_name_en": "HAWAIIAN",
-    "iso_639_1": "haw",
+    "iso_639_1": null,
     "iso_639_2_b": "haw",
     "iso_639_2_t": "haw",
     "name": "HAWAIIAN",
@@ -1000,9 +1000,9 @@
     "name_native": "中文"
   },
   {
-    "from_iso_639_1": "CANTONESE",
+    "from_iso_639_1": null,
     "from_name_en": "CANTONESE",
-    "iso_639_1": "yue",
+    "iso_639_1": null,
     "iso_639_2_b": "yue",
     "iso_639_2_t": "yue",
     "name": "CANTONESE",

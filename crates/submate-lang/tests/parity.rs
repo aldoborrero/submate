@@ -1,4 +1,10 @@
 //! Parity tests against golden fixtures captured.
+//!
+//! Two rows are intentionally hand-adjusted away from the Python capture:
+//! Hawaiian and Cantonese have their `iso_639_1` (and its round-trip) set to
+//! `null`, because `haw`/`yue` are ISO 639-3, not 639-1 codes. If the golden is
+//! ever re-captured from Python, re-apply that divergence (see the note in
+//! `submate-lang`'s table).
 
 use fixtures::golden;
 use serde_json::Value;
