@@ -24,7 +24,7 @@ jobs:
 
     strategy:
       matrix:
-        variant: [cpu, gpu, vulkan]
+        variant: [cpu, gpu, vulkan, vulkan-parakeet]
 
     steps:
       - name: Checkout
