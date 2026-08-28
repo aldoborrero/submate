@@ -394,6 +394,19 @@ fn parse_engine(s: &str) -> Result<submate_types::Engine, String> {
         .map_err(|_| format!("unknown engine '{s}' (expected: whisper, parakeet)"))
 }
 
+/// Resolve the engine for a single request: an explicit per-request choice wins,
+/// otherwise fall back to the server's configured `default`.
+///
+/// Only the model-gated Bazarr transcriber (and the unit tests) call this, so it
+/// is absent from a default build to avoid a dead-code warning there.
+#[cfg(any(feature = "model", test))]
+fn resolve_engine(
+    opt: Option<submate_types::Engine>,
+    default: submate_types::Engine,
+) -> submate_types::Engine {
+    opt.unwrap_or(default)
+}
+
 /// Apply a `--vad-model` flag by setting the env var the whisper crate reads
 /// (`whisper_vad_model()`), so the flag takes precedence over any inherited
 /// `SUBMATE__WHISPER__VAD_MODEL`. Called at the top of a command, before any
@@ -1186,14 +1199,22 @@ fn cmd_server(config_file: Option<&Path>, args: ServerArgs) -> anyhow::Result<()
     })
 }
 
-/// Production [`BazarrTranscriber`]: the real whisper + translate pipeline over
-/// the shared [`Dispatcher`], so concurrent Bazarr requests share a runner cap.
+/// Production [`BazarrTranscriber`]: the real transcribe + translate pipeline
+/// over the shared [`Dispatcher`], so concurrent Bazarr requests share a runner
+/// cap. Routes each request to whisper.cpp or Parakeet per its resolved engine.
 /// Model-gated; without the feature [`build_bazarr_transcriber`] returns `None`
 /// and the routes degrade gracefully.
 #[cfg(feature = "model")]
-struct WhisperBazarrTranscriber {
+struct EngineBazarrTranscriber {
     dispatcher: submate_whisper::Dispatcher,
-    model_path: String,
+    /// whisper.cpp model, used when a request resolves to [`Engine::Whisper`].
+    whisper_model: String,
+    /// transcribe.cpp/Parakeet model, used when a request resolves to
+    /// [`Engine::Parakeet`].
+    parakeet_model: String,
+    /// Engine used when a request does not pin one via `?engine=`
+    /// (`config.server.engine`, default whisper).
+    default_engine: submate_types::Engine,
     backend: std::sync::Arc<Box<dyn submate_translate::Backend + Send + Sync>>,
     chunk_size: usize,
     /// Decode knobs from `SUBMATE__WHISPER__*`, applied to every Bazarr request.
@@ -1205,7 +1226,7 @@ struct WhisperBazarrTranscriber {
 
 #[cfg(feature = "model")]
 #[async_trait::async_trait]
-impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
+impl submate_server::BazarrTranscriber for EngineBazarrTranscriber {
     async fn transcribe(
         &self,
         opts: submate_server::BazarrTranscribeOpts,
@@ -1223,9 +1244,30 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
             task,
             ..self.decode.clone()
         };
+        // Route to the request's engine (falling back to the server default),
+        // then run through the engine-agnostic dispatcher method.
+        let engine = resolve_engine(opts.engine, self.default_engine);
+        let (model, transcriber): (String, std::sync::Arc<dyn submate_whisper::Transcriber>) =
+            match engine {
+                Engine::Whisper => {
+                    // `transcribe_pcm_with` does NOT install the whisper.cpp log
+                    // hook (`transcribe_pcm` did), so install it explicitly to
+                    // keep the whisper path identical to the previous behavior.
+                    submate_whisper::install_whisper_logging();
+                    (
+                        self.whisper_model.clone(),
+                        std::sync::Arc::new(submate_whisper::WhisperBackend)
+                            as std::sync::Arc<dyn submate_whisper::Transcriber>,
+                    )
+                }
+                Engine::Parakeet => (
+                    self.parakeet_model.clone(),
+                    parakeet_transcriber().map_err(|e| e.to_string())?,
+                ),
+            };
         let raw = self
             .dispatcher
-            .transcribe_pcm(self.model_path.clone(), samples.clone(), options)
+            .transcribe_pcm_with(transcriber, model, samples.clone(), options)
             .await
             .map_err(|e| e.to_string())?;
         let assembled = submate_whisper::assemble_result(&raw, &self.assemble, &samples)
@@ -1254,7 +1296,7 @@ impl submate_server::BazarrTranscriber for WhisperBazarrTranscriber {
         let options = self.decode.clone();
         let raw = self
             .dispatcher
-            .transcribe_pcm(self.model_path.clone(), samples.into(), options)
+            .transcribe_pcm(self.whisper_model.clone(), samples.into(), options)
             .await
             .map_err(|e| e.to_string())?;
         let detected = submate_bazarr::detect_language(Some(&raw.language));
@@ -1272,9 +1314,11 @@ fn build_bazarr_transcriber(
     dispatcher: submate_whisper::Dispatcher,
     config: &Config,
 ) -> anyhow::Result<Option<std::sync::Arc<dyn submate_server::BazarrTranscriber>>> {
-    Ok(Some(std::sync::Arc::new(WhisperBazarrTranscriber {
+    Ok(Some(std::sync::Arc::new(EngineBazarrTranscriber {
         dispatcher,
-        model_path: config.whisper.model.clone(),
+        whisper_model: config.whisper.model.clone(),
+        parakeet_model: config.parakeet.model.clone(),
+        default_engine: config.server.engine,
         backend: std::sync::Arc::new(build_backend(config)),
         chunk_size: config.translation.chunk_size.max(1) as usize,
         decode: submate_whisper::TranscribeOptions {
@@ -1697,6 +1741,18 @@ mod cli {
             panic!("expected the transcribe subcommand");
         };
         assert_eq!(args.engine, Engine::Parakeet);
+    }
+
+    /// The Bazarr seam resolves the per-request engine: an explicit `?engine=`
+    /// wins, and `None` falls back to the server's configured default.
+    #[test]
+    fn bazarr_engine_resolution_prefers_request() {
+        use submate_types::Engine;
+        assert_eq!(
+            resolve_engine(Some(Engine::Parakeet), Engine::Whisper),
+            Engine::Parakeet
+        );
+        assert_eq!(resolve_engine(None, Engine::Whisper), Engine::Whisper);
     }
 
     /// `ensure_engine_available` gates Parakeet on the `parakeet` feature and
