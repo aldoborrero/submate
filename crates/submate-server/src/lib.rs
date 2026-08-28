@@ -55,6 +55,9 @@ pub struct BazarrTranscribeOpts {
     pub output_format: OutputFormat,
     /// Emit word-level timestamps in SRT/VTT.
     pub word_timestamps: bool,
+    /// ASR engine override from `?engine=`. `None` means the transcriber uses the
+    /// server's configured default.
+    pub engine: Option<submate_types::Engine>,
 }
 
 /// The synchronous, semaphore-bounded Bazarr transcription seam.
@@ -209,6 +212,11 @@ struct AsrParams {
     language: Option<String>,
     #[serde(default = "default_output")]
     output: String,
+    /// ASR engine override (`whisper`/`parakeet`). Typed as a lenient `String` so a
+    /// bad value never trips axum's `422`; mapped by hand via `parse_engine_param`.
+    /// Absent/unknown falls back to the server's configured default.
+    #[serde(default)]
+    engine: Option<String>,
     /// Accepted but ignored (Bazarr sends `encode=false` after pre-encoding).
     #[serde(default)]
     #[expect(dead_code)]
@@ -286,6 +294,13 @@ fn parse_output_format(output: &str) -> Option<OutputFormat> {
     }
 }
 
+/// Map the `?engine=` query value to an [`Engine`], case-insensitively. Unknown/absent →
+/// `None` (the caller uses the server's configured default). Never rejects the request.
+#[cfg(feature = "bazarr")]
+fn parse_engine_param(engine: Option<&str>) -> Option<submate_types::Engine> {
+    engine?.to_ascii_lowercase().parse().ok()
+}
+
 /// A `200` response with an empty `text/plain` body — the only safe failure
 /// signal for `/asr` (the provider saves `r.content` with no status check, so an
 /// error body would become a corrupt subtitle; an empty body is discarded and
@@ -338,6 +353,7 @@ async fn bazarr_asr(
         target_language: params.language,
         output_format,
         word_timestamps: params.word_timestamps,
+        engine: parse_engine_param(params.engine.as_deref()),
     };
     match bazarr.transcribe(opts, pcm).await {
         Ok(out) => (
@@ -610,6 +626,15 @@ mod bazarr_routes_tests {
         async fn detect(&self, _pcm: Vec<u8>) -> std::result::Result<BazarrDetected, String> {
             Err("unused".to_string())
         }
+    }
+
+    #[test]
+    fn parse_engine_param_is_lenient() {
+        use submate_types::Engine;
+        assert_eq!(parse_engine_param(None), None);
+        assert_eq!(parse_engine_param(Some("whisper")), Some(Engine::Whisper));
+        assert_eq!(parse_engine_param(Some("Parakeet")), Some(Engine::Parakeet));
+        assert_eq!(parse_engine_param(Some("garbage")), None);
     }
 
     #[tokio::test]
