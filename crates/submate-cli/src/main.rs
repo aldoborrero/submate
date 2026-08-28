@@ -1014,6 +1014,24 @@ fn parakeet_transcriber() -> anyhow::Result<std::sync::Arc<dyn submate_whisper::
     anyhow::bail!("the `parakeet` engine is not compiled in; rebuild with `--features parakeet`")
 }
 
+/// Build the transcriber backend for `engine`. Whisper installs its (idempotent)
+/// log hook here because `Dispatcher::transcribe_pcm_with` — unlike the old
+/// `transcribe_pcm` — does not. Single source of truth shared by the CLI
+/// `transcribe_one` path and the Bazarr ASR seam, so the whisper-logging
+/// invariant cannot drift between them.
+#[cfg(feature = "model")]
+fn transcriber_for(
+    engine: Engine,
+) -> anyhow::Result<std::sync::Arc<dyn submate_whisper::Transcriber>> {
+    match engine {
+        Engine::Whisper => {
+            submate_whisper::install_whisper_logging();
+            Ok(std::sync::Arc::new(submate_whisper::WhisperBackend))
+        }
+        Engine::Parakeet => parakeet_transcriber(),
+    }
+}
+
 /// Transcribe one media file in-process: extract the selected track's PCM,
 /// run whisper under the dispatcher's runner cap, assemble the subtitle, and
 /// LLM-translate it when `translate_to` differs from the detected language.
@@ -1050,15 +1068,7 @@ async fn transcribe_one(
     }
     .into();
 
-    let transcriber: std::sync::Arc<dyn submate_whisper::Transcriber> = match engine {
-        Engine::Whisper => {
-            // whisper.cpp installs a process-global stderr logger; route it
-            // through `tracing` once before the first model load.
-            submate_whisper::install_whisper_logging();
-            std::sync::Arc::new(submate_whisper::WhisperBackend)
-        }
-        Engine::Parakeet => parakeet_transcriber()?,
-    };
+    let transcriber = transcriber_for(engine)?;
     let raw = dispatcher
         .transcribe_pcm_with(
             transcriber,
@@ -1245,26 +1255,14 @@ impl submate_server::BazarrTranscriber for EngineBazarrTranscriber {
             ..self.decode.clone()
         };
         // Route to the request's engine (falling back to the server default),
-        // then run through the engine-agnostic dispatcher method.
+        // then run through the engine-agnostic dispatcher method. The engine
+        // selects both the backend and its matching model file.
         let engine = resolve_engine(opts.engine, self.default_engine);
-        let (model, transcriber): (String, std::sync::Arc<dyn submate_whisper::Transcriber>) =
-            match engine {
-                Engine::Whisper => {
-                    // `transcribe_pcm_with` does NOT install the whisper.cpp log
-                    // hook (`transcribe_pcm` did), so install it explicitly to
-                    // keep the whisper path identical to the previous behavior.
-                    submate_whisper::install_whisper_logging();
-                    (
-                        self.whisper_model.clone(),
-                        std::sync::Arc::new(submate_whisper::WhisperBackend)
-                            as std::sync::Arc<dyn submate_whisper::Transcriber>,
-                    )
-                }
-                Engine::Parakeet => (
-                    self.parakeet_model.clone(),
-                    parakeet_transcriber().map_err(|e| e.to_string())?,
-                ),
-            };
+        let transcriber = transcriber_for(engine).map_err(|e| e.to_string())?;
+        let model = match engine {
+            Engine::Whisper => self.whisper_model.clone(),
+            Engine::Parakeet => self.parakeet_model.clone(),
+        };
         let raw = self
             .dispatcher
             .transcribe_pcm_with(transcriber, model, samples.clone(), options)
