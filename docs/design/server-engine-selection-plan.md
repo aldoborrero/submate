@@ -38,16 +38,25 @@ Today `Engine` is a CLI-local `#[derive(ValueEnum)] enum Engine { Whisper, Parak
 
 - [ ] **Step 1: Add the `Engine` golden block + coverage (failing test)**
 
-In `fixtures/types/enum_values.json`, add an `Engine` object (match the shape of the other
-enums — variant name → lowercase serialized value):
+In `fixtures/types/enum_values.json`, add an `Engine` object — **SCREAMING_SNAKE variant
+keys**, lowercase serialized values (match the other enums, e.g. `"TINY_EN": "tiny.en"`):
 
 ```json
-"Engine": { "Whisper": "whisper", "Parakeet": "parakeet" }
+"Engine": { "WHISPER": "whisper", "PARAKEET": "parakeet" }
 ```
 
-In `crates/submate-types/tests/parity.rs`: add `"Engine"` to the `COVERED_ENUMS` list, and
-add a `check_enum::<Engine>("Engine", &golden)` call alongside the existing ones (copy an
-existing `check_enum` line; import `submate_types::Engine`).
+In `crates/submate-types/tests/parity.rs`: add `"Engine"` to the `COVERED_ENUMS` list; add
+`Engine` to the existing `use submate_types::{…};` import; and add a `check_enum` call in the
+**pairs form** the real API takes — `check_enum(name, &[(SCREAMING_SNAKE_name, variant), …])`
+(the golden is loaded *inside* `check_enum`; it is not passed a golden ref and not
+turbofished):
+
+```rust
+check_enum(
+    "Engine",
+    &[("WHISPER", Engine::Whisper), ("PARAKEET", Engine::Parakeet)],
+);
+```
 
 - [ ] **Step 2: Run the types tests to verify they fail**
 
@@ -108,8 +117,9 @@ fn parse_engine(s: &str) -> Result<submate_types::Engine, String> {
 - [ ] **Step 6: Verify the CLI compiles + its tests pass**
 
 Run: `nix develop -c cargo test -p submate-cli --features model`
-Expected: PASS (incl. the existing `engine_flag_parses` test — update it if it referenced
-the old local enum path).
+Expected: PASS. The existing `engine_flag_parses` and `ensure_engine_available_gates_parakeet`
+tests reference `Engine::…` **unqualified**, so with `use submate_types::Engine;` in scope
+they compile and pass **unchanged** — no test edit needed.
 
 - [ ] **Step 7: Commit**
 
@@ -270,14 +280,27 @@ In `crates/submate-cli/src/main.rs`:
   `dispatcher`, `model_path` → rename to `whisper_model`, `backend`, `chunk_size`, `decode`,
   `assemble`).
 - In its `transcribe(opts, pcm)`: `let engine = resolve_engine(opts.engine,
-  self.default_engine);` then select `(model, transcriber)`:
-  - `Engine::Whisper` → `(self.whisper_model.clone(), Arc::new(submate_whisper::WhisperBackend))`
-  - `Engine::Parakeet` → `(self.parakeet_model.clone(), parakeet_transcriber()?)` (the
-    existing feature-gated fn; without the feature it `Err`s cleanly → mapped to the empty
-    body by the seam's `Err(String)` contract).
-  Then `self.dispatcher.transcribe_pcm_with(transcriber, model, pcm, options)`. Both model
-  paths are used as-is (must be real files; missing → `ModelNotFound` → empty body).
-- `detect()` unchanged (whisper via `transcribe_pcm`, `self.whisper_model`).
+  self.default_engine);` then select `(model, transcriber)` as `(String, Arc<dyn
+  submate_whisper::Transcriber>)`:
+  - `Engine::Whisper`:
+    ```rust
+    // transcribe_pcm_with does NOT install the whisper.cpp log hook (transcribe_pcm did).
+    submate_whisper::install_whisper_logging();
+    (self.whisper_model.clone(),
+     Arc::new(submate_whisper::WhisperBackend) as Arc<dyn submate_whisper::Transcriber>)
+    ```
+  - `Engine::Parakeet`:
+    ```rust
+    (self.parakeet_model.clone(), parakeet_transcriber().map_err(|e| e.to_string())?)
+    ```
+    `parakeet_transcriber()` returns `anyhow::Result<Arc<dyn Transcriber>>`; the seam returns
+    `Result<_, String>`, so map the error. Without the `parakeet` feature its `#[cfg]` variant
+    `Err`s cleanly → empty body.
+  Then `self.dispatcher.transcribe_pcm_with(transcriber, model, pcm, options).await
+  .map_err(|e| e.to_string())?`. Both model paths are used as-is (real files; missing →
+  `ModelNotFound` → empty body).
+- `detect()` stays whisper but **must** use the renamed field: change `self.model_path` →
+  `self.whisper_model` (it keeps calling `transcribe_pcm`). It is not otherwise changed.
 - `build_bazarr_transcriber`: set `whisper_model: config.whisper.model.clone()`,
   `parakeet_model: config.parakeet.model.clone()`, `default_engine: config.server.engine`.
 
@@ -309,7 +332,9 @@ git commit -m "feat(cli): engine-aware Bazarr transcriber (server engine selecti
 
 Run: `nix develop -c cargo test --workspace` then
 `nix develop -c cargo clippy -p submate-cli -p submate-whisper --features model --all-targets -- -D warnings`
-Expected: all green.
+Expected: all green. Note: `--workspace` uses **default features** (no `model`), so it does
+NOT compile the engine-aware transcriber — the `--features model` test + the `--features
+parakeet` clippy (Task 4 Steps 4–5) are the real gate for Task 4's code.
 
 - [ ] **Step 2: Manual smoke (default engine unchanged)**
 
