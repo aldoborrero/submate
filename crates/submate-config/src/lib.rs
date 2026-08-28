@@ -146,6 +146,10 @@ pub struct ServerSettings {
     pub address: String,
     pub port: u16,
     pub concurrent_transcriptions: u32,
+    /// Default transcription engine for the ASR server (`/bazarr/asr`); a request may
+    /// override it with `?engine=`. `parakeet` needs a build with the feature + a
+    /// `parakeet.model`.
+    pub engine: submate_types::Engine,
 }
 
 impl Default for ServerSettings {
@@ -154,6 +158,7 @@ impl Default for ServerSettings {
             address: "0.0.0.0".to_string(),
             port: 9000,
             concurrent_transcriptions: 2,
+            engine: submate_types::Engine::Whisper,
         }
     }
 }

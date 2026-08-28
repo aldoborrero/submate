@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
 use submate_types::{
-    Device, LanguageNamingType, TranscriptionTask, TranslationBackend, WhisperModel,
+    Device, Engine, LanguageNamingType, TranscriptionTask, TranslationBackend, WhisperModel,
 };
 
 /// Assert one enum against its golden `{variant_name: value}` table.
@@ -92,6 +92,7 @@ const COVERED_ENUMS: &[&str] = &[
     "TranscriptionTask",
     "LanguageNamingType",
     "TranslationBackend",
+    "Engine",
 ];
 
 #[test]
@@ -151,6 +152,11 @@ fn enum_values() {
             ("OPENAI", TranslationBackend::Openai),
             ("GEMINI", TranslationBackend::Gemini),
         ],
+    );
+
+    check_enum(
+        "Engine",
+        &[("WHISPER", Engine::Whisper), ("PARAKEET", Engine::Parakeet)],
     );
 }
 

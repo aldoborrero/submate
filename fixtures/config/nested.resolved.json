@@ -6,6 +6,7 @@
   "server": {
     "address": "0.0.0.0",
     "concurrent_transcriptions": 2,
+    "engine": "whisper",
     "port": 9999
   },
   "stable_ts": {
