@@ -139,6 +139,31 @@ pub enum TranslationBackend {
     Gemini,
 }
 
+/// Which speech-to-text engine transcribes the audio. `whisper` (whisper.cpp) is the
+/// default and handles every language; `parakeet` (transcribe.cpp) has word-level
+/// timestamps but only European languages.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Display,
+    EnumString,
+    EnumIter,
+    Serialize,
+    Deserialize,
+)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    #[default]
+    Whisper,
+    Parakeet,
+}
+
 /// Subtitle output format a transcription job emits.
 ///
 /// The wire/value string is the bare lowercase format name (`"srt"`, `"vtt"`,

@@ -63,20 +63,7 @@ impl From<OutputFormat> for submate_types::OutputFormat {
     }
 }
 
-/// Which speech-to-text engine transcribes the audio.
-///
-/// `whisper` (whisper.cpp) is the default and handles every language. `parakeet`
-/// (transcribe.cpp) yields word-level timestamps but only for European
-/// languages, and is available only in a build compiled `--features parakeet`;
-/// selecting it in a build without that feature is a clean error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
-enum Engine {
-    /// whisper.cpp — all languages (default).
-    #[default]
-    Whisper,
-    /// transcribe.cpp / Parakeet — European languages only, word-level timing.
-    Parakeet,
-}
+use submate_types::Engine;
 
 mod config_show;
 mod translate_paths;
@@ -181,8 +168,8 @@ struct TranscribeArgs {
 
     /// Speech-to-text engine: `whisper` (default, all languages) or `parakeet`
     /// (European languages only, word-level timing; needs `--features parakeet`).
-    #[arg(long, value_enum, default_value_t = Engine::Whisper)]
-    engine: Engine,
+    #[arg(long, value_parser = parse_engine, default_value = "whisper")]
+    engine: submate_types::Engine,
 
     // Whisper decoding knobs. Each overrides `SUBMATE__WHISPER__*` and leaves
     // whisper.cpp's own default in place when omitted.
@@ -398,6 +385,13 @@ fn parse_backend(s: &str) -> Result<submate_types::TranslationBackend, String> {
             "unknown backend {other:?} (expected one of: ollama, claude, openai, gemini)"
         )),
     }
+}
+
+/// Parse `--engine` into the shared [`submate_types::Engine`] (clap-free crate, so no
+/// `ValueEnum` derive — mirror `parse_backend`).
+fn parse_engine(s: &str) -> Result<submate_types::Engine, String> {
+    s.parse::<submate_types::Engine>()
+        .map_err(|_| format!("unknown engine '{s}' (expected: whisper, parakeet)"))
 }
 
 /// Apply a `--vad-model` flag by setting the env var the whisper crate reads

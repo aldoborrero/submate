@@ -5,6 +5,10 @@
     "CUDA": "cuda",
     "VULKAN": "vulkan"
   },
+  "Engine": {
+    "PARAKEET": "parakeet",
+    "WHISPER": "whisper"
+  },
   "LanguageNamingType": {
     "ISO_639_1": "iso_639_1",
     "ISO_639_2_B": "iso_639_2_b",
