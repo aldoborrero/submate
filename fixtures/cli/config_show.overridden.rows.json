@@ -40,6 +40,10 @@
     "2"
   ],
   [
+    "Server.Engine",
+    "whisper"
+  ],
+  [
     "Translation.Backend",
     "ollama"
   ],
