@@ -27,6 +27,17 @@ never uses.
 2. A **dedicated Bazarr `submate` provider** that models submate's actual semantics
    (transcribe + LLM-translate to any target, per-engine) instead of forking `whisperai`.
 
+## Status
+
+- **Part A (submate server engine selection) — IMPLEMENTED** on branch
+  `feat/server-engine-selection`. Commits: `Engine` moved to `submate-types`; a
+  `server.engine` config default; a lenient `?engine=` query param on `/bazarr/asr`;
+  and the engine-aware Bazarr transcriber (`transcriber_for` helper). Shipped behind
+  the existing `model` / `parakeet` cargo features; whisper remains the default and
+  behavior is unchanged for whisper requests.
+- **Part B (Bazarr `submate` Python provider) — not yet implemented.** A separate plan
+  follows.
+
 ## Non-goals
 
 - Auto-fallback between engines (Parakeet fails → retry on whisper). The engine is explicit
