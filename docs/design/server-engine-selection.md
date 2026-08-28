@@ -10,8 +10,8 @@ opts)` already runs either polymorphically (it takes an `Arc<dyn Transcriber>`).
 Engine selection is wired **only into the CLI** (`submate transcribe --engine …`, a
 CLI-local `Engine` enum). The **server** path — `POST /bazarr/asr` and
 `/bazarr/detect-language`, which is what Bazarr uses — is hardwired to whisper
-(`WhisperBazarrTranscriber` in submate-cli, via `Dispatcher::transcribe_pcm`). So Bazarr
-cannot use Parakeet at all.
+(`WhisperBazarrTranscriber` in submate-cli — now `EngineBazarrTranscriber`, see Status
+above — via `Dispatcher::transcribe_pcm`). So Bazarr cannot use Parakeet at all.
 
 Bazarr talks to submate through a **patched fork of Bazarr's `whisperai` provider**
 (`dockerfiles/bazarr/whisperai.py` in the homelab repo): a 691-line copy that hijacks the
