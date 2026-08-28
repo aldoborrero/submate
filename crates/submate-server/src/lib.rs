@@ -604,19 +604,25 @@ mod bazarr_routes_tests {
         assert_eq!(v["language_code"], "und");
     }
 
-    /// A seam that records the PCM it was handed, to prove the multipart
-    /// `audio_file` part reaches the transcriber byte-for-byte (raw s16le, not
-    /// WAV-wrapped or otherwise mangled).
-    struct Recorder(Arc<Mutex<Vec<u8>>>);
+    /// A seam that records what it was handed — the PCM (to prove the multipart
+    /// `audio_file` part reaches the transcriber byte-for-byte, raw s16le, not
+    /// WAV-wrapped or otherwise mangled) and the resolved `opts.engine` (to prove
+    /// the `?engine=` query param threads through to the seam).
+    #[derive(Default)]
+    struct Recorder {
+        pcm: Arc<Mutex<Vec<u8>>>,
+        engine: Arc<Mutex<Option<submate_types::Engine>>>,
+    }
 
     #[async_trait::async_trait]
     impl BazarrTranscriber for Recorder {
         async fn transcribe(
             &self,
-            _opts: BazarrTranscribeOpts,
+            opts: BazarrTranscribeOpts,
             pcm: Vec<u8>,
         ) -> std::result::Result<BazarrOutput, String> {
-            *self.0.lock().unwrap() = pcm;
+            *self.pcm.lock().unwrap() = pcm;
+            *self.engine.lock().unwrap() = opts.engine;
             Ok(BazarrOutput {
                 content: SRT.to_string(),
                 detected_language: "es".to_string(),
@@ -639,8 +645,9 @@ mod bazarr_routes_tests {
 
     #[tokio::test]
     async fn asr_passes_raw_pcm_unwrapped() {
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let state = AppState::default().with_bazarr(Arc::new(Recorder(seen.clone())));
+        let rec = Recorder::default();
+        let seen = rec.pcm.clone();
+        let state = AppState::default().with_bazarr(Arc::new(rec));
         let pcm = vec![0xde, 0xad, 0xbe, 0xef, 0x01, 0x02];
         let _ = post(state, "/bazarr/asr?output=srt&encode=false", &pcm).await;
         assert_eq!(
@@ -648,5 +655,31 @@ mod bazarr_routes_tests {
             pcm,
             "the seam must receive the exact uploaded PCM, unwrapped"
         );
+    }
+
+    /// End-to-end wiring: `?engine=` on `POST /bazarr/asr` must reach the seam as
+    /// `opts.engine`. A known value maps to `Some(engine)`; a garbage value stays
+    /// lenient (`None` → server default, empty body, no 4xx/5xx).
+    #[tokio::test]
+    async fn asr_engine_param_reaches_seam() {
+        use submate_types::Engine;
+
+        // Known engine threads through to the seam.
+        let rec = Recorder::default();
+        let engine = rec.engine.clone();
+        let state = AppState::default().with_bazarr(Arc::new(rec));
+        let (status, _h, _body) =
+            post(state, "/bazarr/asr?engine=parakeet&output=srt", b"\x00\x01").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(*engine.lock().unwrap(), Some(Engine::Parakeet));
+
+        // Garbage engine → None (lenient default), never a 4xx/5xx.
+        let rec = Recorder::default();
+        let engine = rec.engine.clone();
+        let state = AppState::default().with_bazarr(Arc::new(rec));
+        let (status, _h, _body) =
+            post(state, "/bazarr/asr?engine=garbage&output=srt", b"\x00\x01").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(*engine.lock().unwrap(), None);
     }
 }
